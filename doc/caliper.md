@@ -85,13 +85,45 @@ surface. Subroutine *specs* are ordinary Lean theorems about the generated code
 (`SumBuf.spec`), reused at every call site — the same composition discipline as
 `FormalCircuit`, one level down.
 
-## Caveats / next steps
+## The compilation contract — why DSL cost `n` means `c · n` CPU time
 
-- **Relative yardstick.** Bounds are relative to the `CostModel`; there is no
-  reasonableness theorem tying the machine to TMs/RAM. Fine for upper-bound and
-  order-of-growth claims about witgen; not for absolute complexity-class claims.
-- Shift semantics: shift amounts `≥ w` yield 0 (`BitVec` convention); a backend
-  targeting x86/ARM masked shifts must emit an explicit mask.
+The guarantee this machine is designed around is *not* a statement about Turing
+machines. It is: **every `Stmt` instruction is implementable in a constant number of
+machine instructions on a 64-bit CPU**, so an `Exec` derivation of cost `t` (unit
+model) corresponds to a real execution of at most `c · t` cycles, with `c` the maximum
+over the per-instruction table. Since every `Exec` rule charges a syntactic constant
+and the table is 13 entries, the trusted argument is a per-instruction inspection:
+
+| Instruction | Real implementation | Cost |
+|---|---|---|
+| `imm`, `mov` | load-immediate / register move | 1 instr |
+| `un`, `bin` | one ALU op (`udiv`/`umod` ≈ 20–40 cycles — a *constant*, tabulated in `CostModel.cycles`) | 1 instr |
+| `shl`, `shr` | shift + compare/mask for the `≥ w ⇒ 0` convention (x86/ARM mask the amount) | 2–3 instr |
+| `bufGet`, `bufSet` | one load/store at `base + 8·i`; the in-range proof carried by the `Exec` rule means bounds checks can be elided | 1–2 instr |
+| `bufLen`, `bufPop` | load / decrement of the length field | 1 instr |
+| `bufNew` | reset to empty; freeing a `u64` vector has no per-element work | O(1) |
+| `bufPush` | `Vec::push` with doubling — **amortized** O(1); sound here because `Triple` bounds *total* time: `m` pushes cost O(`m`) real time | amortized O(1) |
+| `ifNZ`, `whileNZ` guard | test + branch | 2 instr |
+
+Supporting facts, all discharged by the machine's design rather than by proof:
+
+- The syntax of any program mentions finitely many registers and buffer names, both
+  known statically. Registers become stack slots (L1-resident) or machine registers;
+  each buffer becomes its own `Vec<u64>`. No dynamic name ever needs resolving.
+- Words are exactly `u64`; no bignum arithmetic can hide inside an instruction (this
+  is why the DSL exists instead of measuring Lean's GMP-backed `Nat`).
+- No instruction's semantics does work proportional to the state (`bufNew` creates
+  *empty* buffers precisely so that no hidden `memset` exists).
+
+Two honest qualifications. `bufPush`'s amortization means *individual* operations are
+not real-time bounded — irrelevant for total-time upper bounds, relevant only if
+per-step latency claims are ever wanted (then pre-size buffers with a push-loop, which
+the cost model prices correctly). And `c` is uniform over the memory hierarchy — a
+`bufGet` costs the same whether it hits L1 or DRAM; the *count* of memory accesses is
+exact, and sensitivity to their unit price is a `CostModel` calibration question, not
+a soundness one.
+
+## Caveats / next steps
 - The witgen-IR compiler (`WitgenIR → Stmt`) plus a cost theorem per IR node is the
   actual goal; this layer is the target it needs.
 - A `Proc` record bundling `code`/`Pre`/`Post`/`time`/`space`/`spec` (mirroring
