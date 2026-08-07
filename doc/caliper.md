@@ -3,8 +3,9 @@
 A deep-embedded imperative language whose every instruction runs in constant time,
 intended as the compilation target for the witness-generation IR
 (`Clean/Circuit/WitnessIR.lean`). Programs carry machine-checked **upper bounds** on
-running time and on allocated memory. Prototype status: the language, program logic and
-worked examples exist; the witgen-IR → DSL compiler does not yet.
+running time and on allocated memory. The pipeline is complete through the witgen-IR
+compiler: programs written in Clean's witness IR compile to this machine and carry
+certified concrete step-count bounds (see "The witgen pipeline" below).
 
 ## Files
 
@@ -15,6 +16,29 @@ worked examples exist; the witgen-IR → DSL compiler does not yet.
 | `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_`, typed buffer handles (`Buf`), product types (`PairR`, `PairBuf`) |
 | `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs, Fermat inverse generated from the bits of `p - 2` at generation time |
 | `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
+| `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable` checks; differential tests against `WitgenIR.eval` at BabyBear |
+| `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compileIR_time_eq` (every execution takes *exactly* `staticTime` — data-independent), `compileIR_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40` |
+| `WitgenSim.lean` + `WitgenSimExpr.lean` | **Phase 3**: verified lowering — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, and the scalar-expression simulation theorems relating compiled code to `WitgenIR` evaluation |
+
+## The witgen pipeline: `witgen in < 2^N steps`, machine-checked
+
+The end-to-end story the four `Witgen*` files deliver: a witness-generation program in
+Clean's IR compiles to straight-line machine code whose running time is a *syntactic
+constant* — the same number on every input (also a constant-time/side-channel
+statement), computable by `#eval` and certified by evaluation. Concretely, for the
+BabyBear `IsZeroField` witness: every execution takes exactly 140 unit-cost steps
+(2090 under the calibrated cycles table), peak memory 1 word, giving theorems of
+exactly the target shape
+
+    theorem isZero_witgen_lt_2_40 (h : Exec .unit isZeroCompiled s s' t d p) :
+        t < 2 ^ 40
+
+Costs scale linearly in circuit size (each IR node compiles to O(1) instructions,
+`mapRange n` to n copies of its body, field inverse to ~2·log p multiply-reduce
+steps), so full-circuit witgen bounds are sums of per-gadget constants — evaluated,
+not estimated. Exclusions: `.native` closures (not compilable, by construction),
+`dataGet`/`hintGet` prover-data reads and `listGet` (deferred; they are additional
+buffers/select-chains, no new machinery).
 
 ## Design decisions
 
