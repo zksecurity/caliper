@@ -12,8 +12,8 @@ worked examples exist; the witgen-IR → DSL compiler does not yet.
 |---|---|
 | `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems, reference interpreter (`run`) + soundness |
 | `Triple.lean` | Upper-bound Hoare triples (`Triple`), one rule per instruction, `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule `whileNZ_measure`, frame rules |
-| `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_` |
-| `Examples.lean` | Worked examples with full proofs, builder ↔ core `rfl`/`#eval` checks, interpreter demos |
+| `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_`, product types (`PairR`, `PairBuf`) |
+| `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos |
 
 ## Design decisions
 
@@ -55,17 +55,28 @@ Consequences for the instruction set:
 - Words are `BitVec w` (fixed at 64 for the witgen backend); all arithmetic wraps,
   mirroring the `U64Expr` sort of the witness IR.
 
-### Upper bounds, not exact times
+### Upper bounds, not exact times — and memory as a (net, peak) profile
 
-`Triple C P c Q T M` is total correctness plus `t ≤ T` and `m ≤ M`. Exhibiting the
+`Triple C P c Q T D M` is total correctness plus `t ≤ T` (time), `d ≤ D` (net
+live-memory change, signed) and `p ≤ M` (peak live-memory growth). Exhibiting the
 underlying `Exec` derivation also proves **memory safety** (out-of-range accesses have
-no derivation — the `bufGet`/`bufSet` rules demand an in-range proof). The allocation
-count `m` only ever grows, so it bounds peak memory with no high-water-mark
-bookkeeping.
+no derivation — the `bufGet`/`bufSet` rules demand an in-range proof).
+
+Memory is *not* an allocation counter — memory gets reused. `bufPop` and `bufNew`
+give words back, and profiles compose like high-water marks:
+
+    seq:  net = d₁ + d₂        peak = max p₁ (d₁ + p₂)
+
+so a block with net 0 (push then pop; reset then refill) contributes its peak once,
+not once per occurrence. The `ScratchLoop` example runs `n` iterations that each push
+and pop a word: its proved peak bound is **1 word, independent of `n`** (an
+allocation counter would report `n`). Invariants `0 ≤ p` and `d ≤ p` hold always.
 
 The loop rule `Triple.whileNZ_measure` takes an invariant indexed by a
-remaining-iterations budget `k` and yields bounds linear in `k`:
-`(k+1)·(guard + branch) + k·body`. Everything downstream is `ℕ` arithmetic that
+remaining-iterations budget `k`; time is linear in `k`, and both memory bounds have
+the form `base + k · max (Dg + Db) 0` — `max` with 0 because the loop may exit early
+and fewer iterations free less. When the per-iteration net `Dg + Db ≤ 0`, the peak is
+independent of the trip count. Everything downstream is `ℕ`/`ℤ` arithmetic that
 `omega`/`ring` close.
 
 ### Executable
@@ -103,6 +114,13 @@ and the table is 13 entries, the trusted argument is a per-instruction inspectio
 | `bufLen`, `bufPop` | load / decrement of the length field | 1 instr |
 | `bufNew` | reset to empty; freeing a `u64` vector has no per-element work | O(1) |
 | `bufPush` | `Vec::push` with doubling — **amortized** O(1); sound here because `Triple` bounds *total* time: `m` pushes cost O(`m`) real time | amortized O(1) |
+
+For the **peak-memory** bound to transfer with a constant factor, the backend's
+dynamic arrays must shrink: pop with a halve-at-quarter-occupancy policy (and free on
+`bufNew`). That keeps push/pop amortized O(1) *and* physical footprint ≤ 4× the
+logical live size — the standard dynamic-array result. A backend that never shrinks
+still satisfies the *time* contract, but its real memory tracks the high-water mark
+of each buffer instead of the proved peak.
 | `ifNZ`, `whileNZ` guard | test + branch | 2 instr |
 
 Supporting facts, all discharged by the machine's design rather than by proof:

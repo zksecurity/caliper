@@ -194,4 +194,58 @@ def len (b : BufId) : Build w Reg := do
 
 end Build
 
+/-! ## Product types
+
+A struct is *generation-time* data: scalar fields live in a Lean record of registers,
+and an array-of-structs is one buffer with a stride convention. Field access compiles
+to index arithmetic on the underlying buffer, so its cost (a multiply, an add, a read)
+is fully visible to the cost model — the abstraction adds nothing trusted. `PairBuf`
+below is the two-field case; an n-field record is the same construction with stride n
+(and generating the accessors from a field list is ordinary Lean metaprogramming).
+
+Because each `PairBuf` owns its own buffer name, two arrays-of-structs can never
+alias, and framing across them is the usual decidable `Touches` check. -/
+
+/-- A pair of words held in registers (a "local struct"). -/
+structure PairR (w : ℕ) where
+  fst : Reg
+  snd : Reg
+
+/-- Allocate a fresh local pair. -/
+def Build.mkPairR : Build w (PairR w) := do
+  let a ← Build.freshReg
+  let b ← Build.freshReg
+  pure ⟨a, b⟩
+
+/-- An array of pairs: one buffer, stride 2, fields interleaved. -/
+structure PairBuf (w : ℕ) where
+  buf : BufId
+
+/-- Allocate a fresh, empty array of pairs. -/
+def Build.mkPairBuf : Build w (PairBuf w) := do
+  let b ← Build.newBuf
+  pure ⟨b⟩
+
+namespace PairBuf
+
+/-- Append a pair (two pushes: +2 words, amortized-constant time). -/
+def push (pb : PairBuf w) (x y : Exp w) : Build w Unit := do
+  Build.push pb.buf x
+  Build.push pb.buf y
+
+/-- Number of pairs, in a fresh register. -/
+def size (pb : PairBuf w) : Build w Reg := do
+  let n ← Build.len pb.buf
+  Build.var ((n : Exp w) / 2)
+
+/-- First component of pair `i`. -/
+def fst (pb : PairBuf w) (i : Exp w) : Build w Reg :=
+  Build.get pb.buf (2 * i)
+
+/-- Second component of pair `i`. -/
+def snd (pb : PairBuf w) (i : Exp w) : Build w Reg :=
+  Build.get pb.buf (2 * i + 1)
+
+end PairBuf
+
 end LowLevel

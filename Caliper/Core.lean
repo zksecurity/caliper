@@ -38,13 +38,20 @@ Two consequences for the instruction set:
 * `bufPush` is unit cost in the *amortised* sense (a doubling `Vec::push`). It is the
   only instruction whose per-call cost is amortised rather than worst-case.
 
-## Cost is two numbers
+## Cost is a time and a memory *profile*
 
-`Exec C c s s' t m` says: from `s`, statement `c` terminates in `s'`, having spent `t`
-time units and allocated `m` words. Time and space are plain `ℕ`s so that `omega`
-closes the arithmetic. `m` counts *every word ever allocated*, so it never decreases
-and is therefore automatically an upper bound on peak live memory — no
-high-water-mark bookkeeping and no free-list reasoning.
+`Exec C c s s' t d p` says: from `s`, statement `c` terminates in `s'`, having spent
+`t` time units, with **net** live-memory change `d` (in words, signed — `bufPop` and
+`bufNew` give memory back) and **peak** live-memory growth `p` above the starting
+level. Profiles compose like resource high-water marks:
+
+    seq:  net = d₁ + d₂        peak = max p₁ (d₁ + p₂)
+
+so memory *reuse* is visible: a loop whose body pushes and pops has net 0 per
+iteration and its peak does not grow with the trip count (see `ScratchLoop` in
+`Examples.lean`). Tracking only total allocations would lose exactly this.
+`0 ≤ p` and `d ≤ p` always (`peak_nonneg`, `net_le_peak`). Time stays a plain `ℕ`;
+the memory indices are `ℤ` so that `omega` closes the arithmetic.
 
 Out-of-range buffer accesses have *no* `Exec` derivation, so exhibiting a derivation
 (which is what a `Triple` does) proves memory safety along the way.
@@ -219,44 +226,53 @@ the side condition is a decidable statement about two `ℕ`s. -/
 
 /-! ## Semantics
 
-`Exec C c s s' t m`: statement `c` takes state `s` to `s'`, spending `t` time units and
-allocating `m` words.
+`Exec C c s s' t d p`: statement `c` takes state `s` to `s'`, spending `t` time units,
+changing live memory by `d` words (net, signed) with peak growth `p`.
 
 Out-of-range `bufGet`/`bufSet` simply have no rule, so a derivation witnesses memory
 safety. -/
-inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℕ → Prop where
-  | skip {s} : Exec C .skip s s 0 0
-  | seq {c₁ c₂ s s₁ s₂ t₁ m₁ t₂ m₂} :
-      Exec C c₁ s s₁ t₁ m₁ → Exec C c₂ s₁ s₂ t₂ m₂ →
-      Exec C (c₁ ;; c₂) s s₂ (t₁ + t₂) (m₁ + m₂)
-  | imm {d v s} : Exec C (.imm d v) s (s.setReg d v) C.imm 0
-  | mov {d a s} : Exec C (.mov d a) s (s.setReg d (s.regs a)) C.mov 0
+inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℤ → ℤ → Prop where
+  | skip {s} : Exec C .skip s s 0 0 0
+  | seq {c₁ c₂ s s₁ s₂ t₁ d₁ p₁ t₂ d₂ p₂} :
+      Exec C c₁ s s₁ t₁ d₁ p₁ → Exec C c₂ s₁ s₂ t₂ d₂ p₂ →
+      Exec C (c₁ ;; c₂) s s₂ (t₁ + t₂) (d₁ + d₂) (max p₁ (d₁ + p₂))
+  | imm {d v s} : Exec C (.imm d v) s (s.setReg d v) C.imm 0 0
+  | mov {d a s} : Exec C (.mov d a) s (s.setReg d (s.regs a)) C.mov 0 0
   | un {op d a s} :
-      Exec C (.un op d a) s (s.setReg d (op.eval (s.regs a))) (C.un op) 0
+      Exec C (.un op d a) s (s.setReg d (op.eval (s.regs a))) (C.un op) 0 0
   | bin {op d a b s} :
-      Exec C (.bin op d a b) s (s.setReg d (op.eval (s.regs a) (s.regs b))) (C.bin op) 0
-  | bufNew {b s} : Exec C (.bufNew b) s (s.setBuf b #[]) C.bufNew 0
+      Exec C (.bin op d a b) s (s.setReg d (op.eval (s.regs a) (s.regs b)))
+        (C.bin op) 0 0
+  /-- Dropping the old contents returns their words. -/
+  | bufNew {b s} :
+      Exec C (.bufNew b) s (s.setBuf b #[]) C.bufNew (-((s.bufs b).size : ℤ)) 0
   | bufLen {d b s} :
-      Exec C (.bufLen d b) s (s.setReg d (BitVec.ofNat w (s.bufs b).size)) C.bufLen 0
+      Exec C (.bufLen d b) s (s.setReg d (BitVec.ofNat w (s.bufs b).size)) C.bufLen 0 0
   | bufGet {d b i s} (h : (s.regs i).toNat < (s.bufs b).size) :
-      Exec C (.bufGet d b i) s (s.setReg d (s.bufs b)[(s.regs i).toNat]) C.bufGet 0
+      Exec C (.bufGet d b i) s (s.setReg d (s.bufs b)[(s.regs i).toNat]) C.bufGet 0 0
   | bufSet {b i src s} (h : (s.regs i).toNat < (s.bufs b).size) :
       Exec C (.bufSet b i src) s
-        (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) h)) C.bufSet 0
+        (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) h)) C.bufSet 0 0
   | bufPush {b src s} :
-      Exec C (.bufPush b src) s (s.setBuf b ((s.bufs b).push (s.regs src))) C.bufPush 1
-  | bufPop {b s} : Exec C (.bufPop b) s (s.setBuf b (s.bufs b).pop) C.bufPop 0
-  | ifNZ_true {c thn els s s' t m} (h : s.regs c ≠ 0) :
-      Exec C thn s s' t m → Exec C (.ifNZ c thn els) s s' (C.branch + t) m
-  | ifNZ_false {c thn els s s' t m} (h : s.regs c = 0) :
-      Exec C els s s' t m → Exec C (.ifNZ c thn els) s s' (C.branch + t) m
-  | while_done {g c b s s₁ tg mg} :
-      Exec C g s s₁ tg mg → s₁.regs c = 0 →
-      Exec C (.whileNZ g c b) s s₁ (tg + C.branch) mg
-  | while_step {g c b s s₁ s₂ s₃ tg mg tb mb tl ml} :
-      Exec C g s s₁ tg mg → s₁.regs c ≠ 0 → Exec C b s₁ s₂ tb mb →
-      Exec C (.whileNZ g c b) s₂ s₃ tl ml →
-      Exec C (.whileNZ g c b) s s₃ (tg + C.branch + tb + tl) (mg + mb + ml)
+      Exec C (.bufPush b src) s (s.setBuf b ((s.bufs b).push (s.regs src)))
+        C.bufPush 1 1
+  /-- Popping returns a word (a no-op on an empty buffer, hence the size
+  difference rather than a literal `-1`). -/
+  | bufPop {b s} :
+      Exec C (.bufPop b) s (s.setBuf b (s.bufs b).pop) C.bufPop
+        (((s.bufs b).pop.size : ℤ) - ((s.bufs b).size : ℤ)) 0
+  | ifNZ_true {c thn els s s' t d p} (h : s.regs c ≠ 0) :
+      Exec C thn s s' t d p → Exec C (.ifNZ c thn els) s s' (C.branch + t) d p
+  | ifNZ_false {c thn els s s' t d p} (h : s.regs c = 0) :
+      Exec C els s s' t d p → Exec C (.ifNZ c thn els) s s' (C.branch + t) d p
+  | while_done {g c b s s₁ tg dg pg} :
+      Exec C g s s₁ tg dg pg → s₁.regs c = 0 →
+      Exec C (.whileNZ g c b) s s₁ (tg + C.branch) dg pg
+  | while_step {g c b s s₁ s₂ s₃ tg dg pg tb db pb tl dl pl} :
+      Exec C g s s₁ tg dg pg → s₁.regs c ≠ 0 → Exec C b s₁ s₂ tb db pb →
+      Exec C (.whileNZ g c b) s₂ s₃ tl dl pl →
+      Exec C (.whileNZ g c b) s s₃ (tg + C.branch + tb + tl) (dg + db + dl)
+        (max pg (dg + max pb (db + pl)))
 
 /-! ## Basic metatheory -/
 
@@ -264,37 +280,28 @@ inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℕ 
 particular at most one cost. So "the" running time is well defined and an upper bound
 proved for one execution is a bound on all of them. -/
 theorem Exec.deterministic {C : CostModel} {c : Stmt w} {s s₁ s₂ : State w}
-    {t₁ m₁ t₂ m₂ : ℕ} (h₁ : Exec C c s s₁ t₁ m₁) (h₂ : Exec C c s s₂ t₂ m₂) :
-    s₁ = s₂ ∧ t₁ = t₂ ∧ m₁ = m₂ := by
-  induction h₁ generalizing s₂ t₂ m₂ with
-  | skip => cases h₂; exact ⟨rfl, rfl, rfl⟩
+    {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
+    (h₁ : Exec C c s s₁ t₁ d₁ p₁) (h₂ : Exec C c s s₂ t₂ d₂ p₂) :
+    s₁ = s₂ ∧ t₁ = t₂ ∧ d₁ = d₂ ∧ p₁ = p₂ := by
+  induction h₁ generalizing s₂ t₂ d₂ p₂ with
   | seq _ _ ih₁ ih₂ =>
     cases h₂ with
     | seq h₁' h₂' =>
-      obtain ⟨rfl, rfl, rfl⟩ := ih₁ h₁'
-      obtain ⟨rfl, rfl, rfl⟩ := ih₂ h₂'
-      exact ⟨rfl, rfl, rfl⟩
-  | imm => cases h₂; exact ⟨rfl, rfl, rfl⟩
-  | mov => cases h₂; exact ⟨rfl, rfl, rfl⟩
-  | un => cases h₂; exact ⟨rfl, rfl, rfl⟩
-  | bin => cases h₂; exact ⟨rfl, rfl, rfl⟩
-  | bufNew => cases h₂; exact ⟨rfl, rfl, rfl⟩
-  | bufLen => cases h₂; exact ⟨rfl, rfl, rfl⟩
-  | bufGet => cases h₂; exact ⟨rfl, rfl, rfl⟩
-  | bufSet => cases h₂; exact ⟨rfl, rfl, rfl⟩
-  | bufPush => cases h₂; exact ⟨rfl, rfl, rfl⟩
-  | bufPop => cases h₂; exact ⟨rfl, rfl, rfl⟩
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := ih₁ h₁'
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := ih₂ h₂'
+      exact ⟨rfl, rfl, rfl, rfl⟩
   | ifNZ_true h _ ih =>
     cases h₂ with
-    | ifNZ_true _ h' => obtain ⟨rfl, rfl, rfl⟩ := ih h'; exact ⟨rfl, rfl, rfl⟩
+    | ifNZ_true _ h' => obtain ⟨rfl, rfl, rfl, rfl⟩ := ih h'; exact ⟨rfl, rfl, rfl, rfl⟩
     | ifNZ_false h' _ => exact absurd h' h
   | ifNZ_false h _ ih =>
     cases h₂ with
     | ifNZ_true h' _ => exact absurd h h'
-    | ifNZ_false _ h' => obtain ⟨rfl, rfl, rfl⟩ := ih h'; exact ⟨rfl, rfl, rfl⟩
+    | ifNZ_false _ h' => obtain ⟨rfl, rfl, rfl, rfl⟩ := ih h'; exact ⟨rfl, rfl, rfl, rfl⟩
   | while_done _ hz ihg =>
     cases h₂ with
-    | while_done hg' hz' => obtain ⟨rfl, rfl, rfl⟩ := ihg hg'; exact ⟨rfl, rfl, rfl⟩
+    | while_done hg' hz' =>
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := ihg hg'; exact ⟨rfl, rfl, rfl, rfl⟩
     | while_step hg' hnz' _ _ =>
       obtain ⟨rfl, _, _⟩ := ihg hg'; exact absurd hz hnz'
   | while_step _ hnz _ _ ihg ihb ihl =>
@@ -302,10 +309,24 @@ theorem Exec.deterministic {C : CostModel} {c : Stmt w} {s s₁ s₂ : State w}
     | while_done hg' hz' =>
       obtain ⟨rfl, _, _⟩ := ihg hg'; exact absurd hz' hnz
     | while_step hg' _ hb' hl' =>
-      obtain ⟨rfl, rfl, rfl⟩ := ihg hg'
-      obtain ⟨rfl, rfl, rfl⟩ := ihb hb'
-      obtain ⟨rfl, rfl, rfl⟩ := ihl hl'
-      exact ⟨rfl, rfl, rfl⟩
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := ihg hg'
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := ihb hb'
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := ihl hl'
+      exact ⟨rfl, rfl, rfl, rfl⟩
+  | _ => cases h₂; exact ⟨rfl, rfl, rfl, rfl⟩
+
+/-- The peak never dips below the start level. -/
+theorem Exec.peak_nonneg {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} (h : Exec C c s s' t d p) : 0 ≤ p := by
+  induction h <;> omega
+
+/-- The net change is bounded by the peak. -/
+theorem Exec.net_le_peak {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} (h : Exec C c s s' t d p) : d ≤ p := by
+  induction h with
+  | bufNew => omega
+  | bufPop => simp only [Array.size_pop]; omega
+  | _ => omega
 
 /-! ### Framing: which registers and buffers a statement can touch
 
@@ -400,8 +421,9 @@ instance instDecidableTouches : ∀ (c : Stmt w) (b : BufId), Decidable (c.Touch
     (c₁ ;; c₂).Touches b ↔ c₁.Touches b ∨ c₂.Touches b := Iff.rfl
 
 /-- Register frame rule. -/
-theorem Exec.frame_reg {C : CostModel} {c : Stmt w} {s s' : State w} {t m : ℕ} {r : Reg}
-    (h : Exec C c s s' t m) (hr : ¬ c.Writes r) : s'.regs r = s.regs r := by
+theorem Exec.frame_reg {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} {r : Reg}
+    (h : Exec C c s s' t d p) (hr : ¬ c.Writes r) : s'.regs r = s.regs r := by
   induction h with
   | skip => rfl
   | seq _ _ ih₁ ih₂ =>
@@ -418,8 +440,9 @@ theorem Exec.frame_reg {C : CostModel} {c : Stmt w} {s s' : State w} {t m : ℕ}
 
 /-- Buffer frame rule — the analogue of a separation-logic frame, but with a decidable
 side condition instead of an entailment. -/
-theorem Exec.frame_buf {C : CostModel} {c : Stmt w} {s s' : State w} {t m : ℕ} {b : BufId}
-    (h : Exec C c s s' t m) (hb : ¬ c.Touches b) : s'.bufs b = s.bufs b := by
+theorem Exec.frame_buf {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} {b : BufId}
+    (h : Exec C c s s' t d p) (hb : ¬ c.Touches b) : s'.bufs b = s.bufs b := by
   induction h with
   | skip => rfl
   | seq _ _ ih₁ ih₂ =>
@@ -463,7 +486,7 @@ def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .ifNZ _ t e => t.staticTime C + e.staticTime C
   | .whileNZ .. => 0
 
-/-- The syntactic allocation count of a branch-free statement. -/
+/-- Syntactic push count of a branch-free statement: an upper bound on its peak. -/
 def Stmt.staticSpace : Stmt w → ℕ
   | .seq c₁ c₂ => c₁.staticSpace + c₂.staticSpace
   | .bufPush .. => 1
@@ -471,28 +494,35 @@ def Stmt.staticSpace : Stmt w → ℕ
 
 /-- **Branch-free code runs in constant time.** The running time is a function of the
 syntax alone — it does not mention the state. -/
-theorem Exec.straight_time_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t m : ℕ}
-    (h : Exec C c s s' t m) (hs : c.Straight) : t = c.staticTime C := by
+theorem Exec.straight_time_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} (h : Exec C c s s' t d p) (hs : c.Straight) : t = c.staticTime C := by
   induction h with
   | seq _ _ ih₁ ih₂ => exact congrArg₂ (· + ·) (ih₁ hs.1) (ih₂ hs.2)
   | ifNZ_true | ifNZ_false | while_done | while_step => exact hs.elim
   | _ => rfl
 
-/-- Likewise for allocation. -/
-theorem Exec.straight_space_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t m : ℕ}
-    (h : Exec C c s s' t m) (hs : c.Straight) : m = c.staticSpace := by
+/-- Branch-free memory: net and peak are bounded by the syntactic push count. (Not an
+equality — `bufPop`/`bufNew` return a state-dependent number of words.) -/
+theorem Exec.straight_space_le {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} (h : Exec C c s s' t d p) (hs : c.Straight) :
+    d ≤ c.staticSpace ∧ p ≤ c.staticSpace := by
   induction h with
-  | seq _ _ ih₁ ih₂ => exact congrArg₂ (· + ·) (ih₁ hs.1) (ih₂ hs.2)
+  | seq _ _ ih₁ ih₂ =>
+    obtain ⟨h1, h2⟩ := ih₁ hs.1
+    obtain ⟨h3, h4⟩ := ih₂ hs.2
+    simp only [Stmt.staticSpace] at *
+    omega
+  | bufPop => simp only [Stmt.staticSpace, Array.size_pop]; omega
   | ifNZ_true | ifNZ_false | while_done | while_step => exact hs.elim
-  | _ => rfl
+  | _ => simp only [Stmt.staticSpace]; omega
 
-/-- Corollary: two runs of the same branch-free program cost the same, whatever their
-inputs. (This is also a constant-time / side-channel statement.) -/
-theorem Exec.straight_data_independent {C : CostModel} {c : Stmt w} {s₁ s₁' s₂ s₂' : State w}
-    {t₁ m₁ t₂ m₂ : ℕ} (h₁ : Exec C c s₁ s₁' t₁ m₁) (h₂ : Exec C c s₂ s₂' t₂ m₂)
-    (hs : c.Straight) : t₁ = t₂ ∧ m₁ = m₂ :=
-  ⟨(h₁.straight_time_eq hs).trans (h₂.straight_time_eq hs).symm,
-   (h₁.straight_space_eq hs).trans (h₂.straight_space_eq hs).symm⟩
+/-- Corollary: two runs of the same branch-free program take the same time, whatever
+their inputs. (This is also a constant-time / side-channel statement.) -/
+theorem Exec.straight_data_independent {C : CostModel} {c : Stmt w}
+    {s₁ s₁' s₂ s₂' : State w} {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
+    (h₁ : Exec C c s₁ s₁' t₁ d₁ p₁) (h₂ : Exec C c s₂ s₂' t₂ d₂ p₂)
+    (hs : c.Straight) : t₁ = t₂ :=
+  (h₁.straight_time_eq hs).trans (h₂.straight_time_eq hs).symm
 
 /-! ## Reference interpreter
 
@@ -501,113 +531,120 @@ recursive call consumes one unit, so any `fuel ≥` statement depth × loop trip
 suffices); `none` means "ran out of fuel, or hit an out-of-range buffer access".
 Fuel is an interpreter artifact only — no cost is derived from it. -/
 
-def run (C : CostModel) : ℕ → Stmt w → State w → Option (State w × ℕ × ℕ)
+def run (C : CostModel) : ℕ → Stmt w → State w → Option (State w × ℕ × ℤ × ℤ)
   | 0, _, _ => none
   | f + 1, c, s =>
     match c with
-    | .skip => some (s, 0, 0)
+    | .skip => some (s, 0, 0, 0)
     | .seq c₁ c₂ => do
-        let (s₁, t₁, m₁) ← run C f c₁ s
-        let (s₂, t₂, m₂) ← run C f c₂ s₁
-        some (s₂, t₁ + t₂, m₁ + m₂)
-    | .imm d v => some (s.setReg d v, C.imm, 0)
-    | .mov d a => some (s.setReg d (s.regs a), C.mov, 0)
-    | .un op d a => some (s.setReg d (op.eval (s.regs a)), C.un op, 0)
-    | .bin op d a b => some (s.setReg d (op.eval (s.regs a) (s.regs b)), C.bin op, 0)
-    | .bufNew b => some (s.setBuf b #[], C.bufNew, 0)
-    | .bufLen d b => some (s.setReg d (BitVec.ofNat w (s.bufs b).size), C.bufLen, 0)
+        let (s₁, t₁, d₁, p₁) ← run C f c₁ s
+        let (s₂, t₂, d₂, p₂) ← run C f c₂ s₁
+        some (s₂, t₁ + t₂, d₁ + d₂, max p₁ (d₁ + p₂))
+    | .imm d v => some (s.setReg d v, C.imm, 0, 0)
+    | .mov d a => some (s.setReg d (s.regs a), C.mov, 0, 0)
+    | .un op d a => some (s.setReg d (op.eval (s.regs a)), C.un op, 0, 0)
+    | .bin op d a b =>
+        some (s.setReg d (op.eval (s.regs a) (s.regs b)), C.bin op, 0, 0)
+    | .bufNew b => some (s.setBuf b #[], C.bufNew, -((s.bufs b).size : ℤ), 0)
+    | .bufLen d b =>
+        some (s.setReg d (BitVec.ofNat w (s.bufs b).size), C.bufLen, 0, 0)
     | .bufGet d b i =>
         if h : (s.regs i).toNat < (s.bufs b).size then
-          some (s.setReg d (s.bufs b)[(s.regs i).toNat], C.bufGet, 0)
+          some (s.setReg d (s.bufs b)[(s.regs i).toNat], C.bufGet, 0, 0)
         else none
     | .bufSet b i src =>
         if h : (s.regs i).toNat < (s.bufs b).size then
-          some (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) h), C.bufSet, 0)
+          some (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) h),
+            C.bufSet, 0, 0)
         else none
-    | .bufPush b src => some (s.setBuf b ((s.bufs b).push (s.regs src)), C.bufPush, 1)
-    | .bufPop b => some (s.setBuf b (s.bufs b).pop, C.bufPop, 0)
+    | .bufPush b src =>
+        some (s.setBuf b ((s.bufs b).push (s.regs src)), C.bufPush, 1, 1)
+    | .bufPop b =>
+        some (s.setBuf b (s.bufs b).pop, C.bufPop,
+          ((s.bufs b).pop.size : ℤ) - ((s.bufs b).size : ℤ), 0)
     | .ifNZ c thn els =>
         if s.regs c = 0 then do
-          let (s', t, m) ← run C f els s
-          some (s', C.branch + t, m)
+          let (s', t, d, p) ← run C f els s
+          some (s', C.branch + t, d, p)
         else do
-          let (s', t, m) ← run C f thn s
-          some (s', C.branch + t, m)
+          let (s', t, d, p) ← run C f thn s
+          some (s', C.branch + t, d, p)
     | .whileNZ g cc b => do
-        let (s₁, tg, mg) ← run C f g s
+        let (s₁, tg, dg, pg) ← run C f g s
         if s₁.regs cc = 0 then
-          some (s₁, tg + C.branch, mg)
+          some (s₁, tg + C.branch, dg, pg)
         else do
-          let (s₂, tb, mb) ← run C f b s₁
-          let (s₃, tl, ml) ← run C f (.whileNZ g cc b) s₂
-          some (s₃, tg + C.branch + tb + tl, mg + mb + ml)
+          let (s₂, tb, db, pb) ← run C f b s₁
+          let (s₃, tl, dl, pl) ← run C f (.whileNZ g cc b) s₂
+          some (s₃, tg + C.branch + tb + tl, dg + db + dl,
+            max pg (dg + max pb (db + pl)))
 
 /-- The interpreter is sound: anything it computes is a real execution, with exactly
 the costs it reports. So `#eval`-ing a program gives numbers that the `Exec`-level
 theorems are about. -/
-theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} {t m : ℕ},
-    run C f c s = some (s', t, m) → Exec C c s s' t m := by
+theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} {t : ℕ} {d p : ℤ},
+    run C f c s = some (s', t, d, p) → Exec C c s s' t d p := by
   intro f
   induction f with
-  | zero => intro c s s' t m h; simp [run] at h
+  | zero => intro c s s' t d p h; simp [run] at h
   | succ f ih =>
-    intro c s s' t m h
+    intro c s s' t d p h
     match c with
     | .skip =>
       simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl⟩ := h; exact .skip
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .skip
     | .seq c₁ c₂ =>
       simp only [run] at h
       cases h₁ : run C f c₁ s with
       | none => simp [h₁] at h
       | some r₁ =>
-        obtain ⟨s₁, t₁, m₁⟩ := r₁
+        obtain ⟨s₁, t₁, d₁, p₁⟩ := r₁
         simp only [h₁, Option.bind_eq_bind, Option.bind_some] at h
         cases h₂ : run C f c₂ s₁ with
         | none => simp [h₂] at h
         | some r₂ =>
-          obtain ⟨s₂, t₂, m₂⟩ := r₂
+          obtain ⟨s₂, t₂, d₂, p₂⟩ := r₂
           simp only [h₂, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
-          obtain ⟨rfl, rfl, rfl⟩ := h
+          obtain ⟨rfl, rfl, rfl, rfl⟩ := h
           exact .seq (ih _ h₁) (ih _ h₂)
     | .imm d v =>
       simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl⟩ := h; exact .imm
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .imm
     | .mov d a =>
       simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl⟩ := h; exact .mov
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .mov
     | .un op d a =>
       simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl⟩ := h; exact .un
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .un
     | .bin op d a b =>
       simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl⟩ := h; exact .bin
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .bin
     | .bufNew b =>
       simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl⟩ := h; exact .bufNew
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .bufNew
     | .bufLen d b =>
       simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl⟩ := h; exact .bufLen
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .bufLen
     | .bufGet d b i =>
       simp only [run] at h
       split at h
       · simp only [Option.some.injEq] at h
-        obtain ⟨rfl, rfl, rfl⟩ := h
+        obtain ⟨rfl, rfl, rfl, rfl⟩ := h
         exact .bufGet ‹_›
       · exact absurd h (by simp)
     | .bufSet b i src =>
       simp only [run] at h
       split at h
       · simp only [Option.some.injEq] at h
-        obtain ⟨rfl, rfl, rfl⟩ := h
+        obtain ⟨rfl, rfl, rfl, rfl⟩ := h
         exact .bufSet ‹_›
       · exact absurd h (by simp)
     | .bufPush b src =>
       simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl⟩ := h; exact .bufPush
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .bufPush
     | .bufPop b =>
       simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl⟩ := h; exact .bufPop
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .bufPop
     | .ifNZ c thn els =>
       simp only [run] at h
       by_cases hc : s.regs c = 0
@@ -615,42 +652,42 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
         cases h₁ : run C f els s with
         | none => simp [h₁] at h
         | some r₁ =>
-          obtain ⟨s₁, t₁, m₁⟩ := r₁
+          obtain ⟨s₁, t₁, d₁, p₁⟩ := r₁
           simp only [h₁, Option.bind_eq_bind, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
-          obtain ⟨rfl, rfl, rfl⟩ := h
+          obtain ⟨rfl, rfl, rfl, rfl⟩ := h
           exact .ifNZ_false hc (ih _ h₁)
       · rw [if_neg hc] at h
         cases h₁ : run C f thn s with
         | none => simp [h₁] at h
         | some r₁ =>
-          obtain ⟨s₁, t₁, m₁⟩ := r₁
+          obtain ⟨s₁, t₁, d₁, p₁⟩ := r₁
           simp only [h₁, Option.bind_eq_bind, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
-          obtain ⟨rfl, rfl, rfl⟩ := h
+          obtain ⟨rfl, rfl, rfl, rfl⟩ := h
           exact .ifNZ_true hc (ih _ h₁)
     | .whileNZ g cc b =>
       simp only [run] at h
       cases hg : run C f g s with
       | none => simp [hg] at h
       | some rg =>
-        obtain ⟨s₁, tg, mg⟩ := rg
+        obtain ⟨s₁, tg, dg, pg⟩ := rg
         simp only [hg, Option.bind_eq_bind, Option.bind_some] at h
         by_cases hz : s₁.regs cc = 0
         · rw [if_pos hz] at h
           simp only [Option.some.injEq, Prod.mk.injEq] at h
-          obtain ⟨rfl, rfl, rfl⟩ := h
+          obtain ⟨rfl, rfl, rfl, rfl⟩ := h
           exact .while_done (ih _ hg) hz
         · rw [if_neg hz] at h
           cases hb : run C f b s₁ with
           | none => simp [hb] at h
           | some rb =>
-            obtain ⟨s₂, tb, mb⟩ := rb
+            obtain ⟨s₂, tb, db, pb⟩ := rb
             simp only [hb, Option.bind_some] at h
             cases hl : run C f (.whileNZ g cc b) s₂ with
             | none => simp [hl] at h
             | some rl =>
-              obtain ⟨s₃, tl, ml⟩ := rl
+              obtain ⟨s₃, tl, dl, pl⟩ := rl
               simp only [hl, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
-              obtain ⟨rfl, rfl, rfl⟩ := h
+              obtain ⟨rfl, rfl, rfl, rfl⟩ := h
               exact .while_step (ih _ hg) hz (ih _ hb) (ih _ hl)
 
 end LowLevel

@@ -4,19 +4,22 @@ import Clean.LowLevel.Builder
 /-!
 # Worked examples
 
-Four programs, in increasing order of interest:
+Five programs, in increasing order of interest:
 
 1. `swapCode` — straight-line code: functional spec, *exact* constant time from the
    syntax alone, and the data-independence (constant-time) corollary.
 2. `SumBuf` — a loop reading a buffer: functional correctness (the register really
-   holds the sum), a linear *upper bound* on time, zero allocation.
-3. `Iota` — a loop that allocates: the memory bound is the interesting part.
-4. `SumTwo` — composition: two calls of the `SumBuf` subroutine glued together, where
+   holds the sum), a linear *upper bound* on time, zero memory.
+3. `Iota` — a loop that allocates: net and peak memory grow linearly.
+4. `ScratchLoop` — a loop that *reuses* memory: each iteration pushes and pops, so
+   the peak is **1 word regardless of the trip count**. This is what the (net, peak)
+   memory profile buys over counting allocations.
+5. `SumTwo` — composition: two calls of the `SumBuf` subroutine glued together, where
    the "separation" reasoning is `simp` on syntactic footprints (`Writes`/`Touches`) —
    no separation logic.
 
 At the end, the builder surface syntax is connected to the hand-written core syntax by
-`rfl`, and `#eval` runs the reference interpreter against the proved bounds.
+evaluation, and `#eval` runs the reference interpreter against the proved bounds.
 -/
 
 namespace LowLevel.Examples
@@ -70,23 +73,23 @@ def swapCode : Stmt w := .mov 2 0 ;; .mov 0 1 ;; .mov 1 2
 for every input. -/
 theorem swapCode_spec {C : CostModel} (a b : Word w) :
     Triple C (fun s => s.regs 0 = a ∧ s.regs 1 = b) (swapCode (w := w))
-      (fun s => s.regs 0 = b ∧ s.regs 1 = a) (3 * C.mov) 0 := by
+      (fun s => s.regs 0 = b ∧ s.regs 1 = a) (3 * C.mov) 0 0 := by
   have h1 : Triple C (fun s => s.regs 0 = a ∧ s.regs 1 = b) (.mov 2 0)
-      (fun s => s.regs 1 = b ∧ s.regs 2 = a) C.mov 0 :=
+      (fun s => s.regs 1 = b ∧ s.regs 2 = a) C.mov 0 0 :=
     Triple.mov fun s hs => by simp [hs.1, hs.2]
   have h2 : Triple C (fun s => s.regs 1 = b ∧ s.regs 2 = a) (.mov 0 1)
-      (fun s => s.regs 0 = b ∧ s.regs 2 = a) C.mov 0 :=
+      (fun s => s.regs 0 = b ∧ s.regs 2 = a) C.mov 0 0 :=
     Triple.mov fun s hs => by simp [hs.1, hs.2]
   have h3 : Triple C (fun s => s.regs 0 = b ∧ s.regs 2 = a) (.mov 1 2)
-      (fun s => s.regs 0 = b ∧ s.regs 1 = a) C.mov 0 :=
+      (fun s => s.regs 0 = b ∧ s.regs 1 = a) C.mov 0 0 :=
     Triple.mov fun s hs => by simp [hs.1, hs.2]
   exact (h1.seq (h2.seq h3)).conseq (fun _ h => h) (fun _ h => h)
-    (le_of_eq (by ring)) (le_of_eq (by ring))
+    (le_of_eq (by ring)) (by omega) (by omega)
 
 /-- The time is not merely bounded — it is *equal* to the syntactic constant, on every
 input. This is the theorem that gives "unit time per instruction" its meaning. -/
-theorem swapCode_time {C : CostModel} {s s' : State w} {t m : ℕ}
-    (h : Exec C swapCode s s' t m) : t = 3 * C.mov := by
+theorem swapCode_time {C : CostModel} {s s' : State w} {t : ℕ} {d p : ℤ}
+    (h : Exec C swapCode s s' t d p) : t = 3 * C.mov := by
   have := h.straight_time_eq ⟨trivial, trivial, trivial⟩
   simp only [swapCode, Stmt.staticTime] at this
   omega
@@ -94,9 +97,9 @@ theorem swapCode_time {C : CostModel} {s s' : State w} {t m : ℕ}
 /-- Constant-time in the side-channel sense: two runs on unrelated inputs cost the
 same. -/
 theorem swapCode_data_independent {C : CostModel} {s₁ s₁' s₂ s₂' : State w}
-    {t₁ m₁ t₂ m₂ : ℕ} (h₁ : Exec C swapCode s₁ s₁' t₁ m₁)
-    (h₂ : Exec C swapCode s₂ s₂' t₂ m₂) : t₁ = t₂ :=
-  (h₁.straight_data_independent h₂ ⟨trivial, trivial, trivial⟩).1
+    {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ} (h₁ : Exec C swapCode s₁ s₁' t₁ d₁ p₁)
+    (h₂ : Exec C swapCode s₂ s₂' t₂ d₂ p₂) : t₁ = t₂ :=
+  h₁.straight_data_independent h₂ ⟨trivial, trivial, trivial⟩
 
 /-! ## Example 2: summing a buffer — linear time, zero allocation
 
@@ -153,10 +156,10 @@ theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
     (hsz : arr.size < 2 ^ w) :
     Triple C (fun s => s.bufs xs = arr) (code xs)
       (fun s => s.regs 0 = sumTo arr arr.size)
-      (timeBound C arr.size) 0 := by
+      (timeBound C arr.size) 0 0 := by
   -- the guard: one `ult`, leaving the verdict in r3
   have hguard : ∀ k, Triple C (Inv xs arr k) (.bin .ult 3 1 2) (InvG xs arr k)
-      (C.bin .ult) 0 := by
+      (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
     rintro s ⟨hb, hlen, hik, hacc⟩
@@ -175,12 +178,12 @@ theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
   have hbody : ∀ k, Triple C (fun s => InvG xs arr (k + 1) s ∧ s.regs 3 ≠ 0)
       (.bufGet 4 xs 1 ;; .bin .add 0 0 4 ;; .imm 5 1 ;; .bin .add 1 1 5)
       (Inv xs arr k)
-      (C.bufGet + (C.bin .add + (C.imm + C.bin .add))) 0 := by
+      (C.bufGet + (C.bin .add + (C.imm + C.bin .add))) 0 0 := by
     rintro k s ⟨⟨⟨hb, hlen, hik, hacc⟩, hflag⟩, hnz⟩
     have hlt : (s.regs 1).toNat < arr.size := cond_of_flag_ne hflag hnz
     have hltb : (s.regs 1).toNat < (s.bufs xs).size := by rw [hb]; exact hlt
-    refine ⟨_, _, _, .seq (.bufGet hltb) (.seq .bin (.seq .imm .bin)),
-      ⟨?_, ?_, ?_, ?_⟩, le_refl _, by omega⟩
+    refine ⟨_, _, _, _, .seq (.bufGet hltb) (.seq .bin (.seq .imm .bin)),
+      ⟨?_, ?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
     · simp [hb]
     · simp [hlen]
     · simp [-BitVec.toNat_add]
@@ -191,13 +194,13 @@ theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
       simp [sumTo, hlt, hacc]
   -- prologue
   have h1 : Triple C (fun s => s.bufs xs = arr) (.imm 0 0)
-      (fun s => s.bufs xs = arr ∧ s.regs 0 = 0) C.imm 0 :=
+      (fun s => s.bufs xs = arr ∧ s.regs 0 = 0) C.imm 0 0 :=
     Triple.imm fun s hs => by simp [hs]
   have h2 : Triple C (fun s => s.bufs xs = arr ∧ s.regs 0 = 0) (.imm 1 0)
-      (fun s => s.bufs xs = arr ∧ s.regs 0 = 0 ∧ s.regs 1 = 0) C.imm 0 :=
+      (fun s => s.bufs xs = arr ∧ s.regs 0 = 0 ∧ s.regs 1 = 0) C.imm 0 0 :=
     Triple.imm fun s hs => by simp [hs.1, hs.2]
   have h3 : Triple C (fun s => s.bufs xs = arr ∧ s.regs 0 = 0 ∧ s.regs 1 = 0)
-      (.bufLen 2 xs) (Inv xs arr arr.size) C.bufLen 0 := by
+      (.bufLen 2 xs) (Inv xs arr arr.size) C.bufLen 0 0 := by
     apply Triple.bufLen
     rintro s ⟨hb, h0, h1'⟩
     refine ⟨?_, ?_, ?_, ?_⟩
@@ -208,7 +211,7 @@ theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
   -- assemble
   have hW := Triple.whileNZ_measure hguard hpos hbody arr.size
   refine ((h1.seq (h2.seq (h3.seq hW))).conseq (fun _ h => h) ?_
-    (le_of_eq (by unfold timeBound; ring)) (le_of_eq (by ring)))
+    (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp))
   -- exit: flag down means the index reached the length
   rintro s ⟨k', ⟨⟨hb, hlen, hik, hacc⟩, hflag⟩, hzero⟩
   by_cases hc : (s.regs 1).toNat < arr.size
@@ -221,9 +224,9 @@ theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
 /-- The bound specialized to the uniform cost model: `6n + 5` steps. -/
 theorem spec_unit (xs : BufId) (arr : Array (Word w)) (hsz : arr.size < 2 ^ w) :
     Triple .unit (fun s => s.bufs xs = arr) (code xs)
-      (fun s => s.regs 0 = sumTo arr arr.size) (6 * arr.size + 5) 0 :=
+      (fun s => s.regs 0 = sumTo arr arr.size) (6 * arr.size + 5) 0 0 :=
   (spec xs arr hsz).weaken
-    (by unfold timeBound CostModel.unit; simp; omega) (le_refl _)
+    (by unfold timeBound CostModel.unit; simp; omega) (le_refl _) (le_refl _)
 
 end SumBuf
 
@@ -273,9 +276,9 @@ example — **at most `n` words are ever allocated**. -/
 theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code b)
       (fun s => s.bufs b = iotaTo w n)
-      (timeBound C n) n := by
+      (timeBound C n) n ((n : ℤ) + 1) := by
   have hguard : ∀ k, Triple C (Inv (w := w) b n k) (.bin .ult 1 0 2)
-      (InvG (w := w) b n k) (C.bin .ult) 0 := by
+      (InvG (w := w) b n k) (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
     rintro s ⟨hlim, hik, hbuf⟩
@@ -291,11 +294,11 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
   have hbody : ∀ k, Triple C (fun (s : State w) => InvG b n (k + 1) s ∧ s.regs 1 ≠ 0)
       (.bufPush b 0 ;; .imm 3 1 ;; .bin .add 0 0 3)
       (Inv b n k)
-      (C.bufPush + (C.imm + C.bin .add)) 1 := by
+      (C.bufPush + (C.imm + C.bin .add)) 1 1 := by
     rintro k s ⟨⟨⟨hlim, hik, hbuf⟩, hflag⟩, hnz⟩
     have hlt : (s.regs 0).toNat < n := cond_of_flag_ne hflag hnz
-    refine ⟨_, _, _, .seq .bufPush (.seq .imm .bin),
-      ⟨?_, ?_, ?_⟩, le_refl _, by omega⟩
+    refine ⟨_, _, _, _, .seq .bufPush (.seq .imm .bin),
+      ⟨?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
     · simp [hlim]
     · simp [-BitVec.toNat_add]
       rw [toNat_add_ofNat_one hlt hn]
@@ -304,10 +307,10 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
       rw [toNat_add_ofNat_one hlt hn]
       simp [iotaTo]
   have h1 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.bufNew b)
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs b = #[]) C.bufNew 0 :=
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs b = #[]) C.bufNew 0 0 :=
     Triple.bufNew fun s hs => by simp [hs]
   have h2 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs b = #[])
-      (.imm 0 0) (Inv b n n) C.imm 0 := by
+      (.imm 0 0) (Inv b n n) C.imm 0 0 := by
     apply Triple.imm
     rintro s ⟨hlim, hbuf⟩
     refine ⟨?_, ?_, ?_⟩
@@ -316,7 +319,7 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     · simp [hbuf, iotaTo]
   have hW := Triple.whileNZ_measure hguard hpos hbody n
   refine ((h1.seq (h2.seq hW)).conseq (fun _ h => h) ?_
-    (le_of_eq (by unfold timeBound; ring)) (le_of_eq (by ring)))
+    (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp; omega))
   rintro s ⟨k', ⟨⟨hlim, hik, hbuf⟩, hflag⟩, hzero⟩
   by_cases hc : (s.regs 0).toNat < n
   · exfalso
@@ -327,7 +330,100 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
 
 end Iota
 
-/-! ## Example 4: composition — subroutine calls without separation logic
+/-! ## Example 4: memory reuse — peak 1 regardless of trip count
+
+Each iteration pushes a word into a scratch buffer and pops it again. Counting
+allocations would report `n` words for `n` iterations; the (net, peak) profile sees
+that every iteration's net is 0, so the whole loop peaks at **1 word**, independent of
+`n`. `Triple.bufPop'` (pop on a known-nonempty buffer, net `-1`) is what pays the
+push back.
+
+Registers: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1. -/
+
+namespace ScratchLoop
+
+/--
+```c
+s = []; i = 0;
+while (i < n) { s.push(i); s.pop(); i += 1; }
+```
+`n` is passed in `r2`. -/
+def code (sb : BufId) : Stmt w :=
+  .bufNew sb ;;
+  .imm 0 0 ;;
+  .whileNZ (.bin .ult 1 0 2) 1
+    (.bufPush sb 0 ;;
+     .bufPop sb ;;
+     .imm 3 1 ;;
+     .bin .add 0 0 3)
+
+def Inv (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
+  s.regs 2 = BitVec.ofNat w n ∧
+  (s.regs 0).toNat + k = n ∧
+  s.bufs sb = #[]
+
+def InvG (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
+  Inv sb n k s ∧
+  s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
+
+def timeBound (C : CostModel) (n : ℕ) : ℕ :=
+  C.bufNew + C.imm + (n + 1) * (C.bin .ult + C.branch)
+    + n * (C.bufPush + C.bufPop + C.imm + C.bin .add)
+
+/-- Linear time — and net memory 0, **peak memory 1**, for any `n`. -/
+theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
+    Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code sb)
+      (fun s => s.bufs sb = #[])
+      (timeBound C n) 0 1 := by
+  have hguard : ∀ k, Triple C (Inv (w := w) sb n k) (.bin .ult 1 0 2)
+      (InvG (w := w) sb n k) (C.bin .ult) 0 0 := by
+    intro k
+    apply Triple.bin
+    rintro s ⟨hlim, hik, hbuf⟩
+    refine ⟨⟨?_, ?_, ?_⟩, ?_⟩
+    · simp [hlim]
+    · simp [hik]
+    · simp [hbuf]
+    · simp [hlim, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hn]
+  have hpos : ∀ k (s : State w), InvG sb n k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
+    rintro k s ⟨⟨hlim, hik, hbuf⟩, hflag⟩ hnz
+    have hlt := cond_of_flag_ne hflag hnz
+    exact ⟨k - 1, by omega⟩
+  have hbody : ∀ k, Triple C (fun (s : State w) => InvG sb n (k + 1) s ∧ s.regs 1 ≠ 0)
+      (.bufPush sb 0 ;; .bufPop sb ;; .imm 3 1 ;; .bin .add 0 0 3)
+      (Inv sb n k)
+      (C.bufPush + (C.bufPop + (C.imm + C.bin .add))) 0 1 := by
+    rintro k s ⟨⟨⟨hlim, hik, hbuf⟩, hflag⟩, hnz⟩
+    have hlt : (s.regs 0).toNat < n := cond_of_flag_ne hflag hnz
+    refine ⟨_, _, _, _, .seq .bufPush (.seq .bufPop (.seq .imm .bin)),
+      ⟨?_, ?_, ?_⟩, le_refl _, ?_, ?_⟩
+    · simp [hlim]
+    · simp [-BitVec.toNat_add, hbuf]
+      rw [toNat_add_ofNat_one hlt hn]
+      omega
+    · simp [hbuf]
+    · simp [hbuf]
+    · simp [hbuf]
+  have h1 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.bufNew sb)
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs sb = #[]) C.bufNew 0 0 :=
+    Triple.bufNew fun s hs => by simp [hs]
+  have h2 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs sb = #[])
+      (.imm 0 0) (Inv sb n n) C.imm 0 0 := by
+    apply Triple.imm
+    rintro s ⟨hlim, hbuf⟩
+    refine ⟨?_, ?_, ?_⟩
+    · simp [hlim]
+    · simp
+    · simp [hbuf]
+  have hW := Triple.whileNZ_measure hguard hpos hbody n
+  refine ((h1.seq (h2.seq hW)).conseq (fun _ h => h) ?_
+    (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp))
+  rintro s ⟨k', ⟨⟨_, _, hbuf⟩, _⟩, _⟩
+  exact hbuf
+
+end ScratchLoop
+
+/-! ## Example 5: composition — subroutine calls without separation logic
 
 `SumBuf.code` is used twice, on two different buffers, and the two results are added.
 The proof composes the two `SumBuf.spec` instances; the only "separation" facts are
@@ -349,7 +445,7 @@ theorem spec {C : CostModel} (xs ys : BufId)
     Triple C (fun s => s.bufs xs = arrX ∧ s.bufs ys = arrY) (code xs ys)
       (fun s => s.regs 0 = SumBuf.sumTo arrY arrY.size + SumBuf.sumTo arrX arrX.size)
       (SumBuf.timeBound C arrX.size + SumBuf.timeBound C arrY.size
-        + C.mov + C.bin .add) 0 := by
+        + C.mov + C.bin .add) 0 0 := by
   -- first sum; buffer `ys` framed across it (SumBuf.code touches no buffer at all)
   have h1 := (SumBuf.spec (C := C) xs arrX hx).frame_buf (b := ys) (arr := arrY)
     (by simp [SumBuf.code, Stmt.Touches])
@@ -358,7 +454,7 @@ theorem spec {C : CostModel} (xs ys : BufId)
       (fun s => s.regs 0 = SumBuf.sumTo arrX arrX.size ∧ s.bufs ys = arrY)
       (.mov 6 0)
       (fun s => s.bufs ys = arrY ∧ s.regs 6 = SumBuf.sumTo arrX arrX.size)
-      C.mov 0 :=
+      C.mov 0 0 :=
     Triple.mov fun s hs => by simp [hs.1, hs.2]
   -- second sum; the saved register framed across it (r6 is never written)
   have h3 := (SumBuf.spec (C := C) ys arrY hy).frame_reg (r := 6)
@@ -370,10 +466,10 @@ theorem spec {C : CostModel} (xs ys : BufId)
       (.bin .add 0 0 6)
       (fun s => s.regs 0 = SumBuf.sumTo arrY arrY.size
         + SumBuf.sumTo arrX arrX.size)
-      (C.bin .add) 0 :=
+      (C.bin .add) 0 0 :=
     Triple.bin fun s hs => by simp [hs.1, hs.2]
   exact ((h1.seq (h2.seq (h3.seq h4))).conseq (fun _ h => h) (fun _ h => h)
-    (le_of_eq (by ring)) (le_of_eq (by ring)))
+    (le_of_eq (by ring)) (by omega) (by omega))
 
 end SumTwo
 
@@ -402,29 +498,60 @@ def sumB (xs : BufId) : Build w Reg := do
 /-! ## Executable
 
 The interpreter runs the same programs the theorems are about (`run_sound`), so the
-numbers below are instances of the proved bounds: summing a 3-element buffer takes
-`23 = 6*3 + 5` unit-cost steps and allocates nothing; `iota 5` takes `29 = 5*5 + 4`
-steps and allocates exactly 5 words — both bounds are met with equality here. -/
+numbers below are instances of the proved bounds. Each result is
+`(value, time, net memory, peak memory)`: summing a 3-element buffer takes
+`23 = 6*3 + 5` unit-cost steps and touches no memory; `iota 5` nets and peaks at 5
+words; the scratch loop runs 100 iterations and **peaks at 1 word**. -/
 
 /-- Initial state with `#[3, 5, 9]` in buffer 0. -/
 def demoState : State 64 :=
   { State.init 64 with bufs := fun b => if b = 0 then #[3, 5, 9] else #[] }
 
-/-- Sum: expect value 17, time 23, allocation 0. -/
-def demoSum : Option (Word 64 × ℕ × ℕ) :=
-  (run .unit 1000 (SumBuf.code 0) demoState).map fun (s, t, m) => (s.regs 0, t, m)
+/-- Sum: expect value 17, time 23, memory (0, 0). -/
+def demoSum : Option (Word 64 × ℕ × ℤ × ℤ) :=
+  (run .unit 1000 (SumBuf.code 0) demoState).map fun (s, t, d, p) => (s.regs 0, t, d, p)
 
-/-- Iota 5: expect buffer `#[0,1,2,3,4]`, allocation 5. -/
-def demoIota : Option (Array (Word 64) × ℕ × ℕ) :=
+/-- Iota 5: expect buffer `#[0,1,2,3,4]`, memory (5, 5). -/
+def demoIota : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
   (run .unit 1000 (Iota.code 0)
-      ((State.init 64).setReg 2 5)).map fun (s, t, m) => (s.bufs 0, t, m)
+      ((State.init 64).setReg 2 5)).map fun (s, t, d, p) => (s.bufs 0, t, d, p)
 
-/-- info: some (17#64, 23, 0) -/
+/-- Scratch loop, 100 iterations: expect net 0, **peak 1**. -/
+def demoScratch : Option (ℕ × ℤ × ℤ) :=
+  (run .unit 1000 (ScratchLoop.code 0)
+      ((State.init 64).setReg 2 100)).map fun (_, t, d, p) => (t, d, p)
+
+/-- info: some (17#64, 23, 0, 0) -/
 #guard_msgs in
 #eval demoSum
 
-/-- info: some (#[0#64, 1#64, 2#64, 3#64, 4#64], 29, 5) -/
+/-- info: some (#[0#64, 1#64, 2#64, 3#64, 4#64], 29, 5, 5) -/
 #guard_msgs in
 #eval demoIota
+
+/-- info: some (604, 0, 1) -/
+#guard_msgs in
+#eval demoScratch
+
+/-! ### Product types
+
+`PairBuf` (see `Builder.lean`) is an array-of-structs: one buffer, stride 2. Field
+access is compiled index arithmetic, so its cost is ordinary instruction cost. The
+demo pushes two pairs, reads `fst 1` (= 30) and `snd 0` (= 20), and returns their
+sum: value 50, and memory (4, 4) — two pairs, four words. -/
+
+def pairDemo : Option (Word 64 × ℤ × ℤ) :=
+  let (r, prog) := Build.build (w := 64) do
+    let pb ← Build.mkPairBuf
+    pb.push 10 20
+    pb.push 30 40
+    let x ← pb.fst 1
+    let y ← pb.snd 0
+    Build.var ((x : Exp 64) + y)
+  (run .unit 1000 prog (State.init 64)).map fun (s, _, d, p) => (s.regs r, d, p)
+
+/-- info: some (50#64, 4, 4) -/
+#guard_msgs in
+#eval pairDemo
 
 end LowLevel.Examples
