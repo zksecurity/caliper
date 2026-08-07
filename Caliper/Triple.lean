@@ -11,18 +11,18 @@ derivation exists), the result satisfies `Q`, and
 * net live-memory change `d ≤ D` (signed: freeing gives memory back),
 * peak live-memory growth `p ≤ M`.
 
-Bounding the *pair* (net, peak) rather than a single allocation counter is what makes
-memory reuse visible: sequencing composes peaks as `max M₁ (D₁ + M₂)`, so a block
-whose net is zero (push then pop, or reset-and-refill) contributes its peak once, not
-once per occurrence. The `whileNZ_measure` rule below exploits exactly this: a loop
-whose iteration net is `≤ 0` has a peak bound independent of the trip count.
+Live memory is the sum of reserved capacities: only `bufAlloc` charges and only
+`bufFree` credits; push/pop move the fill level inside capacity already paid for.
+Bounding the *pair* (net, peak) is what makes reuse compose: sequencing peaks as
+`max M₁ (D₁ + M₂)` means an alloc…free block (net 0, via `bufFree'`) contributes its
+peak once, not once per occurrence, and `whileNZ_measure` gives loops whose iteration
+net is `≤ 0` a peak bound independent of the trip count.
 
 Bounds are `≤` throughout, so specs stay simple and weakening is free. The rules are
 the complete proof system used by the examples: one rule per instruction
-(`bufGet`/`bufSet` demand the index be in range — memory-safety obligations;
-`bufPop'` is the variant that knows the buffer is nonempty and so credits the freed
-word), `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule, and decidable-side-
-condition frame rules replacing separation logic.
+(`bufGet`/`bufSet` demand the index in range, `bufPush` demands free capacity —
+the memory-safety obligations), `seq`/`conseq`/`ifNZ`, the measure-indexed loop
+rule, and decidable-side-condition frame rules replacing separation logic.
 -/
 
 namespace LowLevel
@@ -89,11 +89,30 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
     Triple C P (.bin op d a b) Q (C.bin op) 0 0 :=
   fun s hs => ⟨_, _, _, _, .bin, h s hs, le_refl _, le_refl _, le_refl _⟩
 
-/-- Resetting a buffer only frees memory (`D = 0` is safe without knowing the old
-size; the semantics records the actual negative net). -/
-protected theorem bufNew {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → Q (s.setBuf b #[])) : Triple C P (.bufNew b) Q C.bufNew 0 0 :=
-  fun s hs => ⟨_, _, _, _, .bufNew, h s hs, le_refl _, by omega, le_refl _⟩
+/-- Reserve capacity. The caller supplies an upper bound `N` on the charged amount
+(`newCap - oldCap`); with no knowledge of the old capacity, `N = newCap` works, since
+capacities are nonnegative. -/
+protected theorem bufAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℤ}
+    (h : ∀ s, P s → (((s.regs n).toNat : ℤ) - (s.caps b : ℤ) ≤ N)
+      ∧ Q (s.allocBuf b (s.regs n).toNat)) :
+    Triple C P (.bufAlloc b n) Q C.bufAlloc N (max N 0) := by
+  intro s hs
+  obtain ⟨hN, hq⟩ := h s hs
+  exact ⟨_, _, _, _, .bufAlloc, hq, le_refl _, hN, by omega⟩
+
+/-- Free a buffer: never charges memory. -/
+protected theorem bufFree {P Q : State w → Prop} {b : BufId}
+    (h : ∀ s, P s → Q (s.allocBuf b 0)) : Triple C P (.bufFree b) Q C.bufFree 0 0 :=
+  fun s hs => ⟨_, _, _, _, .bufFree, h s hs, le_refl _, by omega, le_refl _⟩
+
+/-- Free with a known lower bound `K` on the capacity being released: credits `-K`.
+This is the rule that makes an alloc…free block's net vanish. -/
+protected theorem bufFree' {P Q : State w → Prop} {b : BufId} {K : ℕ}
+    (h : ∀ s, P s → K ≤ s.caps b ∧ Q (s.allocBuf b 0)) :
+    Triple C P (.bufFree b) Q C.bufFree (-(K : ℤ)) 0 := by
+  intro s hs
+  obtain ⟨hK, hq⟩ := h s hs
+  exact ⟨_, _, _, _, .bufFree, hq, le_refl _, by omega, le_refl _⟩
 
 protected theorem bufLen {P Q : State w → Prop} {d : Reg} {b : BufId}
     (h : ∀ s, P s → Q (s.setReg d (BitVec.ofNat w (s.bufs b).size))) :
@@ -118,31 +137,22 @@ protected theorem bufSet {P Q : State w → Prop} {b : BufId} {i src : Reg}
   obtain ⟨hlt, hq⟩ := h s hs
   exact ⟨_, _, _, _, .bufSet hlt, hq, le_refl _, le_refl _, le_refl _⟩
 
-/-- The one instruction that grows memory: net and peak both 1. -/
+/-- Push demands free capacity (`size < cap`) — the second memory-safety obligation,
+which is what makes push worst-case unit time. Memory-neutral: the word was charged
+at `bufAlloc`. -/
 protected theorem bufPush {P Q : State w → Prop} {b : BufId} {src : Reg}
-    (h : ∀ s, P s → Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
-    Triple C P (.bufPush b src) Q C.bufPush 1 1 :=
-  fun s hs => ⟨_, _, _, _, .bufPush, h s hs, le_refl _, le_refl _, le_refl _⟩
+    (h : ∀ s, P s → (s.bufs b).size < s.caps b
+      ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
+    Triple C P (.bufPush b src) Q C.bufPush 0 0 := by
+  intro s hs
+  obtain ⟨hcap, hq⟩ := h s hs
+  exact ⟨_, _, _, _, .bufPush hcap, hq, le_refl _, le_refl _, le_refl _⟩
 
+/-- Pop keeps the capacity: memory-neutral. -/
 protected theorem bufPop {P Q : State w → Prop} {b : BufId}
     (h : ∀ s, P s → Q (s.setBuf b (s.bufs b).pop)) :
-    Triple C P (.bufPop b) Q C.bufPop 0 0 := by
-  intro s hs
-  refine ⟨_, _, _, _, .bufPop, h s hs, le_refl _, ?_, le_refl _⟩
-  simp only [Array.size_pop]
-  omega
-
-/-- `bufPop` on a buffer known nonempty *credits* the freed word: net `-1`. This is
-the rule that lets a push/pop (or reset/refill) loop body have net 0, keeping the
-loop's peak independent of the trip count. -/
-protected theorem bufPop' {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → 0 < (s.bufs b).size ∧ Q (s.setBuf b (s.bufs b).pop)) :
-    Triple C P (.bufPop b) Q C.bufPop (-1) 0 := by
-  intro s hs
-  obtain ⟨hpos, hq⟩ := h s hs
-  refine ⟨_, _, _, _, .bufPop, hq, le_refl _, ?_, le_refl _⟩
-  simp only [Array.size_pop]
-  omega
+    Triple C P (.bufPop b) Q C.bufPop 0 0 :=
+  fun s hs => ⟨_, _, _, _, .bufPop, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T : ℕ}
     {D M : ℤ}

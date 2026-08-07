@@ -232,8 +232,9 @@ end SumBuf
 
 /-! ## Example 3: filling a buffer — the allocation bound
 
-`iota n`: push `0, 1, ..., n-1` into a fresh buffer. Time is linear as before; the new
-content is the *memory* bound: exactly one word allocated per iteration, so `M ≤ n`.
+`iota n`: reserve capacity `n`, then push `0, 1, ..., n-1`. The capacity is charged at
+`bufAlloc` (net and peak `n`); every push is then memory-free and worst-case unit
+time. The push rule's capacity obligation is discharged from the invariant.
 
 Register conventions: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1. -/
 
@@ -241,12 +242,12 @@ namespace Iota
 
 /--
 ```c
-b = []; i = 0;
+b = alloc(n); i = 0;
 while (i < n) { b.push(i); i += 1; }
 ```
 `n` is passed in `r2`. -/
 def code (b : BufId) : Stmt w :=
-  .bufNew b ;;
+  .bufAlloc b 2 ;;
   .imm 0 0 ;;
   .whileNZ (.bin .ult 1 0 2) 1
     (.bufPush b 0 ;;
@@ -258,47 +259,57 @@ def iotaTo (w : ℕ) : ℕ → Array (Word w)
   | 0 => #[]
   | n + 1 => (iotaTo w n).push (BitVec.ofNat w n)
 
+private theorem iotaTo_size (w n : ℕ) : (iotaTo w n).size = n := by
+  induction n with
+  | zero => rfl
+  | succ n ih => simp [iotaTo, ih]
+
 def Inv (b : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 2 = BitVec.ofNat w n ∧
   (s.regs 0).toNat + k = n ∧
-  s.bufs b = iotaTo w (s.regs 0).toNat
+  s.bufs b = iotaTo w (s.regs 0).toNat ∧
+  s.caps b = n
 
 def InvG (b : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   Inv b n k s ∧
   s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
 
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
-  C.bufNew + C.imm + (n + 1) * (C.bin .ult + C.branch)
+  C.bufAlloc + C.imm + (n + 1) * (C.bin .ult + C.branch)
     + n * (C.bufPush + C.imm + C.bin .add)
 
-/-- `code b` fills `b` with `0..n-1`. Time is linear and — the point of this
-example — **at most `n` words are ever allocated**. -/
+/-- `code b` fills `b` with `0..n-1`. Time is linear; memory is charged once, at the
+allocation: net and peak are both `n`. -/
 theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code b)
       (fun s => s.bufs b = iotaTo w n)
-      (timeBound C n) n ((n : ℤ) + 1) := by
+      (timeBound C n) n n := by
   have hguard : ∀ k, Triple C (Inv (w := w) b n k) (.bin .ult 1 0 2)
       (InvG (w := w) b n k) (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
-    rintro s ⟨hlim, hik, hbuf⟩
-    refine ⟨⟨?_, ?_, ?_⟩, ?_⟩
+    rintro s ⟨hlim, hik, hbuf, hcap⟩
+    refine ⟨⟨?_, ?_, ?_, ?_⟩, ?_⟩
     · simp [hlim]
     · simp [hik]
     · simp [hbuf]
+    · simp [hcap]
     · simp [hlim, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hn]
   have hpos : ∀ k (s : State w), InvG b n k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
-    rintro k s ⟨⟨hlim, hik, hbuf⟩, hflag⟩ hnz
+    rintro k s ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩ hnz
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
   have hbody : ∀ k, Triple C (fun (s : State w) => InvG b n (k + 1) s ∧ s.regs 1 ≠ 0)
       (.bufPush b 0 ;; .imm 3 1 ;; .bin .add 0 0 3)
       (Inv b n k)
-      (C.bufPush + (C.imm + C.bin .add)) 1 1 := by
-    rintro k s ⟨⟨⟨hlim, hik, hbuf⟩, hflag⟩, hnz⟩
+      (C.bufPush + (C.imm + C.bin .add)) 0 0 := by
+    rintro k s ⟨⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hnz⟩
     have hlt : (s.regs 0).toNat < n := cond_of_flag_ne hflag hnz
-    refine ⟨_, _, _, _, .seq .bufPush (.seq .imm .bin),
-      ⟨?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
+    have hpush : (s.bufs b).size < s.caps b := by
+      rw [hbuf, hcap, iotaTo_size]
+      exact hlt
+    refine ⟨_, _, _, _, .seq (.bufPush hpush) (.seq .imm .bin),
+      ⟨?_, ?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
     · simp [hlim]
     · simp [-BitVec.toNat_add]
       rw [toNat_add_ofNat_one hlt hn]
@@ -306,21 +317,33 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     · simp [-BitVec.toNat_add, hbuf]
       rw [toNat_add_ofNat_one hlt hn]
       simp [iotaTo]
-  have h1 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.bufNew b)
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs b = #[]) C.bufNew 0 0 :=
-    Triple.bufNew fun s hs => by simp [hs]
-  have h2 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs b = #[])
+    · simp [hcap]
+  have h1 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.bufAlloc b 2)
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps b = n ∧ s.bufs b = #[])
+      C.bufAlloc n (max (n : ℤ) 0) := by
+    apply Triple.bufAlloc
+    intro s hs
+    have hval : (s.regs 2).toNat = n := by
+      rw [hs, BitVec.toNat_ofNat]
+      exact Nat.mod_eq_of_lt hn
+    refine ⟨by omega, ?_, ?_, ?_⟩
+    · simp [hs]
+    · simp [hval]
+    · simp
+  have h2 : Triple C
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps b = n ∧ s.bufs b = #[])
       (.imm 0 0) (Inv b n n) C.imm 0 0 := by
     apply Triple.imm
-    rintro s ⟨hlim, hbuf⟩
-    refine ⟨?_, ?_, ?_⟩
+    rintro s ⟨hlim, hcap, hbuf⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     · simp [hlim]
     · simp
     · simp [hbuf, iotaTo]
+    · simp [hcap]
   have hW := Triple.whileNZ_measure hguard hpos hbody n
   refine ((h1.seq (h2.seq hW)).conseq (fun _ h => h) ?_
-    (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp; omega))
-  rintro s ⟨k', ⟨⟨hlim, hik, hbuf⟩, hflag⟩, hzero⟩
+    (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp))
+  rintro s ⟨k', ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hzero⟩
   by_cases hc : (s.regs 0).toNat < n
   · exfalso
     rw [hflag] at hzero
@@ -332,11 +355,11 @@ end Iota
 
 /-! ## Example 4: memory reuse — peak 1 regardless of trip count
 
-Each iteration pushes a word into a scratch buffer and pops it again. Counting
-allocations would report `n` words for `n` iterations; the (net, peak) profile sees
-that every iteration's net is 0, so the whole loop peaks at **1 word**, independent of
-`n`. `Triple.bufPop'` (pop on a known-nonempty buffer, net `-1`) is what pays the
-push back.
+A one-slot scratch buffer is allocated once, each of the `n` iterations pushes into it
+and pops again (inside the fixed capacity, so both are memory-free), and the buffer is
+freed at the end. Net memory 0, **peak 1**, for any `n` — a total-allocation counter
+would have reported `n`. `Triple.bufFree'` (free with known capacity) credits the
+word back so the whole program nets to zero.
 
 Registers: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1. -/
 
@@ -344,82 +367,113 @@ namespace ScratchLoop
 
 /--
 ```c
-s = []; i = 0;
+s = alloc(1); i = 0;
 while (i < n) { s.push(i); s.pop(); i += 1; }
+free(s);
 ```
 `n` is passed in `r2`. -/
 def code (sb : BufId) : Stmt w :=
-  .bufNew sb ;;
+  .imm 3 1 ;;
+  .bufAlloc sb 3 ;;
   .imm 0 0 ;;
   .whileNZ (.bin .ult 1 0 2) 1
     (.bufPush sb 0 ;;
      .bufPop sb ;;
      .imm 3 1 ;;
-     .bin .add 0 0 3)
+     .bin .add 0 0 3) ;;
+  .bufFree sb
 
 def Inv (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 2 = BitVec.ofNat w n ∧
   (s.regs 0).toNat + k = n ∧
-  s.bufs sb = #[]
+  s.bufs sb = #[] ∧
+  s.caps sb = 1
 
 def InvG (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   Inv sb n k s ∧
   s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
 
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
-  C.bufNew + C.imm + (n + 1) * (C.bin .ult + C.branch)
+  C.bufAlloc + C.bufFree + 2 * C.imm + (n + 1) * (C.bin .ult + C.branch)
     + n * (C.bufPush + C.bufPop + C.imm + C.bin .add)
 
-/-- Linear time — and net memory 0, **peak memory 1**, for any `n`. -/
-theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
+/-- Linear time — net memory 0 and **peak memory 1**, for any `n`. (`hw` rules out
+the degenerate word size `w = 0`, where the constant 1 is not representable.) -/
+theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w)
+    (hw : 1 < 2 ^ w) :
     Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code sb)
-      (fun s => s.bufs sb = #[])
+      (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
       (timeBound C n) 0 1 := by
+  have h1' : (BitVec.ofNat w 1).toNat = 1 := by
+    rw [BitVec.toNat_ofNat]
+    exact Nat.mod_eq_of_lt hw
   have hguard : ∀ k, Triple C (Inv (w := w) sb n k) (.bin .ult 1 0 2)
       (InvG (w := w) sb n k) (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
-    rintro s ⟨hlim, hik, hbuf⟩
-    refine ⟨⟨?_, ?_, ?_⟩, ?_⟩
+    rintro s ⟨hlim, hik, hbuf, hcap⟩
+    refine ⟨⟨?_, ?_, ?_, ?_⟩, ?_⟩
     · simp [hlim]
     · simp [hik]
     · simp [hbuf]
+    · simp [hcap]
     · simp [hlim, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hn]
   have hpos : ∀ k (s : State w), InvG sb n k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
-    rintro k s ⟨⟨hlim, hik, hbuf⟩, hflag⟩ hnz
+    rintro k s ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩ hnz
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
   have hbody : ∀ k, Triple C (fun (s : State w) => InvG sb n (k + 1) s ∧ s.regs 1 ≠ 0)
       (.bufPush sb 0 ;; .bufPop sb ;; .imm 3 1 ;; .bin .add 0 0 3)
       (Inv sb n k)
-      (C.bufPush + (C.bufPop + (C.imm + C.bin .add))) 0 1 := by
-    rintro k s ⟨⟨⟨hlim, hik, hbuf⟩, hflag⟩, hnz⟩
+      (C.bufPush + (C.bufPop + (C.imm + C.bin .add))) 0 0 := by
+    rintro k s ⟨⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hnz⟩
     have hlt : (s.regs 0).toNat < n := cond_of_flag_ne hflag hnz
-    refine ⟨_, _, _, _, .seq .bufPush (.seq .bufPop (.seq .imm .bin)),
-      ⟨?_, ?_, ?_⟩, le_refl _, ?_, ?_⟩
+    have hpush : (s.bufs sb).size < s.caps sb := by
+      rw [hbuf, hcap]
+      simp
+    refine ⟨_, _, _, _, .seq (.bufPush hpush) (.seq .bufPop (.seq .imm .bin)),
+      ⟨?_, ?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
     · simp [hlim]
     · simp [-BitVec.toNat_add, hbuf]
       rw [toNat_add_ofNat_one hlt hn]
       omega
     · simp [hbuf]
-    · simp [hbuf]
-    · simp [hbuf]
-  have h1 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.bufNew sb)
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs sb = #[]) C.bufNew 0 0 :=
-    Triple.bufNew fun s hs => by simp [hs]
-  have h2 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs sb = #[])
+    · simp [hcap]
+  have h0 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.imm 3 1)
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.regs 3 = BitVec.ofNat w 1)
+      C.imm 0 0 :=
+    Triple.imm fun s hs => by simp [hs]
+  have h1 : Triple C
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.regs 3 = BitVec.ofNat w 1)
+      (.bufAlloc sb 3)
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
+      C.bufAlloc 1 (max (1 : ℤ) 0) := by
+    apply Triple.bufAlloc
+    rintro s ⟨hlim, h3⟩
+    have hval : (s.regs 3).toNat = 1 := by rw [h3]; exact h1'
+    refine ⟨by omega, ?_, ?_, ?_⟩
+    · simp [hlim]
+    · simp [hval]
+    · simp
+  have h2 : Triple C
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
       (.imm 0 0) (Inv sb n n) C.imm 0 0 := by
     apply Triple.imm
-    rintro s ⟨hlim, hbuf⟩
-    refine ⟨?_, ?_, ?_⟩
+    rintro s ⟨hlim, hcap, hbuf⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     · simp [hlim]
     · simp
     · simp [hbuf]
+    · simp [hcap]
   have hW := Triple.whileNZ_measure hguard hpos hbody n
-  refine ((h1.seq (h2.seq hW)).conseq (fun _ h => h) ?_
-    (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp))
-  rintro s ⟨k', ⟨⟨_, _, hbuf⟩, _⟩, _⟩
-  exact hbuf
+  have hF : Triple C (fun s => ∃ k', InvG (w := w) sb n k' s ∧ s.regs 1 = 0)
+      (.bufFree sb) (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
+      C.bufFree (-(1 : ℤ)) 0 := by
+    apply Triple.bufFree' (K := 1)
+    rintro s ⟨k', ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hzero⟩
+    exact ⟨by omega, by simp, by simp⟩
+  refine ((h0.seq (h1.seq (h2.seq (hW.seq hF)))).conseq (fun _ h => h)
+    (fun _ h => h) (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp))
 
 end ScratchLoop
 
@@ -505,7 +559,9 @@ words; the scratch loop runs 100 iterations and **peaks at 1 word**. -/
 
 /-- Initial state with `#[3, 5, 9]` in buffer 0. -/
 def demoState : State 64 :=
-  { State.init 64 with bufs := fun b => if b = 0 then #[3, 5, 9] else #[] }
+  { State.init 64 with
+    bufs := fun b => if b = 0 then #[3, 5, 9] else #[]
+    caps := fun b => if b = 0 then 3 else 0 }
 
 /-- Sum: expect value 17, time 23, memory (0, 0). -/
 def demoSum : Option (Word 64 × ℕ × ℤ × ℤ) :=
@@ -518,7 +574,7 @@ def demoIota : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
 
 /-- Scratch loop, 100 iterations: expect net 0, **peak 1**. -/
 def demoScratch : Option (ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (ScratchLoop.code 0)
+  (run .unit 2000 (ScratchLoop.code 0)
       ((State.init 64).setReg 2 100)).map fun (_, t, d, p) => (t, d, p)
 
 /-- info: some (17#64, 23, 0, 0) -/
@@ -529,7 +585,7 @@ def demoScratch : Option (ℕ × ℤ × ℤ) :=
 #guard_msgs in
 #eval demoIota
 
-/-- info: some (604, 0, 1) -/
+/-- info: some (606, 0, 1) -/
 #guard_msgs in
 #eval demoScratch
 
@@ -537,12 +593,13 @@ def demoScratch : Option (ℕ × ℤ × ℤ) :=
 
 `PairBuf` (see `Builder.lean`) is an array-of-structs: one buffer, stride 2. Field
 access is compiled index arithmetic, so its cost is ordinary instruction cost. The
-demo pushes two pairs, reads `fst 1` (= 30) and `snd 0` (= 20), and returns their
-sum: value 50, and memory (4, 4) — two pairs, four words. -/
+demo allocates room for two pairs, pushes them, reads `fst 1` (= 30) and `snd 0`
+(= 20), and returns their sum: value 50, and memory (4, 4) — the four words charged
+at allocation; the pushes themselves are memory-free. -/
 
 def pairDemo : Option (Word 64 × ℤ × ℤ) :=
   let (r, prog) := Build.build (w := 64) do
-    let pb ← Build.mkPairBuf
+    let pb ← Build.mkPairBuf 2
     pb.push 10 20
     pb.push 30 40
     let x ← pb.fst 1

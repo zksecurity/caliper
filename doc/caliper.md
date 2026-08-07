@@ -25,7 +25,7 @@ the *syntax* (never runtime values), so "these two data structures don't overlap
 `b₁ ≠ b₂` on `ℕ` — decidable — instead of a separation-logic entailment. The entire
 separation theory is the one-line lemma `bufs_setBuf_ne`, and the frame rules
 (`Triple.frame_reg` / `Triple.frame_buf`) have *syntactic, decidable* side conditions
-(`Stmt.Writes` / `Stmt.Touches`, closed by `simp`). Example 4 (`SumTwo`) composes two
+(`Stmt.Writes` / `Stmt.Touches`, closed by `simp`). Example 5 (`SumTwo`) composes two
 subroutine calls this way; no state-separation proofs appear anywhere.
 
 Buffer *lengths* are fully dynamic; only the set of buffer names is static, and the
@@ -34,7 +34,7 @@ builder allocates names automatically so this is invisible when writing programs
 ### What "unit time" means
 
 Costs come from a `CostModel`: a table indexed by the *instruction*, never by the
-state. `Exec C c s s' t m` charges each instruction its table entry, so:
+state. `Exec C c s s' t d p` charges each instruction its table entry, so:
 
 - `Exec.straight_time_eq`: a branch-free program's running time is a syntactic
   constant — the formal content of "every operation is unit time", and a constant-time
@@ -46,10 +46,15 @@ state. `Exec C c s s' t m` charges each instruction its table entry, so:
 
 Consequences for the instruction set:
 
-- No `alloc n` / `memset`: buffers are created empty and grown one `bufPush` at a
-  time, so building an `n`-element structure visibly costs `n`.
-- `bufPush` is unit-cost in the *amortised* sense (doubling `Vec::push`); it is the
-  only amortised instruction.
+- Memory is *reserved*, not initialised: `bufAlloc b n` reserves capacity for `n`
+  words in O(1) — a `malloc` without `memset`. Reads are only allowed below the
+  filled length, so uninitialised capacity is unobservable; initialisation is paid
+  for by the pushes/stores that perform it.
+- `bufPush` requires free capacity (a proof obligation, like the in-range obligation
+  of `bufGet`) and is therefore **worst-case** unit time — no doubling, no
+  amortisation anywhere in the machine. A growable vector is a *library* on top,
+  its realloc-copy loop costing what it visibly costs, its amortised spec proved in
+  the program logic rather than trusted in the machine.
 - `whileNZ` guards are *statements*, not expressions — evaluating a loop condition
   costs emitted instructions, never free side-computation.
 - Words are `BitVec w` (fixed at 64 for the witgen backend); all arithmetic wraps,
@@ -62,15 +67,19 @@ live-memory change, signed) and `p ≤ M` (peak live-memory growth). Exhibiting 
 underlying `Exec` derivation also proves **memory safety** (out-of-range accesses have
 no derivation — the `bufGet`/`bufSet` rules demand an in-range proof).
 
-Memory is *not* an allocation counter — memory gets reused. `bufPop` and `bufNew`
-give words back, and profiles compose like high-water marks:
+Memory is *not* an allocation counter — memory gets reused. Live memory is the sum
+of reserved capacities: only `bufAlloc` charges (`newCap - oldCap`), only `bufFree`
+credits, and push/pop move the fill level inside capacity already paid for. Profiles
+compose like high-water marks:
 
     seq:  net = d₁ + d₂        peak = max p₁ (d₁ + p₂)
 
-so a block with net 0 (push then pop; reset then refill) contributes its peak once,
-not once per occurrence. The `ScratchLoop` example runs `n` iterations that each push
-and pop a word: its proved peak bound is **1 word, independent of `n`** (an
-allocation counter would report `n`). Invariants `0 ≤ p` and `d ≤ p` hold always.
+so a block with net 0 (an alloc…free pair, or work inside fixed capacity)
+contributes its peak once, not once per occurrence. The `ScratchLoop` example
+allocates a one-slot scratch buffer, runs `n` iterations that each push and pop a
+word inside it, and frees it: proved net 0 and peak **1 word, independent of `n`**
+(an allocation counter would report `n`). Invariants `0 ≤ p` and `d ≤ p` hold
+always, and code containing no `bufAlloc` has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`).
 
 The loop rule `Triple.whileNZ_measure` takes an invariant indexed by a
 remaining-iterations budget `k`; time is linear in `k`, and both memory bounds have
@@ -103,7 +112,7 @@ machines. It is: **every `Stmt` instruction is implementable in a constant numbe
 machine instructions on a 64-bit CPU**, so an `Exec` derivation of cost `t` (unit
 model) corresponds to a real execution of at most `c · t` cycles, with `c` the maximum
 over the per-instruction table. Since every `Exec` rule charges a syntactic constant
-and the table is 13 entries, the trusted argument is a per-instruction inspection:
+and the table has a dozen entries, the trusted argument is a per-instruction inspection:
 
 | Instruction | Real implementation | Cost |
 |---|---|---|
@@ -112,15 +121,15 @@ and the table is 13 entries, the trusted argument is a per-instruction inspectio
 | `shl`, `shr` | shift + compare/mask for the `≥ w ⇒ 0` convention (x86/ARM mask the amount) | 2–3 instr |
 | `bufGet`, `bufSet` | one load/store at `base + 8·i`; the in-range proof carried by the `Exec` rule means bounds checks can be elided | 1–2 instr |
 | `bufLen`, `bufPop` | load / decrement of the length field | 1 instr |
-| `bufNew` | reset to empty; freeing a `u64` vector has no per-element work | O(1) |
-| `bufPush` | `Vec::push` with doubling — **amortized** O(1); sound here because `Triple` bounds *total* time: `m` pushes cost O(`m`) real time | amortized O(1) |
+| `bufAlloc` | `malloc(8n)` — reserve, don't initialise. O(1): no `memset`, and lazy page mapping attributes first-touch cost to the writes we already charge | O(1) |
+| `bufFree` | `free` — no per-element work for a `u64` buffer | O(1) |
+| `bufPush` | length-check-free store at `base + 8·len` + length increment (capacity proved sufficient) — **worst-case** O(1), no doubling | 1–2 instr |
 
-For the **peak-memory** bound to transfer with a constant factor, the backend's
-dynamic arrays must shrink: pop with a halve-at-quarter-occupancy policy (and free on
-`bufNew`). That keeps push/pop amortized O(1) *and* physical footprint ≤ 4× the
-logical live size — the standard dynamic-array result. A backend that never shrinks
-still satisfies the *time* contract, but its real memory tracks the high-water mark
-of each buffer instead of the proved peak.
+The peak-memory bound transfers directly: physical footprint = sum of reserved
+capacities = exactly what the model charges, up to allocator metadata and
+fragmentation (a small constant for the few, long-lived, word-aligned buffers this
+machine uses). No shrinking policy or amortization argument is needed — capacity
+changes only at `bufAlloc`/`bufFree`.
 | `ifNZ`, `whileNZ` guard | test + branch | 2 instr |
 
 Supporting facts, all discharged by the machine's design rather than by proof:
@@ -130,16 +139,15 @@ Supporting facts, all discharged by the machine's design rather than by proof:
   each buffer becomes its own `Vec<u64>`. No dynamic name ever needs resolving.
 - Words are exactly `u64`; no bignum arithmetic can hide inside an instruction (this
   is why the DSL exists instead of measuring Lean's GMP-backed `Nat`).
-- No instruction's semantics does work proportional to the state (`bufNew` creates
-  *empty* buffers precisely so that no hidden `memset` exists).
+- No instruction's semantics does work proportional to the state (`bufAlloc`
+  reserves without initialising precisely so that no hidden `memset` exists;
+  freeing a `u64` buffer has no per-element work).
 
-Two honest qualifications. `bufPush`'s amortization means *individual* operations are
-not real-time bounded — irrelevant for total-time upper bounds, relevant only if
-per-step latency claims are ever wanted (then pre-size buffers with a push-loop, which
-the cost model prices correctly). And `c` is uniform over the memory hierarchy — a
+One honest qualification remains: `c` is uniform over the memory hierarchy — a
 `bufGet` costs the same whether it hits L1 or DRAM; the *count* of memory accesses is
 exact, and sensitivity to their unit price is a `CostModel` calibration question, not
-a soundness one.
+a soundness one. (The former second qualification — amortized `bufPush` latency — is
+gone: with explicit capacity, every instruction is worst-case constant time.)
 
 ## Caveats / next steps
 - The witgen-IR compiler (`WitgenIR → Stmt`) plus a cost theorem per IR node is the

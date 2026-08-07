@@ -162,11 +162,17 @@ def var (e : Exp w) : Build w Reg := do
 
 /-! ## Buffers -/
 
-/-- Allocate a fresh (empty) buffer. -/
-def newBuf : Build w BufId := do
+/-- Allocate a fresh buffer with capacity `n` (an expression, evaluated at runtime).
+The capacity is charged now; pushes into it are memory-free. -/
+def alloc (n : Exp w) : Build w BufId := do
+  let rn ← compileExp n
   let b ← freshBuf
-  emit (.bufNew b)
+  emit (.bufAlloc b rn)
   pure b
+
+/-- Release a buffer's capacity. -/
+def free (b : BufId) : Build w Unit :=
+  emit (.bufFree b)
 
 /-- Read `b[i]` into a fresh register. -/
 def get (b : BufId) (i : Exp w) : Build w Reg := do
@@ -221,9 +227,10 @@ def Build.mkPairR : Build w (PairR w) := do
 structure PairBuf (w : ℕ) where
   buf : BufId
 
-/-- Allocate a fresh, empty array of pairs. -/
-def Build.mkPairBuf : Build w (PairBuf w) := do
-  let b ← Build.newBuf
+/-- Allocate an array of pairs with room for `nPairs` entries (2·nPairs words,
+charged now — pushes are then memory-free). -/
+def Build.mkPairBuf (nPairs : Exp w) : Build w (PairBuf w) := do
+  let b ← Build.alloc (2 * nPairs)
   pure ⟨b⟩
 
 namespace PairBuf
