@@ -1,5 +1,6 @@
 import Clean.LowLevel.Triple
 import Clean.LowLevel.Builder
+import Clean.LowLevel.Field
 
 /-!
 # Worked examples
@@ -613,5 +614,26 @@ def pairDemo : Option (Word 64 × ℤ × ℤ) :=
 /-- info: some (50#64, 4, 4) -/
 #guard_msgs in
 #eval pairDemo
+
+/-! ### Generic field arithmetic, from the modulus alone
+
+`Fp w p` (see `Field.lean`) needs nothing but `p`. Here it is instantiated at
+BabyBear: the program computes `5⁻¹` via the generated Fermat ladder (whose exponent
+bits Lean computed at generation time) and multiplies back. Expect `5⁻¹ * 5 = 1`. -/
+
+def babybear : ℕ := 2 ^ 31 - 2 ^ 27 + 1
+
+def fieldDemo : Option (Word 64 × Word 64 × ℕ) :=
+  let (rs, prog) := Build.build (w := 64) do
+    let x : Fp 64 babybear := ⟨← Build.var 5⟩
+    let xi ← Fp.inv x
+    let chk ← Fp.mul xi x
+    pure (xi.val, chk.val)
+  (run .unit 10000 prog (State.init 64)).map fun (s, t, _, _) =>
+    (s.regs rs.1, s.regs rs.2, t)
+
+/-- info: some (1610612737#64, 1#64, 128) -/
+#guard_msgs in
+#eval fieldDemo
 
 end LowLevel.Examples
