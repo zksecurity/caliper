@@ -33,6 +33,8 @@ variable {w : ℕ}
 structure BuildState (w : ℕ) where
   nextReg : ℕ := 0
   nextBuf : ℕ := 0
+  /-- Emitted code, in **reverse** order (prepending keeps generation linear;
+  `capture`/`build` reverse once at the end). -/
   code : List (Stmt w) := []
 
 /-- The program-builder monad. -/
@@ -51,7 +53,7 @@ def freshBuf : Build w BufId :=
   fun s => (s.nextBuf, { s with nextBuf := s.nextBuf + 1 })
 
 def emit (c : Stmt w) : Build w Unit :=
-  fun s => ((), { s with code := s.code ++ [c] })
+  fun s => ((), { s with code := c :: s.code })
 
 /-- Right-nested sequencing of a code list (no trailing `skip`). -/
 def seqAll : List (Stmt w) → Stmt w
@@ -63,12 +65,12 @@ def seqAll : List (Stmt w) → Stmt w
 keep advancing, so captured blocks never clash with the surrounding code. -/
 def capture {α : Type} (m : Build w α) : Build w (α × Stmt w) := fun s =>
   let (a, s') := m { s with code := [] }
-  ((a, seqAll s'.code), { s' with code := s.code })
+  ((a, seqAll s'.code.reverse), { s' with code := s.code })
 
 /-- Run a builder to completion, returning its result and the generated program. -/
 def build {α : Type} (m : Build w α) : α × Stmt w :=
   let (a, s) := m {}
-  (a, seqAll s.code)
+  (a, seqAll s.code.reverse)
 
 /-! ## Control flow -/
 
@@ -253,7 +255,7 @@ def Build.mkPairBuf (nPairs : Exp w) : Build w (PairBuf w) := do
 
 namespace PairBuf
 
-/-- Append a pair (two pushes: +2 words, amortized-constant time). -/
+/-- Append a pair: two pushes, requiring two words of free capacity. -/
 def push (pb : PairBuf w) (x y : Exp w) : Build w Unit := do
   Build.push pb.buf x
   Build.push pb.buf y

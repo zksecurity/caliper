@@ -15,7 +15,7 @@ that their address ranges are disjoint — separation logic, in other words. Ins
 machine has an unbounded supply of **independent, named buffers**. Two buffers are
 either the same buffer or completely disjoint, so the only "separation" fact a proof
 ever needs is `b₁ ≠ b₂` on buffer *names*, which is a decidable statement about `ℕ`.
-See `bufs_set_ne` — that lemma is the entire separation theory.
+See `bufs_setBuf_ne` — that lemma is the entire separation theory.
 
 Buffer names are part of the *syntax*, not values held in registers, so a program can
 never alias two buffers at runtime. Buffer *lengths* are fully dynamic; only the number
@@ -551,7 +551,10 @@ def Stmt.Straight : Stmt w → Prop
   | .whileNZ .. => False
   | _ => True
 
-/-- The syntactic running time of a branch-free statement. -/
+/-- The syntactic running time of a **branch-free** statement — exact for `Straight`
+code (`straight_time_eq`). For `ifNZ` it is the safe upper-bound shape
+(`branch + max`); for `whileNZ` it is 0 and NOT meaningful — bounds for looping code
+come from the `Triple` logic, never from this function. -/
 def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .skip => 0
   | .seq c₁ c₂ => c₁.staticTime C + c₂.staticTime C
@@ -566,7 +569,7 @@ def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .bufSet .. => C.bufSet
   | .bufPush .. => C.bufPush
   | .bufPop _ => C.bufPop
-  | .ifNZ _ t e => t.staticTime C + e.staticTime C
+  | .ifNZ _ t e => C.branch + max (t.staticTime C) (e.staticTime C)
   | .whileNZ .. => 0
 
 /-- `c` contains no `bufAlloc` — anywhere, including under branches and loops. -/
