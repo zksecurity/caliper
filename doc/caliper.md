@@ -12,7 +12,7 @@ worked examples exist; the witgen-IR → DSL compiler does not yet.
 |---|---|
 | `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems, reference interpreter (`run`) + soundness |
 | `Triple.lean` | Upper-bound Hoare triples (`Triple`), one rule per instruction, `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule `whileNZ_measure`, frame rules |
-| `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_`, product types (`PairR`, `PairBuf`) |
+| `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_`, typed buffer handles (`Buf`), product types (`PairR`, `PairBuf`) |
 | `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos |
 
 ## Design decisions
@@ -99,7 +99,10 @@ instances of the proved bounds (the examples check this with `#guard_msgs`).
 Programs can be written against the raw constructors (assembly-flavoured, what proofs
 are stated over) or through `Builder.lean`: a monad with `freshReg`/`freshBuf`,
 compound expressions (`x + y * z` compiling through fresh temporaries), `while_`/`if_`,
-and subroutines as ordinary Lean functions. Builder output is checked equal to the
+and subroutines as ordinary Lean functions. At the surface, buffers are the newtype
+`Buf w`, produced only by `Build.alloc` — in the core both `Reg` and `BufId` are
+`ℕ` (numeral-friendly proof goals), so the wrapper is what stops a buffer handle
+being confused with a register or an index. Builder output is checked equal to the
 hand-written core syntax in the examples, so the sugar adds nothing to the trusted
 surface. Subroutine *specs* are ordinary Lean theorems about the generated code
 (`SumBuf.spec`), reused at every call site — the same composition discipline as
@@ -118,6 +121,7 @@ and the table has a dozen entries, the trusted argument is a per-instruction ins
 |---|---|---|
 | `imm`, `mov` | load-immediate / register move | 1 instr |
 | `un`, `bin` | one ALU op (`udiv`/`umod` ≈ 20–40 cycles — a *constant*, tabulated in `CostModel.cycles`) | 1 instr |
+| `bin .mulhi` | high word of the widening multiply: `MULHU` (RISC-V M — required by the RVA application profiles), `UMULH` (AArch64), the `RDX` half of `MUL` (x86-64). With `.mul`, the full `2w`-bit product in 2 instructions (the RISC-V-blessed fused idiom) — the primitive field reduction needs | 1 instr |
 | `shl`, `shr` | shift + compare/mask for the `≥ w ⇒ 0` convention (x86/ARM mask the amount) | 2–3 instr |
 | `bufGet`, `bufSet` | one load/store at `base + 8·i`; the in-range proof carried by the `Exec` rule means bounds checks can be elided | 1–2 instr |
 | `bufLen`, `bufPop` | load / decrement of the length field | 1 instr |

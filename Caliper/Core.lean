@@ -87,7 +87,13 @@ inductive UnOp where
 deriving DecidableEq, Repr, Inhabited
 
 inductive BinOp where
-  | add | sub | mul | udiv | umod
+  | add | sub | mul
+  /-- High word of the widening unsigned multiply (`MULHU` on RISC-V M, `UMULH` on
+  AArch64, the `RDX` half of `MUL` on x86-64). `mulhi` + `mul` give the full
+  `2w`-bit product — the primitive that field reduction (Goldilocks, Montgomery)
+  needs. -/
+  | mulhi
+  | udiv | umod
   | and | or | xor | shl | shr
   | eq | ne | ult | ule
 deriving DecidableEq, Repr, Inhabited
@@ -105,6 +111,7 @@ x86/ARM, where the shift amount is masked, must emit an explicit mask; see
   | .add, x, y => x + y
   | .sub, x, y => x - y
   | .mul, x, y => x * y
+  | .mulhi, x, y => BitVec.ofNat w (x.toNat * y.toNat / 2 ^ w)
   | .udiv, x, y => x / y
   | .umod, x, y => x % y
   | .and, x, y => x &&& y
@@ -192,7 +199,7 @@ def CostModel.unit : CostModel := {}
 bounds proved generically over `C` are not tied to the uniform model. -/
 def CostModel.cycles : CostModel where
   bin := fun op => match op with
-    | .mul => 3
+    | .mul | .mulhi => 3
     | .udiv | .umod => 30
     | _ => 1
   bufAlloc := 50  -- malloc fast path

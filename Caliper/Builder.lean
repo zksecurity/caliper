@@ -110,6 +110,9 @@ instance : AndOp (Exp w) := ⟨.bin .and⟩
 instance : OrOp (Exp w) := ⟨.bin .or⟩
 instance : XorOp (Exp w) := ⟨.bin .xor⟩
 
+/-- High word of the widening multiply (see `BinOp.mulhi`). -/
+def Exp.mulhi (a b : Exp w) : Exp w := .bin .mulhi a b
+
 /-- Unsigned less-than, valued in {0, 1}. -/
 notation:50 a:51 " .< " b:51 => Exp.bin BinOp.ult a b
 /-- Equality test, valued in {0, 1}. -/
@@ -160,42 +163,57 @@ def var (e : Exp w) : Build w Reg := do
   assign d e
   pure d
 
-/-! ## Buffers -/
+end Build
+
+/-! ## Buffers
+
+At the surface, buffers are handled through the newtype `Buf w`, not raw `BufId`s.
+`Reg` and `BufId` are both `ℕ` in the core (which keeps proof goals numeral-friendly),
+so without the wrapper a buffer name could be passed where a register — or an
+arbitrary index — was expected. `Buf w` is produced only by `Build.alloc`, so surface
+programs cannot forge or confuse buffer handles. -/
+
+/-- Typed handle to a buffer of `w`-bit words. Obtain one from `Build.alloc`. -/
+structure Buf (w : ℕ) where
+  id : BufId
+deriving Repr
+
+namespace Build
 
 /-- Allocate a fresh buffer with capacity `n` (an expression, evaluated at runtime).
 The capacity is charged now; pushes into it are memory-free. -/
-def alloc (n : Exp w) : Build w BufId := do
+def alloc (n : Exp w) : Build w (Buf w) := do
   let rn ← compileExp n
   let b ← freshBuf
   emit (.bufAlloc b rn)
-  pure b
+  pure ⟨b⟩
 
 /-- Release a buffer's capacity. -/
-def free (b : BufId) : Build w Unit :=
-  emit (.bufFree b)
+def free (b : Buf w) : Build w Unit :=
+  emit (.bufFree b.id)
 
 /-- Read `b[i]` into a fresh register. -/
-def get (b : BufId) (i : Exp w) : Build w Reg := do
+def get (b : Buf w) (i : Exp w) : Build w Reg := do
   let ri ← compileExp i
   let d ← freshReg
-  emit (.bufGet d b ri)
+  emit (.bufGet d b.id ri)
   pure d
 
 /-- Write `b[i] ← e`. -/
-def set (b : BufId) (i e : Exp w) : Build w Unit := do
+def set (b : Buf w) (i e : Exp w) : Build w Unit := do
   let ri ← compileExp i
   let re ← compileExp e
-  emit (.bufSet b ri re)
+  emit (.bufSet b.id ri re)
 
 /-- Append `e` to `b`. -/
-def push (b : BufId) (e : Exp w) : Build w Unit := do
+def push (b : Buf w) (e : Exp w) : Build w Unit := do
   let re ← compileExp e
-  emit (.bufPush b re)
+  emit (.bufPush b.id re)
 
 /-- Length of `b`, in a fresh register. -/
-def len (b : BufId) : Build w Reg := do
+def len (b : Buf w) : Build w Reg := do
   let d ← freshReg
-  emit (.bufLen d b)
+  emit (.bufLen d b.id)
   pure d
 
 end Build
@@ -225,7 +243,7 @@ def Build.mkPairR : Build w (PairR w) := do
 
 /-- An array of pairs: one buffer, stride 2, fields interleaved. -/
 structure PairBuf (w : ℕ) where
-  buf : BufId
+  buf : Buf w
 
 /-- Allocate an array of pairs with room for `nPairs` entries (2·nPairs words,
 charged now — pushes are then memory-free). -/

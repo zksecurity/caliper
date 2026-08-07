@@ -101,6 +101,9 @@ theorem swapCode_data_independent {C : CostModel} {s₁ s₁' s₂ s₂' : State
     (h₂ : Exec C swapCode s₂ s₂' t₂ d₂ p₂) : t₁ = t₂ :=
   h₁.straight_data_independent h₂ ⟨trivial, trivial, trivial⟩
 
+/-- `mulhi` sanity check: the high word of `2^63 * 4` is `2`. -/
+example : BinOp.eval .mulhi (0x8000000000000000#64) (4#64) = 2#64 := by decide
+
 /-! ## Example 2: summing a buffer — linear time, zero allocation
 
 Register conventions: `r0` accumulator, `r1` index, `r2` length, `r3` loop flag,
@@ -534,8 +537,8 @@ infix expressions, structured `while`. The `rfl` below checks the two coincide �
 sugar adds nothing to the trusted surface. -/
 
 open Build in
-/-- `SumBuf.code`, ergonomically. -/
-def sumB (xs : BufId) : Build w Reg := do
+/-- `SumBuf.code`, ergonomically — note the typed buffer handle `Buf w`. -/
+def sumB (xs : Buf w) : Build w Reg := do
   let acc ← var 0
   let i ← var 0
   let n ← len xs
@@ -547,7 +550,7 @@ def sumB (xs : BufId) : Build w Reg := do
 
 /-- info: true -/
 #guard_msgs in
-#eval (Build.build (sumB (w := 64) 0)).2 == SumBuf.code 0
+#eval (Build.build (sumB (w := 64) ⟨0⟩)).2 == SumBuf.code 0
 
 /-! ## Executable
 
