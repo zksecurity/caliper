@@ -129,13 +129,13 @@ and the table has a dozen entries, the trusted argument is a per-instruction ins
 | `bufAlloc` | `malloc(8n)` — reserve, don't initialise. O(1): no `memset`, and lazy page mapping attributes first-touch cost to the writes we already charge | O(1) |
 | `bufFree` | `free` — no per-element work for a `u64` buffer | O(1) |
 | `bufPush` | length-check-free store at `base + 8·len` + length increment (capacity proved sufficient) — **worst-case** O(1), no doubling | 1–2 instr |
+| `ifNZ`, `whileNZ` guard | test + branch | 2 instr |
 
 The peak-memory bound transfers directly: physical footprint = sum of reserved
 capacities = exactly what the model charges, up to allocator metadata and
 fragmentation (a small constant for the few, long-lived, word-aligned buffers this
 machine uses). No shrinking policy or amortization argument is needed — capacity
 changes only at `bufAlloc`/`bufFree`.
-| `ifNZ`, `whileNZ` guard | test + branch | 2 instr |
 
 Supporting facts, all discharged by the machine's design rather than by proof:
 
