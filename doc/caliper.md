@@ -12,7 +12,7 @@ certified concrete step-count bounds (see "The witgen pipeline" below).
 | File | Contents |
 |---|---|
 | `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems, reference interpreter (`run`) + soundness |
-| `Triple.lean` | Upper-bound Hoare triples (`Triple`), one rule per instruction, `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule `whileNZ_measure`, frame rules |
+| `Triple.lean` | Upper-bound Hoare triples (`Triple`), one rule per instruction, `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule `whileNZ_measure`, frame rules; decoupled time-only/space-only judgments (`TimeTriple`/`SpaceTriple`) with the same rule set, recombinable into a full `Triple` via determinism (`TimeTriple.and_space`) |
 | `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_`, typed buffer handles (`Buf`), product types (`PairR`, `PairBuf`) |
 | `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs, Fermat inverse generated from the bits of `p - 2` at generation time |
 | `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
@@ -112,6 +112,13 @@ the form `base + k · max (Dg + Db) 0` — `max` with 0 because the loop may exi
 and fewer iterations free less. When the per-iteration net `Dg + Db ≤ 0`, the peak is
 independent of the trip count. Everything downstream is `ℕ`/`ℤ` arithmetic that
 `omega`/`ring` close.
+
+Time and memory bounds are also *independently* provable: `TimeTriple` bounds only
+the running time and `SpaceTriple` only the (net, peak) pair, each with the full rule
+set (including a measure-indexed loop rule), so a time proof carries no memory
+algebra and vice versa — the `Drain` example has a trip-count-independent space bound
+even though no uniform time bound exists for it. Since the machine is deterministic,
+separately proved judgments recombine into a full `Triple` (`TimeTriple.and_space`).
 
 ### Executable
 

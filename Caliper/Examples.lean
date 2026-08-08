@@ -531,6 +531,191 @@ theorem spec {C : CostModel} (xs ys : BufId)
 
 end SumTwo
 
+/-! ## Example 6: decoupled judgments — time without memory, memory without time
+
+`TimeTriple`/`SpaceTriple` (see `Triple.lean`) bound one resource in isolation.
+
+* `CountUp` proves a `SumBuf`-shaped loop bound as a `TimeTriple`: no net, no peak,
+  no `max` profile algebra appears anywhere in the proof.
+* `Drain` pops a buffer until it is empty. Its trip count is the *runtime* buffer
+  length — unbounded over the trivial precondition — so **no uniform time bound
+  exists** (`Drain.no_time_bound`), yet the space bound net 0 / peak 0 is provable,
+  independent of the trip count (`Drain.space_spec`).
+
+When both bounds do exist, determinism recombines separately proved judgments into a
+full `Triple` (`TimeTriple.and_space`); `CountUp.spec` below glues its time-only
+proof to a space triple obtained for free from alloc-freeness. -/
+
+namespace CountUp
+
+/--
+```c
+i = 0; while (i < n) { i += 1; }
+```
+`n` is passed in `r2`; `r0` index, `r1` flag, `r3` the constant 1. -/
+def code : Stmt w :=
+  .imm 0 0 ;;
+  .whileNZ (.bin .ult 1 0 2) 1
+    (.imm 3 1 ;; .bin .add 0 0 3)
+
+def Inv (n k : ℕ) (s : State w) : Prop :=
+  s.regs 2 = BitVec.ofNat w n ∧ (s.regs 0).toNat + k = n
+
+def InvG (n k : ℕ) (s : State w) : Prop :=
+  Inv n k s ∧ s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
+
+def timeBound (C : CostModel) (n : ℕ) : ℕ :=
+  C.imm + (n + 1) * (C.bin .ult + C.branch) + n * (C.imm + C.bin .add)
+
+/-- A pure running-time bound: the same measure-indexed loop argument as
+`SumBuf.spec`, but through `TimeTriple` — not a single memory quantity is
+mentioned, bounded, or reasoned about. -/
+theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
+    TimeTriple C (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
+      (fun s => (s.regs 0).toNat = n) (timeBound C n) := by
+  have hguard : ∀ k, TimeTriple C (Inv (w := w) n k) (.bin .ult 1 0 2)
+      (InvG (w := w) n k) (C.bin .ult) := by
+    intro k
+    apply TimeTriple.bin
+    rintro s ⟨hlim, hik⟩
+    refine ⟨⟨?_, ?_⟩, ?_⟩
+    · simp [hlim]
+    · simp [hik]
+    · simp [hlim, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hn]
+  have hpos : ∀ k (s : State w), InvG n k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
+    rintro k s ⟨⟨hlim, hik⟩, hflag⟩ hnz
+    have hlt := cond_of_flag_ne hflag hnz
+    exact ⟨k - 1, by omega⟩
+  have hbody : ∀ k, TimeTriple C (fun (s : State w) => InvG n (k + 1) s ∧ s.regs 1 ≠ 0)
+      (.imm 3 1 ;; .bin .add 0 0 3) (Inv n k) (C.imm + C.bin .add) := by
+    rintro k s ⟨⟨⟨hlim, hik⟩, hflag⟩, hnz⟩
+    have hlt : (s.regs 0).toNat < n := cond_of_flag_ne hflag hnz
+    refine ⟨_, _, _, _, .seq .imm .bin, ⟨?_, ?_⟩, le_refl _⟩
+    · simp [hlim]
+    · simp [-BitVec.toNat_add]
+      rw [toNat_add_ofNat_one hlt hn]
+      omega
+  have h1 : TimeTriple C (fun s => s.regs 2 = BitVec.ofNat w n) (.imm 0 0)
+      (Inv n n) C.imm :=
+    TimeTriple.imm fun s hs => ⟨by simp [hs], by simp⟩
+  have hW := TimeTriple.whileNZ_measure hguard hpos hbody n
+  refine (h1.seq hW).conseq (fun _ h => h) ?_ (le_of_eq (by unfold timeBound; ring))
+  rintro s ⟨k', ⟨⟨hlim, hik⟩, hflag⟩, hzero⟩
+  by_cases hc : (s.regs 0).toNat < n
+  · exfalso
+    rw [hflag] at hzero
+    exact not_cond_of_flag_zero (by omega) hzero hc
+  · omega
+
+/-- Recombined: the time-only proof above, and a space triple obtained for free
+(`code` contains no `bufAlloc`), glued into a full `Triple` by determinism. -/
+theorem spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
+    Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
+      (fun s => (s.regs 0).toNat = n) (timeBound C n) 0 0 :=
+  (time_spec n hn).and_space'
+    ((time_spec n hn).space_of_allocFree ⟨trivial, trivial, trivial, trivial⟩)
+
+end CountUp
+
+namespace Drain
+
+/--
+```c
+while (b.len != 0) { b.pop(); }
+```
+The flag is `r1`. The trip count is the buffer's length — a *runtime* quantity with
+no static bound. -/
+def code (b : BufId) : Stmt w :=
+  .whileNZ (.bufLen 1 b) 1 (.bufPop b)
+
+def Inv (b : BufId) (k : ℕ) (s : State w) : Prop := (s.bufs b).size = k
+
+def InvG (b : BufId) (k : ℕ) (s : State w) : Prop :=
+  Inv b k s ∧ s.regs 1 = BitVec.ofNat w k
+
+/-- Space-only: net 0, peak 0, from **every** start state — including those where the
+loop runs longer than any given time bound (`no_time_bound`). The measure (the
+buffer length) still drives the induction; it just never appears in the bounds. -/
+theorem space_spec {C : CostModel} (b : BufId) :
+    SpaceTriple C (fun _ => True) (code (w := w) b) (fun _ => True) 0 0 := by
+  have hguard : ∀ k, SpaceTriple C (Inv (w := w) b k) (.bufLen 1 b)
+      (InvG (w := w) b k) 0 0 := by
+    intro k
+    apply SpaceTriple.bufLen
+    intro s hs
+    exact ⟨hs, by simp [show (s.bufs b).size = k from hs]⟩
+  have hpos : ∀ k (s : State w), InvG b k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
+    rintro (_ | k) s ⟨_, hflag⟩ hnz
+    · exact absurd (hflag.trans (by simp)) hnz
+    · exact ⟨k, rfl⟩
+  have hbody : ∀ k, SpaceTriple C (fun (s : State w) => InvG b (k + 1) s ∧ s.regs 1 ≠ 0)
+      (.bufPop b) (Inv b k) 0 0 := by
+    intro k
+    apply SpaceTriple.bufPop
+    rintro s ⟨⟨hsz, _⟩, _⟩
+    show ((s.setBuf b (s.bufs b).pop).bufs b).size = k
+    simp [show (s.bufs b).size = k + 1 from hsz]
+  intro s _
+  obtain ⟨s', t, d, p, hexec, _, hd, hp⟩ :=
+    SpaceTriple.whileNZ_measure hguard hpos hbody ((s.bufs b).size) s rfl
+  refine ⟨s', t, d, p, hexec, trivial, ?_, ?_⟩ <;> simp_all
+
+/-- An `ofNat` below the modulus is zero only if its argument is. -/
+private theorem ofNat_eq_zero_iff {n : ℕ} (hn : n < 2 ^ w) :
+    BitVec.ofNat w n = 0 ↔ n = 0 := by
+  constructor
+  · intro h
+    have := congrArg BitVec.toNat h
+    simp only [BitVec.toNat_ofNat] at this
+    rw [Nat.mod_eq_of_lt hn] at this
+    exact this
+  · rintro rfl
+    rfl
+
+/-- Time lower bound: draining a buffer of length `m < 2 ^ w` takes at least `m`
+steps under the unit cost model. (The hypothesis keeps the length register from
+wrapping; it is preserved as the buffer shrinks.) -/
+private theorem time_lower {b : BufId} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} (h : Exec .unit c s s' t d p)
+    (hc : c = .whileNZ (.bufLen 1 b) 1 (.bufPop b))
+    (hsz : (s.bufs b).size < 2 ^ w) : (s.bufs b).size ≤ t := by
+  induction h with
+  | while_done hg hz =>
+    obtain ⟨rfl, rfl, rfl⟩ := Stmt.whileNZ.inj hc
+    cases hg
+    simp only [regs_setReg_self] at hz
+    rw [ofNat_eq_zero_iff hsz] at hz
+    omega
+  | while_step hg hnz hb _ _ _ ihl =>
+    obtain ⟨rfl, rfl, rfl⟩ := Stmt.whileNZ.inj hc
+    cases hg
+    cases hb
+    simp only [regs_setReg_self, ne_eq, ofNat_eq_zero_iff hsz] at hnz
+    have hlow := ihl rfl (by simp; omega)
+    simp only [bufs_setBuf_self, bufs_setReg, Array.size_pop] at hlow
+    have e1 : CostModel.unit.bufLen = 1 := rfl
+    have e2 : CostModel.unit.branch = 1 := rfl
+    have e3 : CostModel.unit.bufPop = 1 := rfl
+    omega
+  | _ => simp_all
+
+/-- **No uniform time bound exists** for `Drain.code`: every candidate `T`
+(representable in a word) is beaten by starting with a buffer of length `T + 1`.
+Contrast with `space_spec`, which holds with bounds `0`/`0` for the same trivial
+precondition — the two resources genuinely decouple. -/
+theorem no_time_bound (b : BufId) (T : ℕ) (hT : T + 1 < 2 ^ w) :
+    ¬ TimeTriple .unit (fun _ => True) (code (w := w) b) (fun _ => True) T := by
+  intro h
+  obtain ⟨s', t, d, p, hexec, -, ht⟩ := h
+    { State.init w with
+      bufs := fun b' => if b' = b then Array.replicate (T + 1) 0 else #[] }
+    trivial
+  have hlow := time_lower hexec rfl (by simp; omega)
+  simp at hlow
+  omega
+
+end Drain
+
 /-! ## The builder produces the same programs
 
 `sumB` is `SumBuf.code` written in the surface syntax: automatic register allocation,
