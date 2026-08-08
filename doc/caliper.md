@@ -18,9 +18,9 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 | `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs, Fermat inverse generated from the bits of `p - 2` at generation time |
 | `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
 | `W64.lean` | Fixed 64-bit surface: namespace `Caliper64` of reducible `abbrev`s pinning `w := 64` (`Word`, `Stmt`, `State`, `Exec`, `run`, `Triple`, `TimeTriple`, `SpaceTriple`, `Build`, `Exp`, `Buf`, `build`, `Fp p`), plus a short demo where `w` never appears |
-| `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable` checks; differential tests against `WitgenIR.eval` at BabyBear |
-| `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compileIR_time_eq` (every execution takes *exactly* `staticTime` — data-independent), `compileIR_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40` |
-| `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compileIR_sim`: every compilable, environment-bounded witness program has an execution ending with the output buffer holding exactly the encoded `WitgenIR.eval` output (which doubles as memory safety); combined with phase 2 in `isZero_witgen_correct_140` |
+| `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound` checks and the **checked entry point `compile`**; differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear |
+| `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40` |
+| `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded `WitgenIR.eval` output (which doubles as memory safety); combined with phase 2 in `isZero_witgen_correct_140` |
 
 ## The witgen pipeline: `witgen in < 2^N steps`, machine-checked
 
@@ -30,13 +30,35 @@ answer** and whose running time is a *syntactic constant* — the same number on
 input (also a constant-time/side-channel statement), computable by `#eval` and
 certified by evaluation.
 
-The simulation is end to end: `compileIR_sim` (`WitgenSimIR.lean`) proves that for
-every compilable, environment-bounded witness program, from any start state whose
+**The entry point** is `compile` (`WitgenCompile.lean`):
+
+    compile (N : ℕ) (ir : WitgenIR F m) : Option (Stmt 64)
+
+with `N` the environment size. It returns `some code` only when every
+generation-time check passes — `ir` is a structured `.ir` program (no `native`
+closure), `WitgenIR.compilable ir` (no `listGet`/`dataGet`/`hintGet`, well-sorted
+`localVar`s), `WitgenIR.envBound N ir` (every environment read below `N`), and
+`N ≤ 2^64`, `m < 2^64` (indices and the output length survive their 64-bit
+immediates) — and it computes the local-register count from the program itself
+(`L := steps.length`), so no caller-supplied `L` can corrupt the register layout.
+The raw compiler `compileIR` is internal and unchecked; it exists as the object the
+proofs do induction over. All user-facing theorems are stated about `compile`.
+
+What cannot be decided at generation time for a generic `FiniteField` — `p` prime,
+`2 < p`, `p * p ≤ 2^64` (single-word moduli) — is not checked but carried as
+hypotheses of the correctness theorems: `compile`'s output is verified exactly under
+the field side conditions those theorems state.
+
+The simulation is end to end: `compile_sim` (`WitgenSimIR.lean`) proves that for
+every witness program the checked entry accepts, from any start state whose
 buffer `0` encodes the environment, the compiled code has an execution ending with
 the output buffer holding exactly the encoded reference output `WitgenIR.eval`
-(elementwise canonical words). Because out-of-range buffer accesses have no `Exec`
-derivation, that existence theorem is simultaneously a memory-safety proof; by
-determinism, its costs and output are those of *every* execution.
+(elementwise canonical words) — `compile ... = some code` already carries the
+compilability, environment-bound and size facts, so no separate side conditions
+remain beyond the field hypotheses and the environment encoding. Because
+out-of-range buffer accesses have no `Exec` derivation, that existence theorem is
+simultaneously a memory-safety proof; by determinism, its costs and output are
+those of *every* execution.
 
 Concretely, for the BabyBear `IsZeroField` witness, correctness and the phase-2 cost
 bounds combine into the headline corollary
