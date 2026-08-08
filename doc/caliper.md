@@ -4,8 +4,9 @@
 intended as the compilation target for the witness-generation IR
 (`Clean/Circuit/WitnessIR.lean`). Programs carry machine-checked **upper bounds** on
 running time and on allocated memory. The pipeline is complete through the witgen-IR
-compiler: programs written in Clean's witness IR compile to this machine and carry
-certified concrete step-count bounds (see "The witgen pipeline" below).
+compiler, including a verified lowering: programs written in Clean's witness IR
+compile to this machine, carry certified concrete step-count bounds, and provably
+compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 
 ## Files
 
@@ -19,20 +20,37 @@ certified concrete step-count bounds (see "The witgen pipeline" below).
 | `W64.lean` | Fixed 64-bit surface: namespace `Caliper64` of reducible `abbrev`s pinning `w := 64` (`Word`, `Stmt`, `State`, `Exec`, `run`, `Triple`, `TimeTriple`, `SpaceTriple`, `Build`, `Exp`, `Buf`, `build`, `Fp p`), plus a short demo where `w` never appears |
 | `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable` checks; differential tests against `WitgenIR.eval` at BabyBear |
 | `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compileIR_time_eq` (every execution takes *exactly* `staticTime` — data-independent), `compileIR_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40` |
-| `WitgenSim.lean` + `WitgenSimExpr.lean` | **Phase 3**: verified lowering — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, and the scalar-expression simulation theorems relating compiled code to `WitgenIR` evaluation |
+| `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compileIR_sim`: every compilable, environment-bounded witness program has an execution ending with the output buffer holding exactly the encoded `WitgenIR.eval` output (which doubles as memory safety); combined with phase 2 in `isZero_witgen_correct_140` |
 
 ## The witgen pipeline: `witgen in < 2^N steps`, machine-checked
 
-The end-to-end story the four `Witgen*` files deliver: a witness-generation program in
-Clean's IR compiles to straight-line machine code whose running time is a *syntactic
-constant* — the same number on every input (also a constant-time/side-channel
-statement), computable by `#eval` and certified by evaluation. Concretely, for the
-BabyBear `IsZeroField` witness: every execution takes exactly 140 unit-cost steps
-(2090 under the calibrated cycles table), peak memory 1 word, giving theorems of
-exactly the target shape
+The end-to-end story the five `Witgen*` files deliver: a witness-generation program in
+Clean's IR compiles to straight-line machine code that provably **computes the right
+answer** and whose running time is a *syntactic constant* — the same number on every
+input (also a constant-time/side-channel statement), computable by `#eval` and
+certified by evaluation.
 
-    theorem isZero_witgen_lt_2_40 (h : Exec .unit isZeroCompiled s s' t d p) :
-        t < 2 ^ 40
+The simulation is end to end: `compileIR_sim` (`WitgenSimIR.lean`) proves that for
+every compilable, environment-bounded witness program, from any start state whose
+buffer `0` encodes the environment, the compiled code has an execution ending with
+the output buffer holding exactly the encoded reference output `WitgenIR.eval`
+(elementwise canonical words). Because out-of-range buffer accesses have no `Exec`
+derivation, that existence theorem is simultaneously a memory-safety proof; by
+determinism, its costs and output are those of *every* execution.
+
+Concretely, for the BabyBear `IsZeroField` witness, correctness and the phase-2 cost
+bounds combine into the headline corollary
+
+    theorem isZero_witgen_correct_140
+        (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
+        (hbuf : s.bufs 0 = envArr) :
+        ∃ s' d pp, Exec .unit isZeroCompiled s s' 140 d pp ∧
+          s'.bufs 1 = (Vector.map encF (testIsZero.eval env)).toArray ∧
+          pp ≤ 1
+
+— an execution computing the **correct encoded witness output** in **exactly 140
+unit-cost steps** (2090 under the calibrated cycles table; both far below `2^40`,
+see `isZero_witgen_correct_lt_2_40`) with **peak memory 1 word**.
 
 Costs scale linearly in circuit size (each IR node compiles to O(1) instructions,
 `mapRange n` to n copies of its body, field inverse to ~2·log p multiply-reduce
