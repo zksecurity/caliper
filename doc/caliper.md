@@ -12,14 +12,14 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 
 | File | Contents |
 |---|---|
-| `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems, reference interpreter (`run`) + soundness |
+| `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems and the partial static clock (`staticTime?`), well-formed states and absolute live memory (`State.WellFormed`, `State.liveMem`), reference interpreter (`run`) + soundness |
 | `Triple.lean` | Upper-bound Hoare triples (`Triple`), one rule per instruction, `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule `whileNZ_measure`, frame rules; decoupled time-only/space-only judgments (`TimeTriple`/`SpaceTriple`) with the same rule set, recombinable into a full `Triple` via determinism (`TimeTriple.and_space`) |
 | `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_`, typed buffer handles (`Buf`), product types (`PairR`, `PairBuf`) |
 | `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs, Fermat inverse generated from the bits of `p - 2` at generation time |
 | `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
 | `W64.lean` | Fixed 64-bit surface: namespace `Caliper64` of reducible `abbrev`s pinning `w := 64` (`Word`, `Stmt`, `State`, `Exec`, `run`, `Triple`, `TimeTriple`, `SpaceTriple`, `Build`, `Exp`, `Buf`, `build`, `Fp p`), plus a short demo where `w` never appears |
 | `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound` checks and the **checked entry point `compile`**; differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear |
-| `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40` |
+| `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40` |
 | `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded `WitgenIR.eval` output (which doubles as memory safety); combined with phase 2 in `isZero_witgen_correct_140` |
 
 ## The witgen pipeline: `witgen in < 2^N steps`, machine-checked
@@ -27,8 +27,9 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 The end-to-end story the five `Witgen*` files deliver: a witness-generation program in
 Clean's IR compiles to straight-line machine code that provably **computes the right
 answer** and whose running time is a *syntactic constant* — the same number on every
-input (also a constant-time/side-channel statement), computable by `#eval` and
-certified by evaluation.
+input, computable by `#eval` and certified by evaluation. (That data-independence is
+a statement about the abstract time counter; what it does and does not say about
+side channels is spelled out in "What is NOT proved" below.)
 
 **The entry point** is `compile` (`WitgenCompile.lean`):
 
@@ -103,8 +104,17 @@ Costs come from a `CostModel`: a table indexed by the *instruction*, never by th
 state. `Exec C c s s' t d p` charges each instruction its table entry, so:
 
 - `Exec.straight_time_eq`: a branch-free program's running time is a syntactic
-  constant — the formal content of "every operation is unit time", and a constant-time
-  (side-channel) statement for free.
+  constant — the formal content of "every operation is unit time". The proved
+  statement is data-independence of the *abstract time counter*: every input yields
+  the same `t`. That is a useful ingredient of a constant-time argument (the
+  instruction trace of straight-line code is input-independent), but it does not
+  cover memory-access addresses, allocation sizes, memory profiles, or faults, and
+  is not by itself a side-channel security statement — see "What is NOT proved".
+- `Stmt.staticTime?` is the safe way to *quote* a static time: `some n` iff the
+  code is straight-line with static time `n` (`staticTime?_eq_some`), in which case
+  every execution takes exactly `n` (`Exec.staticTime?_time_eq`); `none` for
+  anything containing `ifNZ`/`whileNZ`. The raw `staticTime` returns 0 on loops and
+  is only meaningful under a `Stmt.Straight` proof.
 - Bounds proved for a generic `C` instantiate to any concrete table: `CostModel.unit`
   (all 1) or `CostModel.cycles` (a rough modern-CPU latency table). This is where
   "roughly a cycle on a modern CPU" lives: the *shape* of the machine guarantees
@@ -179,6 +189,15 @@ separately proved judgments recombine into a full `Triple` (`TimeTriple.and_spac
 returns is a genuine `Exec` derivation *with the same costs*, so `#eval` numbers are
 instances of the proved bounds (the examples check this with `#guard_msgs`).
 
+`run` is a *reference semantics* — it exists for differential testing and for
+producing `Exec` derivations — **not** a performance-realizing implementation. Its
+`State` maps registers and buffer names through Lean functions, so every `setReg`
+stacks another closure and lookups walk the chain (individual buffers are real
+`Array`s, but the maps around them are functional); the interpreter's own wall-clock
+time and heap usage are therefore unrelated to the abstract cost `t` and profile
+`(d, p)` it computes. A performant runner — array-backed registers, native buffers —
+would be a separate artifact with its own refinement proof against `Exec`.
+
 ### Ergonomics
 
 Programs can be written against the raw constructors (assembly-flavoured, what proofs
@@ -233,7 +252,12 @@ The peak-memory bound transfers directly: physical footprint = sum of reserved
 capacities = exactly what the model charges, up to allocator metadata and
 fragmentation (a small constant for the few, long-lived, word-aligned buffers this
 machine uses). No shrinking policy or amortization argument is needed — capacity
-changes only at `bufAlloc`/`bufFree`.
+changes only at `bufAlloc`/`bufFree`. On the model side this identification is
+backed by the `State.WellFormed`/`State.liveMem` theorems (see the memory-profile
+section above): over every state reachable from an honest start, `d` is the exact
+change and `p` a true high-water mark of the *absolute* footprint — not growth
+relative to an arbitrary baseline — so "sum of reserved capacities" is a
+well-defined quantity the profile really tracks.
 
 Supporting facts, all discharged by the machine's design rather than by proof:
 
@@ -251,6 +275,61 @@ One honest qualification remains: `c` is uniform over the memory hierarchy — a
 exact, and sensitivity to their unit price is a `CostModel` calibration question, not
 a soundness one. (The former second qualification — amortized `bufPush` latency — is
 gone: with explicit capacity, every instruction is worst-case constant time.)
+
+## What is NOT proved
+
+The theorems stop at the abstract machine. Stated plainly:
+
+- **No verified backend exists.** There is no verified lowering from `Stmt` to a
+  physical ISA, allocator, or runtime. The compilation contract above — each
+  instruction maps to O(1) machine operations on a modern 64-bit CPU — is an
+  engineering argument, made per-instruction and kept inspectable; it is not a
+  theorem.
+- **`CostModel` is a parameter, not a fact about hardware.** Every theorem is
+  generic in `C`. The shipped `.unit` and `.cycles` tables are calibration choices,
+  and the `cycles` entries are estimates (`bufGet := 4` assumes an L1 hit,
+  `bufAlloc := 50` assumes the malloc fast path); no theorem relates them to any
+  real chip.
+- **Abstract states are mathematical functions.** `State` maps registers and buffer
+  names through functions. That a backend realizes these as stack slots, machine
+  registers and per-buffer vectors is part of the same informal contract — made
+  credible by the finitely many statically-known names, not proved. Each buffer
+  name also carries O(1) descriptor state (pointer, length, capacity) outside the
+  word-count metric.
+- **Total semantics at the edges.** `udiv`/`umod` by zero and `bufPop` on an empty
+  buffer follow the total `BitVec`/`Array` semantics (division by zero yields 0,
+  pop on empty is a no-op). A native backend must insert the corresponding checks
+  or establish the corresponding preconditions — bounded, O(1) work per site, but
+  that obligation lives in the contract, not in the proofs.
+- **Allocator realities are outside the metric.** Allocator metadata, alignment,
+  fragmentation, and code size are not measured. The peak `p` counts reserved
+  words — the `WellFormed`/`liveMem` theorems make that count absolute over every
+  reachable state — but words-to-bytes, headers and padding are the allocator's
+  business.
+- **Generation-time staging is unpriced.** `mapRange`/`envRange`/`bitsOf` and the
+  Fermat inverse ladder unroll at *generation* time, so generated code size is
+  proportional to those static parameters. The cost theorems price the runtime of
+  the generated code; the size itself is not hidden — it is visible as the
+  instruction count / `staticTime` under the unit model — but the generation work
+  is Lean evaluation and carries no bound.
+- **Time data-independence is not a side-channel proof.** `straight_time_eq` /
+  `compile_time_data_independent` prove that the *abstract time counter* is the
+  same on every input. They do not cover memory-access addresses (`bufGet b i`
+  costs one unit whatever the data-dependent index `i` is), allocation sizes
+  (`bufAlloc`'s cost is size-independent, but the requested size is
+  data-observable), memory profiles, or faults. A useful ingredient for a
+  constant-time implementation — the instruction trace of straight-line code is
+  input-independent — but not by itself a side-channel security statement.
+
+### Trusted base
+
+Checking the theorems requires trusting the Lean kernel plus the three standard
+axioms (`propext`, `Classical.choice`, `Quot.sound`). The concrete headline
+numerals — BabyBear primality, the `staticTime` numerals like `140`/`2090` —
+additionally use `Lean.ofReduceBool` via `native_decide` (trusting the Lean
+compiler to evaluate closed booleans; needed because `toBits` is well-founded
+recursion, which `rfl` cannot reduce). `#print axioms <theorem>` is the audit
+tool: it lists exactly which of these any given theorem depends on.
 
 ## Caveats / next steps
 - The witgen-IR compiler (`WitgenIR → Stmt`) plus a cost theorem per IR node is the

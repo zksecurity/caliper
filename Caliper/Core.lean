@@ -28,7 +28,9 @@ Every constructor of `Stmt` other than `seq`/`ifNZ`/`whileNZ` maps to one instru
 whose cost is drawn from a `CostModel` — a table indexed by the *instruction*, never by
 the *state*. That is the formal content of "unit time": see `straight_time_eq`, which
 says a branch-free program's running time is a syntactic constant, independent of its
-input. (That also makes branch-free code constant-time in the side-channel sense.)
+input. (That is data-independence of the abstract time counter — an ingredient of a
+constant-time argument, not by itself a side-channel guarantee; see
+`doc/caliper.md`.)
 
 Two consequences for the instruction set:
 
@@ -553,8 +555,11 @@ def Stmt.Straight : Stmt w → Prop
 
 /-- The syntactic running time of a **branch-free** statement — exact for `Straight`
 code (`straight_time_eq`). For `ifNZ` it is the safe upper-bound shape
-(`branch + max`); for `whileNZ` it is 0 and NOT meaningful — bounds for looping code
-come from the `Triple` logic, never from this function. -/
+(`branch + max`); for `whileNZ` it is 0 and **meaningless — it returns 0 for every
+loop**, so quoting this function for code containing `whileNZ` produces a number
+that bounds nothing. At the API surface use `staticTime?` (which returns `none`
+unless the number is exact) or pair this function with a `Stmt.Straight` proof;
+bounds for looping code come from the `Triple` logic, never from this function. -/
 def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .skip => 0
   | .seq c₁ c₂ => c₁.staticTime C + c₂.staticTime C
@@ -611,12 +616,70 @@ theorem Exec.allocFree_space {C : CostModel} {c : Stmt w} {s s' : State w} {t : 
   | _ => omega
 
 /-- Corollary: two runs of the same branch-free program take the same time, whatever
-their inputs. (This is also a constant-time / side-channel statement.) -/
+their inputs. (Data-independence of the abstract time counter — an ingredient of a
+constant-time argument, not by itself a side-channel guarantee.) -/
 theorem Exec.straight_data_independent {C : CostModel} {c : Stmt w}
     {s₁ s₁' s₂ s₂' : State w} {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
     (h₁ : Exec C c s₁ s₁' t₁ d₁ p₁) (h₂ : Exec C c s₂ s₂' t₂ d₂ p₂)
     (hs : c.Straight) : t₁ = t₂ :=
   (h₁.straight_time_eq hs).trans (h₂.straight_time_eq hs).symm
+
+/-- The static running time as a *partial* function — the safe way to quote a static
+time. `some n` exactly when the statement is straight-line (`Stmt.Straight`) with
+static time `n`, in which case every execution takes exactly `n` time units
+(`Exec.staticTime?_time_eq`); `none` as soon as the statement contains an `ifNZ` or
+`whileNZ` anywhere. Unlike the raw `staticTime`, this function cannot silently return
+a meaningless number for code with branches or loops: it mirrors exactly the fragment
+on which `straight_time_eq` holds (`staticTime?_eq_some`). -/
+def Stmt.staticTime? (C : CostModel) : Stmt w → Option ℕ
+  | .seq c₁ c₂ => (c₁.staticTime? C).bind fun t₁ => (c₂.staticTime? C).map (t₁ + ·)
+  | .ifNZ .. => none
+  | .whileNZ .. => none
+  | c => some (c.staticTime C)
+
+/-- `staticTime?` characterised: it returns `some n` precisely when the statement is
+straight-line with static time `n`. -/
+theorem Stmt.staticTime?_eq_some {C : CostModel} {c : Stmt w} {n : ℕ} :
+    c.staticTime? C = some n ↔ c.Straight ∧ c.staticTime C = n := by
+  induction c generalizing n with
+  | seq c₁ c₂ ih₁ ih₂ =>
+    constructor
+    · intro h
+      simp only [Stmt.staticTime?] at h
+      cases h₁ : c₁.staticTime? C with
+      | none => simp [h₁] at h
+      | some t₁ =>
+        cases h₂ : c₂.staticTime? C with
+        | none => simp [h₁, h₂] at h
+        | some t₂ =>
+          simp only [h₁, h₂, Option.bind_some, Option.map_some, Option.some.injEq] at h
+          obtain ⟨hs₁, ht₁⟩ := ih₁.mp h₁
+          obtain ⟨hs₂, ht₂⟩ := ih₂.mp h₂
+          exact ⟨⟨hs₁, hs₂⟩, by simp only [Stmt.staticTime]; omega⟩
+    · rintro ⟨hs, rfl⟩
+      simp only [Stmt.staticTime?, ih₁.mpr ⟨hs.1, rfl⟩, ih₂.mpr ⟨hs.2, rfl⟩,
+        Option.bind_some, Option.map_some, Stmt.staticTime]
+  | ifNZ =>
+    simp only [Stmt.staticTime?]
+    exact ⟨fun h => by simp at h, fun h => h.1.elim⟩
+  | whileNZ =>
+    simp only [Stmt.staticTime?]
+    exact ⟨fun h => by simp at h, fun h => h.1.elim⟩
+  | _ => simp [Stmt.staticTime?, Stmt.Straight]
+
+/-- On straight-line code, `staticTime?` succeeds and agrees with `staticTime`. -/
+theorem Stmt.Straight.staticTime?_eq {c : Stmt w} (hs : c.Straight) (C : CostModel) :
+    c.staticTime? C = some (c.staticTime C) :=
+  Stmt.staticTime?_eq_some.mpr ⟨hs, rfl⟩
+
+/-- **Whenever `staticTime?` returns a number, that number is the exact running
+time** of every execution, on every input — the `Option`-valued API needs no
+side condition: `some` already certifies straightness. -/
+theorem Exec.staticTime?_time_eq {C : CostModel} {c : Stmt w} {s s' : State w}
+    {t n : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hn : c.staticTime? C = some n) :
+    t = n := by
+  obtain ⟨hs, rfl⟩ := Stmt.staticTime?_eq_some.mp hn
+  exact h.straight_time_eq hs
 
 /-! ### Absolute live memory: well-formed states and `liveMem`
 
