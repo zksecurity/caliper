@@ -1,6 +1,6 @@
-import Clean.LowLevel.Triple
-import Clean.LowLevel.Builder
-import Clean.LowLevel.Field
+import Clean.Caliper.Triple
+import Clean.Caliper.Builder
+import Clean.Caliper.Field
 
 /-!
 # Worked examples
@@ -23,9 +23,9 @@ At the end, the builder surface syntax is connected to the hand-written core syn
 evaluation, and `#eval` runs the reference interpreter against the proved bounds.
 -/
 
-namespace LowLevel.Examples
+namespace Caliper.Examples
 
-open LowLevel
+open Caliper
 
 variable {w : ℕ}
 
@@ -821,4 +821,4 @@ def fieldDemo : Option (Word 64 × Word 64 × ℕ) :=
 #guard_msgs in
 #eval fieldDemo
 
-end LowLevel.Examples
+end Caliper.Examples

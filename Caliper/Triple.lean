@@ -1,4 +1,4 @@
-import Clean.LowLevel.Core
+import Clean.Caliper.Core
 
 /-!
 # Upper-bound Hoare triples
@@ -31,7 +31,7 @@ deterministic the two judgments recombine into a full `Triple`
 (`TimeTriple.and_space`).
 -/
 
-namespace LowLevel
+namespace Caliper
 
 variable {w : ℕ} {C : CostModel}
 
@@ -678,4 +678,4 @@ theorem frame_buf {P Q : State w → Prop} {c : Stmt w} {D M : ℤ} {b : BufId}
 
 end SpaceTriple
 
-end LowLevel
+end Caliper

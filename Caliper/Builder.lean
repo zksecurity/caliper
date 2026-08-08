@@ -1,4 +1,4 @@
-import Clean.LowLevel.Core
+import Clean.Caliper.Core
 
 /-!
 # Surface syntax: the program builder
@@ -16,7 +16,7 @@ This file is the ergonomic layer for *writing* programs: a builder monad with
 
 Everything here is *generation-time only*: `build` runs the monad and returns a plain
 `Stmt`, and that `Stmt` is what specs and cost theorems are about. The builder adds
-nothing to the trusted surface — `Clean/LowLevel/Examples.lean` checks by `rfl` that
+nothing to the trusted surface — `Clean/Caliper/Examples.lean` checks by `rfl` that
 builder output coincides with hand-written core syntax.
 
 Data structures follow the same pattern: a "struct" is a Lean-level record of
@@ -25,7 +25,7 @@ the accessor functions are ordinary Lean functions emitting indexing code. Becau
 buffer names are static, two different structures can never alias.
 -/
 
-namespace LowLevel
+namespace Caliper
 
 variable {w : ℕ}
 
@@ -275,4 +275,4 @@ def snd (pb : PairBuf w) (i : Exp w) : Build w Reg :=
 
 end PairBuf
 
-end LowLevel
+end Caliper

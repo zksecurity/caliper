@@ -66,7 +66,7 @@ Out-of-range buffer accesses have *no* `Exec` derivation, so exhibiting a deriva
 (which is what a `Triple` does) proves memory safety along the way.
 -/
 
-namespace LowLevel
+namespace Caliper
 
 /-- Registers are unbounded in number; the builder allocates them, so a program uses
 finitely many and a real compiler would give each one a stack slot. -/
@@ -795,4 +795,4 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
               obtain ⟨rfl, rfl, rfl, rfl⟩ := h
               exact .while_step (ih _ hg) hz (ih _ hb) (ih _ hl)
 
-end LowLevel
+end Caliper

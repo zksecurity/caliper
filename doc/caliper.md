@@ -1,4 +1,4 @@
-# Caliper: the low-level unit-cost DSL (`Clean/LowLevel/`)
+# Caliper: the low-level unit-cost DSL (`Clean/Caliper/`)
 
 **Caliper** is a deep-embedded imperative language whose every instruction runs in constant time,
 intended as the compilation target for the witness-generation IR
