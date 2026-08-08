@@ -16,6 +16,7 @@ certified concrete step-count bounds (see "The witgen pipeline" below).
 | `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_`, typed buffer handles (`Buf`), product types (`PairR`, `PairBuf`) |
 | `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs, Fermat inverse generated from the bits of `p - 2` at generation time |
 | `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
+| `W64.lean` | Fixed 64-bit surface: namespace `Caliper64` of reducible `abbrev`s pinning `w := 64` (`Word`, `Stmt`, `State`, `Exec`, `run`, `Triple`, `TimeTriple`, `SpaceTriple`, `Build`, `Exp`, `Buf`, `build`, `Fp p`), plus a short demo where `w` never appears |
 | `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable` checks; differential tests against `WitgenIR.eval` at BabyBear |
 | `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compileIR_time_eq` (every execution takes *exactly* `staticTime` — data-independent), `compileIR_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40` |
 | `WitgenSim.lean` + `WitgenSimExpr.lean` | **Phase 3**: verified lowering — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, and the scalar-expression simulation theorems relating compiled code to `WitgenIR` evaluation |
@@ -139,6 +140,20 @@ hand-written core syntax in the examples, so the sugar adds nothing to the trust
 surface. Subroutine *specs* are ordinary Lean theorems about the generated code
 (`SumBuf.spec`), reused at every call site — the same composition discipline as
 `FormalCircuit`, one level down.
+
+### Fixed 64-bit surface (`Caliper64`)
+
+The core stays generic in the word size `w`, but for practical use `w = 64` — the
+word size of the witgen backend. `W64.lean` provides the namespace `Caliper64`: thin
+reducible `abbrev`s fixing `w := 64` for the types and entry points a program or
+spec author touches (`Word`, `Stmt`, `State`, `State.init`, `Exec`, `run`, `Triple`,
+`TimeTriple`, `SpaceTriple`, `Build`, `Exp`, `Buf`, `build`, `Fp p`). Import
+`Clean.Caliper.W64` and write against `Caliper64`; because the abbreviations are
+reducible, every generic theorem and proof rule applies definitionally — nothing is
+redefined or restated. Names that infer `w` from their arguments (the `Build`
+combinators, the `Triple` rules, `CostModel`, `Reg`, `BufId`, …) are used from
+`Caliper` unchanged. The generic `w` remains in the core; the witgen pipeline
+already fixes 64.
 
 ## The compilation contract — why DSL cost `n` means `c · n` CPU time
 
