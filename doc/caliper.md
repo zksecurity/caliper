@@ -133,7 +133,10 @@ state. `Exec C c s s' t d p` charges each instruction its table entry, so:
   code is straight-line with static time `n` (`staticTime?_eq_some`), in which case
   every execution takes exactly `n` (`Exec.staticTime?_time_eq`); `none` for
   anything containing `ifNZ`/`whileNZ`. The raw `staticTime` returns 0 on loops and
-  is only meaningful under a `Stmt.Straight` proof.
+  is only meaningful under a `Stmt.Straight` proof — or, for branching but loop-free
+  code (`Stmt.LoopFree`), as a proved *upper bound*:
+  `Exec.time_le_staticTime_of_loopFree` shows the `ifNZ` arm's `branch + max` shape
+  bounds every execution.
 - Bounds proved for a generic `C` instantiate to any concrete table: `CostModel.unit`
   (all 1) or `CostModel.cycles` (a rough modern-CPU latency table). This is where
   "roughly a cycle on a modern CPU" lives: the *shape* of the machine guarantees
@@ -351,8 +354,11 @@ recursion, which `rfl` cannot reduce). `#print axioms <theorem>` is the audit
 tool: it lists exactly which of these any given theorem depends on.
 
 ## Caveats / next steps
-- The witgen-IR compiler (`WitgenIR → Stmt`) plus a cost theorem per IR node is the
-  actual goal; this layer is the target it needs.
+- The witgen-IR compiler (`WitgenIR → Stmt`, `WitgenCompile.lean`) with its verified
+  lowering and per-node cost theorems is complete. Natural next steps: compiling a
+  whole circuit's multi-witness computation (not just single witness blocks), a
+  performant runner beyond the reference interpreter, and refining the cost model
+  toward a concrete backend.
 - A `Proc` record bundling `code`/`Pre`/`Post`/`time`/`space`/`spec` (mirroring
   `FormalCircuit`) would package subroutines more tightly; the examples inline this
   pattern with plain `have`s for now.

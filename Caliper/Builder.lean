@@ -172,8 +172,10 @@ end Build
 At the surface, buffers are handled through the newtype `Buf w`, not raw `BufId`s.
 `Reg` and `BufId` are both `ℕ` in the core (which keeps proof goals numeral-friendly),
 so without the wrapper a buffer name could be passed where a register — or an
-arbitrary index — was expected. `Buf w` is produced only by `Build.alloc`, so surface
-programs cannot forge or confuse buffer handles. -/
+arbitrary index — was expected. The newtype prevents *accidental* mixing of the
+three; it is not an enforced capability: the constructor stays public (tests write
+`⟨0⟩` directly), so the intended source `Build.alloc` is a convention, not a
+guarantee. -/
 
 /-- Typed handle to a buffer of `w`-bit words. Obtain one from `Build.alloc`. -/
 structure Buf (w : ℕ) where

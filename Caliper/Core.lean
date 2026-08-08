@@ -553,13 +553,31 @@ def Stmt.Straight : Stmt w → Prop
   | .whileNZ .. => False
   | _ => True
 
+/-- No `whileNZ` anywhere; `ifNZ` is allowed (both branches must be loop-free). For
+such code `staticTime` is an upper bound on every execution
+(`Exec.time_le_staticTime_of_loopFree`). -/
+def Stmt.LoopFree : Stmt w → Prop
+  | .seq c₁ c₂ => c₁.LoopFree ∧ c₂.LoopFree
+  | .ifNZ _ thn els => thn.LoopFree ∧ els.LoopFree
+  | .whileNZ .. => False
+  | _ => True
+
+/-- Straight code is in particular loop-free. -/
+theorem Stmt.Straight.loopFree {c : Stmt w} (h : c.Straight) : c.LoopFree := by
+  induction c with
+  | seq _ _ ih₁ ih₂ => exact ⟨ih₁ h.1, ih₂ h.2⟩
+  | ifNZ | whileNZ => exact h.elim
+  | _ => trivial
+
 /-- The syntactic running time of a **branch-free** statement — exact for `Straight`
-code (`straight_time_eq`). For `ifNZ` it is the safe upper-bound shape
-(`branch + max`); for `whileNZ` it is 0 and **meaningless — it returns 0 for every
-loop**, so quoting this function for code containing `whileNZ` produces a number
-that bounds nothing. At the API surface use `staticTime?` (which returns `none`
-unless the number is exact) or pair this function with a `Stmt.Straight` proof;
-bounds for looping code come from the `Triple` logic, never from this function. -/
+code (`straight_time_eq`). For `ifNZ` it is the upper-bound shape `branch + max`,
+proved safe for loop-free code by `Exec.time_le_staticTime_of_loopFree`; for
+`whileNZ` it is 0 and **meaningless — it returns 0 for every loop**, so quoting this
+function for code containing `whileNZ` produces a number that bounds nothing. At the
+API surface use `staticTime?` (which returns `none` unless the number is exact) or
+pair this function with a `Stmt.Straight` (exact) or `Stmt.LoopFree` (upper bound)
+proof; bounds for looping code come from the `Triple` logic, never from this
+function. -/
 def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .skip => 0
   | .seq c₁ c₂ => c₁.staticTime C + c₂.staticTime C
@@ -593,6 +611,22 @@ theorem Exec.straight_time_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t :
   | seq _ _ ih₁ ih₂ => exact congrArg₂ (· + ·) (ih₁ hs.1) (ih₂ hs.2)
   | ifNZ_true | ifNZ_false | while_done | while_step => exact hs.elim
   | _ => rfl
+
+/-- **Loop-free code is bounded by its static time.** With `ifNZ` in play the time is
+no longer exact — the branches may cost different amounts — but `staticTime`'s
+`branch + max` shape is a sound upper bound for every execution. This is the theorem
+behind calling that arm "the safe upper-bound shape". -/
+theorem Exec.time_le_staticTime_of_loopFree {C : CostModel} {c : Stmt w}
+    {s s' : State w} {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p)
+    (hl : c.LoopFree) : t ≤ c.staticTime C := by
+  induction h with
+  | seq _ _ ih₁ ih₂ => exact Nat.add_le_add (ih₁ hl.1) (ih₂ hl.2)
+  | ifNZ_true _ _ ih =>
+    exact Nat.add_le_add_left ((ih hl.1).trans (le_max_left _ _)) _
+  | ifNZ_false _ _ ih =>
+    exact Nat.add_le_add_left ((ih hl.2).trans (le_max_right _ _)) _
+  | while_done | while_step => exact hl.elim
+  | _ => exact le_rfl
 
 /-- Memory only ever enters through `bufAlloc`: alloc-free code — straight-line or
 not — has non-positive net and zero peak growth. -/

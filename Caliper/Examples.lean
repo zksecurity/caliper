@@ -5,7 +5,7 @@ import Clean.Caliper.Field
 /-!
 # Worked examples
 
-Five programs, in increasing order of interest:
+Six programs, in increasing order of interest:
 
 1. `swapCode` — straight-line code: functional spec, *exact* constant time from the
    syntax alone, and the data-independence (constant-time) corollary.
@@ -18,6 +18,9 @@ Five programs, in increasing order of interest:
 5. `SumTwo` — composition: two calls of the `SumBuf` subroutine glued together, where
    the "separation" reasoning is `simp` on syntactic footprints (`Writes`/`Touches`) —
    no separation logic.
+6. `CountUp`/`Drain` — decoupled judgments via `TimeTriple`/`SpaceTriple`: a time
+   bound proved without touching memory algebra, and a space bound for a loop whose
+   trip count admits **no** uniform time bound.
 
 At the end, the builder surface syntax is connected to the hand-written core syntax by
 evaluation, and `#eval` runs the reference interpreter against the proved bounds.
