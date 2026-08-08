@@ -147,6 +147,18 @@ word inside it, and frees it: proved net 0 and peak **1 word, independent of `n`
 (an allocation counter would report `n`). Invariants `0 ≤ p` and `d ≤ p` hold
 always, and code containing no `bufAlloc` has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`).
 
+These indices are anchored to *absolute* live memory, not just to an arbitrary
+baseline. `State.WellFormed` (every buffer's fill within its reserved capacity,
+finitely many buffers reserved) holds for `State.init` and is preserved by every
+execution (`Exec.wellFormed_preserved`), which rules out adversarial states with
+phantom capacity — a fabricated `caps b` that a `bufFree` could turn into credit
+funding a huge allocation at certified peak 0 — or with stored data the metric never
+charged. Over such states the absolute footprint `State.liveMem` changes by *exactly*
+`d` (`Exec.liveMem_eq`), a free credits only genuinely live capacity
+(`Exec.bufFree_credit_le`), and every state the execution passes through stays within
+`p` of the start (`Exec.reaches_liveMem_le_peak`, `Exec.liveMem_le_peak`) — so `p` is
+a true high-water mark on physical memory, not merely relative growth.
+
 The loop rule `Triple.whileNZ_measure` takes an invariant indexed by a
 remaining-iterations budget `k`; time is linear in `k`, and both memory bounds have
 the form `base + k · max (Dg + Db) 0` — `max` with 0 because the loop may exit early

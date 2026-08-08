@@ -618,6 +618,355 @@ theorem Exec.straight_data_independent {C : CostModel} {c : Stmt w}
     (hs : c.Straight) : t₁ = t₂ :=
   (h₁.straight_time_eq hs).trans (h₂.straight_time_eq hs).symm
 
+/-! ### Absolute live memory: well-formed states and `liveMem`
+
+`Exec` defines the indices `d` and `p` for *arbitrary* start states, including
+adversarial ones where they have no physical reading: a state claiming a huge unbacked
+`caps b` would let `bufFree b ;; bufAlloc b' n` fund a large allocation at certified
+peak 0 ("phantom credit"), and a state with `(s.bufs b).size > s.caps b` stores data
+the metric never charged ("hidden storage"). No such state is reachable from an honest
+start, and this section proves it: `State.WellFormed` — fill within reserved capacity,
+finitely many reservations — holds for `State.init` (`State.init_wellFormed`) and is
+preserved by every execution (`Exec.wellFormed_preserved`). Over such states the
+*absolute* footprint `State.liveMem` is well defined (`liveMem_eq_of_supportBound`)
+and the profile is pinned to it exactly:
+
+* the net change is exact: `liveMem s' = liveMem s + d` (`Exec.liveMem_eq`);
+* the final state is within the peak (`Exec.liveMem_le_peak`), and so is **every
+  intermediate state** of the execution (`Exec.reaches_liveMem_le_peak`, with
+  `Reaches` enumerating the states an execution passes through);
+* `bufFree` credits only capacity genuinely present in the footprint
+  (`Exec.bufFree_credit_le`) — no phantom credit.
+
+So for executions from well-formed states — in particular anything reachable from
+`State.init` — `p` is an absolute high-water mark on physical memory above the start
+level, not merely growth relative to an arbitrary baseline. -/
+
+/-- `B` is a *support bound* for `s`: every buffer at or above `B` has no reserved
+capacity. The absolute footprint of such a state is `s.liveMem B`, and the choice of
+bound does not matter (`liveMem_eq_of_supportBound`). -/
+def State.SupportBound (s : State w) (B : ℕ) : Prop := ∀ b, B ≤ b → s.caps b = 0
+
+/-- The states the memory accounting is *about*: the filled prefix of every buffer
+fits inside its reserved capacity (no data the metric never charged), and only
+finitely many buffers are reserved (so total live memory is well defined). Holds for
+`State.init` and is preserved by execution (`Exec.wellFormed_preserved`), hence holds
+in every state reachable from an honest start. -/
+structure State.WellFormed (s : State w) : Prop where
+  /-- Storage never exceeds what was reserved (and charged). -/
+  size_le_cap : ∀ b, (s.bufs b).size ≤ s.caps b
+  /-- Finite support: beyond some bound, no capacity is reserved. -/
+  finite : ∃ B, s.SupportBound B
+
+/-- The initial state is well-formed: nothing stored, nothing reserved. -/
+theorem State.init_wellFormed : (State.init w).WellFormed where
+  size_le_cap _ := Nat.le_refl 0
+  finite := ⟨0, fun _ _ => rfl⟩
+
+/-- A strict upper bound on every buffer name occurring in `c`. Buffer names are
+syntax, so this is a static quantity; in particular `c` cannot touch a buffer at or
+above `c.bufBound` (`Stmt.touches_lt_bufBound`). -/
+def Stmt.bufBound : Stmt w → ℕ
+  | .skip | .imm .. | .mov .. | .un .. | .bin .. => 0
+  | .seq c₁ c₂ => max c₁.bufBound c₂.bufBound
+  | .bufAlloc b _ => b + 1
+  | .bufFree b => b + 1
+  | .bufLen _ b => b + 1
+  | .bufGet _ b _ => b + 1
+  | .bufSet b _ _ => b + 1
+  | .bufPush b _ => b + 1
+  | .bufPop b => b + 1
+  | .ifNZ _ thn els => max thn.bufBound els.bufBound
+  | .whileNZ g _ body => max g.bufBound body.bufBound
+
+theorem Stmt.touches_lt_bufBound {c : Stmt w} {b : BufId} (h : c.Touches b) :
+    b < c.bufBound := by
+  induction c with
+  | seq _ _ ih₁ ih₂ =>
+    rcases h with h | h
+    · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
+    · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
+  | ifNZ _ _ _ ih₁ ih₂ =>
+    rcases h with h | h
+    · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
+    · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
+  | whileNZ _ _ _ ih₁ ih₂ =>
+    rcases h with h | h
+    · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
+    · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
+  | bufAlloc _ _ | bufFree _ | bufSet _ _ _ | bufPush _ _ | bufPop _ =>
+    subst h; exact Nat.lt_succ_self _
+  | _ => exact h.elim
+
+/-- Convert the syntactic bound into the touch-bound hypothesis the `liveMem`
+theorems take. -/
+theorem Stmt.touches_lt_of_bufBound_le {c : Stmt w} {B : ℕ} (hB : c.bufBound ≤ B) :
+    ∀ b, c.Touches b → b < B :=
+  fun _ ht => lt_of_lt_of_le (touches_lt_bufBound ht) hB
+
+/-- Preservation of the storage-within-capacity invariant — the induction core of
+`Exec.wellFormed_preserved`. `bufPush` demands free capacity (its `size < cap`
+hypothesis is exactly what keeps the invariant alive), `bufAlloc`/`bufFree` install an
+empty array along with the new capacity, and no other instruction grows a buffer. -/
+theorem Exec.sizes_le_caps {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} (h : Exec C c s s' t d p) (hs : ∀ b, (s.bufs b).size ≤ s.caps b) :
+    ∀ b, (s'.bufs b).size ≤ s'.caps b := by
+  induction h with
+  | skip => exact hs
+  | seq _ _ ih₁ ih₂ => exact ih₂ (ih₁ hs)
+  | imm | mov | un | bin | bufLen | bufGet => exact hs
+  | @bufAlloc b n s =>
+    intro b'
+    by_cases hb : b' = b
+    · subst hb; simp
+    · simp only [bufs_allocBuf_ne _ _ hb, caps_allocBuf_ne _ _ hb]; exact hs b'
+  | @bufFree b s =>
+    intro b'
+    by_cases hb : b' = b
+    · subst hb; simp
+    · simp only [bufs_allocBuf_ne _ _ hb, caps_allocBuf_ne _ _ hb]; exact hs b'
+  | @bufSet b i src s hlt =>
+    intro b'
+    by_cases hb : b' = b
+    · subst hb; simp only [bufs_setBuf_self, caps_setBuf, Array.size_set]; exact hs b'
+    · simp only [bufs_setBuf_ne _ _ hb, caps_setBuf]; exact hs b'
+  | @bufPush b src s hlt =>
+    intro b'
+    by_cases hb : b' = b
+    · subst hb; simp only [bufs_setBuf_self, caps_setBuf, Array.size_push]; omega
+    · simp only [bufs_setBuf_ne _ _ hb, caps_setBuf]; exact hs b'
+  | @bufPop b s =>
+    intro b'
+    by_cases hb : b' = b
+    · subst hb
+      simp only [bufs_setBuf_self, caps_setBuf, Array.size_pop]
+      have := hs b'
+      omega
+    · simp only [bufs_setBuf_ne _ _ hb, caps_setBuf]; exact hs b'
+  | ifNZ_true _ _ ih => exact ih hs
+  | ifNZ_false _ _ ih => exact ih hs
+  | while_done _ _ ihg => exact ihg hs
+  | while_step _ _ _ _ ihg ihb ihl => exact ihl (ihb (ihg hs))
+
+/-- A support bound survives execution: capacities only change at buffers named in
+`c`, all of which lie below the bound. -/
+theorem Exec.supportBound_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
+    {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
+    (hc : ∀ b, c.Touches b → b < B) (hs : s.SupportBound B) : s'.SupportBound B := by
+  intro b hb
+  rw [h.frame_cap fun ht => Nat.lt_irrefl b (Nat.lt_of_lt_of_le (hc b ht) hb)]
+  exact hs b hb
+
+/-- **Preservation of well-formedness.** With `State.init_wellFormed`: every state
+reachable from the initial state is well-formed, so the memory profile of an execution
+from an honest start reads as physical memory (`Exec.liveMem_eq`,
+`Exec.reaches_liveMem_le_peak`). -/
+theorem Exec.wellFormed_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
+    {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hwf : s.WellFormed) :
+    s'.WellFormed where
+  size_le_cap := h.sizes_le_caps hwf.size_le_cap
+  finite := by
+    obtain ⟨B, hB⟩ := hwf.finite
+    exact ⟨max B c.bufBound,
+      h.supportBound_preserved
+        (Stmt.touches_lt_of_bufBound_le (Nat.le_max_right _ _))
+        fun b hb => hB b (Nat.le_trans (Nat.le_max_left _ _) hb)⟩
+
+/-- Absolute live memory below `B`: the words reserved by buffers `0, …, B - 1`. For
+`B` a support bound this is the state's entire footprint, independent of the choice of
+`B` (`liveMem_eq_of_supportBound`). Defined by recursion on `B` (rather than a
+`Finset` sum) so that the update lemmas prove by `induction`/`omega`. -/
+def State.liveMem (s : State w) : ℕ → ℕ
+  | 0 => 0
+  | B + 1 => s.liveMem B + s.caps B
+
+@[simp] theorem liveMem_setReg (s : State w) (r : Reg) (v : Word w) (B : ℕ) :
+    (s.setReg r v).liveMem B = s.liveMem B := by
+  induction B with
+  | zero => rfl
+  | succ B ih => simp only [State.liveMem, ih, caps_setReg]
+
+@[simp] theorem liveMem_setBuf (s : State w) (b : BufId) (a : Array (Word w)) (B : ℕ) :
+    (s.setBuf b a).liveMem B = s.liveMem B := by
+  induction B with
+  | zero => rfl
+  | succ B ih => simp only [State.liveMem, ih, caps_setBuf]
+
+theorem liveMem_allocBuf_of_le (s : State w) {b : BufId} (n : ℕ) {B : ℕ}
+    (hB : B ≤ b) : (s.allocBuf b n).liveMem B = s.liveMem B := by
+  induction B with
+  | zero => rfl
+  | succ B ih =>
+    simp only [State.liveMem, ih (Nat.le_of_succ_le hB),
+      caps_allocBuf_ne _ _ (Nat.ne_of_lt (Nat.lt_of_succ_le hB))]
+
+/-- Reserving capacity `n` on buffer `b` moves the footprint by exactly the amount
+`Exec.bufAlloc` charges. -/
+theorem liveMem_allocBuf (s : State w) {b : BufId} (n : ℕ) {B : ℕ} (hb : b < B) :
+    ((s.allocBuf b n).liveMem B : ℤ) = s.liveMem B + n - s.caps b := by
+  induction B with
+  | zero => exact absurd hb (Nat.not_lt_zero b)
+  | succ B ih =>
+    rcases Nat.lt_or_ge b B with hbB | hbB
+    · have := ih hbB
+      simp only [State.liveMem, caps_allocBuf_ne _ _ (Nat.ne_of_gt hbB)]
+      push_cast
+      omega
+    · have heq : b = B := Nat.le_antisymm (Nat.lt_succ_iff.mp hb) hbB
+      subst heq
+      simp only [State.liveMem, caps_allocBuf_self,
+        liveMem_allocBuf_of_le _ _ (Nat.le_refl b)]
+      push_cast
+      omega
+
+/-- Any single reserved capacity is part of the footprint — the arithmetic heart of
+the no-phantom-credit corollary `Exec.bufFree_credit_le`. -/
+theorem caps_le_liveMem (s : State w) {b B : ℕ} (hb : b < B) :
+    s.caps b ≤ s.liveMem B := by
+  induction B with
+  | zero => exact absurd hb (Nat.not_lt_zero b)
+  | succ B ih =>
+    rcases Nat.lt_or_ge b B with hbB | hbB
+    · exact Nat.le_trans (ih hbB) (Nat.le_add_right _ _)
+    · have heq : b = B := Nat.le_antisymm (Nat.lt_succ_iff.mp hb) hbB
+      subst heq
+      exact Nat.le_add_left _ _
+
+/-- Total live memory does not depend on the choice of support bound. -/
+theorem liveMem_eq_of_supportBound {s : State w} {B B' : ℕ} (hs : s.SupportBound B)
+    (hB : B ≤ B') : s.liveMem B' = s.liveMem B := by
+  induction B', hB using Nat.le_induction with
+  | base => rfl
+  | succ B' hB ih => simp only [State.liveMem, ih, hs B' hB, Nat.add_zero]
+
+/-- **The net index is exact.** Over any bound `B` covering the buffers `c` names,
+the absolute footprint moves by exactly `d` — the net component of the profile is the
+true change in live memory, not just a bound on it. (A `Triple` still only certifies
+`d ≤ D`; the exactness is between `d` and the state.) -/
+theorem Exec.liveMem_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
+    (hc : ∀ b, c.Touches b → b < B) : (s'.liveMem B : ℤ) = s.liveMem B + d := by
+  induction h with
+  | skip => omega
+  | seq _ _ ih₁ ih₂ =>
+    rw [ih₂ fun b hb => hc b (Or.inr hb), ih₁ fun b hb => hc b (Or.inl hb)]
+    ring
+  | imm | mov | un | bin | bufLen | bufGet => simp
+  | bufAlloc => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
+  | bufFree => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
+  | bufSet | bufPush | bufPop => simp
+  | ifNZ_true _ _ ih => exact ih fun b hb => hc b (Or.inl hb)
+  | ifNZ_false _ _ ih => exact ih fun b hb => hc b (Or.inr hb)
+  | while_done _ _ ihg => exact ihg fun b hb => hc b (Or.inl hb)
+  | while_step _ _ _ _ ihg ihb ihl =>
+    rw [ihl hc, ihb fun b hb => hc b (Or.inr hb), ihg fun b hb => hc b (Or.inl hb)]
+    ring
+
+/-- The final footprint stays within the peak: `liveMem s' ≤ liveMem s + p`. -/
+theorem Exec.liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
+    (hc : ∀ b, c.Touches b → b < B) : (s'.liveMem B : ℤ) ≤ s.liveMem B + p := by
+  have h₁ := h.liveMem_eq hc
+  have h₂ := h.net_le_peak
+  omega
+
+/-- `Reaches C c s m`: an execution of `c` from `s` passes through machine state `m` —
+the start state, or a state at an instruction boundary strictly inside the execution
+(the branch conditions make every constructor follow the path the execution actually
+takes). The *final* state of the whole execution is covered separately by
+`Exec.liveMem_le_peak`; together the two enumerate every state an execution visits. -/
+inductive Reaches (C : CostModel) : Stmt w → State w → State w → Prop where
+  | start {c : Stmt w} {s : State w} : Reaches C c s s
+  | seq_left {c₁ c₂ : Stmt w} {s m : State w} :
+      Reaches C c₁ s m → Reaches C (c₁ ;; c₂) s m
+  | seq_right {c₁ c₂ : Stmt w} {s s₁ m : State w} {t₁ : ℕ} {d₁ p₁ : ℤ} :
+      Exec C c₁ s s₁ t₁ d₁ p₁ → Reaches C c₂ s₁ m → Reaches C (c₁ ;; c₂) s m
+  | ifNZ_true {r : Reg} {thn els : Stmt w} {s m : State w} :
+      s.regs r ≠ 0 → Reaches C thn s m → Reaches C (.ifNZ r thn els) s m
+  | ifNZ_false {r : Reg} {thn els : Stmt w} {s m : State w} :
+      s.regs r = 0 → Reaches C els s m → Reaches C (.ifNZ r thn els) s m
+  | while_guard {g body : Stmt w} {r : Reg} {s m : State w} :
+      Reaches C g s m → Reaches C (.whileNZ g r body) s m
+  | while_body {g body : Stmt w} {r : Reg} {s s₁ m : State w} {tg : ℕ} {dg pg : ℤ} :
+      Exec C g s s₁ tg dg pg → s₁.regs r ≠ 0 → Reaches C body s₁ m →
+      Reaches C (.whileNZ g r body) s m
+  | while_loop {g body : Stmt w} {r : Reg} {s s₁ s₂ m : State w} {tg tb : ℕ}
+      {dg pg db pb : ℤ} :
+      Exec C g s s₁ tg dg pg → s₁.regs r ≠ 0 → Exec C body s₁ s₂ tb db pb →
+      Reaches C (.whileNZ g r body) s₂ m → Reaches C (.whileNZ g r body) s m
+
+/-- **The peak bounds every intermediate state.** Any state an execution passes
+through (`Reaches`) has absolute footprint at most `p` above the start — `p` really
+is the high-water mark of the whole execution, not just a statement about its
+endpoints. -/
+theorem Exec.reaches_liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' m : State w}
+    {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p) (hm : Reaches C c s m)
+    (hc : ∀ b, c.Touches b → b < B) :
+    (m.liveMem B : ℤ) ≤ s.liveMem B + p := by
+  induction hm generalizing s' t d p with
+  | start => have := h.peak_nonneg; omega
+  | seq_left _ ih =>
+    cases h with
+    | seq h₁ _ =>
+      have h1 := ih h₁ fun b hb => hc b (Or.inl hb)
+      omega
+  | seq_right hex _ ih =>
+    cases h with
+    | seq h₁ h₂ =>
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := Exec.deterministic h₁ hex
+      have h1 := ih h₂ fun b hb => hc b (Or.inr hb)
+      have h2 := Exec.liveMem_eq h₁ fun b hb => hc b (Or.inl hb)
+      omega
+  | ifNZ_true hnz _ ih =>
+    cases h with
+    | ifNZ_true _ hthn => exact ih hthn fun b hb => hc b (Or.inl hb)
+    | ifNZ_false hz _ => exact absurd hz hnz
+  | ifNZ_false hz _ ih =>
+    cases h with
+    | ifNZ_true hnz _ => exact absurd hz hnz
+    | ifNZ_false _ hels => exact ih hels fun b hb => hc b (Or.inr hb)
+  | while_guard _ ih =>
+    cases h with
+    | while_done hg _ => exact ih hg fun b hb => hc b (Or.inl hb)
+    | while_step hg _ _ _ =>
+      have h1 := ih hg fun b hb => hc b (Or.inl hb)
+      omega
+  | while_body hexg hnz _ ih =>
+    cases h with
+    | while_done hg hz =>
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := Exec.deterministic hg hexg
+      exact absurd hz hnz
+    | while_step hg _ hb _ =>
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := Exec.deterministic hg hexg
+      have h1 := ih hb fun b hb' => hc b (Or.inr hb')
+      have h2 := Exec.liveMem_eq hg fun b hb' => hc b (Or.inl hb')
+      omega
+  | while_loop hexg hnz hexb _ ih =>
+    cases h with
+    | while_done hg hz =>
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := Exec.deterministic hg hexg
+      exact absurd hz hnz
+    | while_step hg _ hb hl =>
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := Exec.deterministic hg hexg
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := Exec.deterministic hb hexb
+      have h1 := ih hl hc
+      have h2 := Exec.liveMem_eq hg fun b hb' => hc b (Or.inl hb')
+      have h3 := Exec.liveMem_eq hb fun b hb' => hc b (Or.inr hb')
+      omega
+
+/-- **No phantom credit.** From *any* state, `bufFree b` credits exactly the reserved
+capacity `s.caps b`, and that capacity is genuinely part of the current absolute
+footprint: the credit `-d` never exceeds `liveMem`. So a free can neither drive the
+footprint negative nor fund an allocation the profile did not pay for — by
+`Exec.liveMem_eq`, the footprint after `bufFree b ;; bufAlloc b' n` really is
+`liveMem s - s.caps b + n`, all charged. -/
+theorem Exec.bufFree_credit_le {C : CostModel} {b : BufId} {s s' : State w} {t : ℕ}
+    {d p : ℤ} {B : ℕ} (h : Exec C (.bufFree b) s s' t d p) (hb : b < B) :
+    -d ≤ (s.liveMem B : ℤ) := by
+  cases h
+  have := caps_le_liveMem s hb
+  omega
+
 /-! ## Reference interpreter
 
 Executable semantics, agreeing with `Exec`. `fuel` bounds the recursion depth (every
