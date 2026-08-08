@@ -18,7 +18,7 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 | `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs, Fermat inverse generated from the bits of `p - 2` at generation time |
 | `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
 | `W64.lean` | Fixed 64-bit surface: namespace `Caliper64` of reducible `abbrev`s pinning `w := 64` (`Word`, `Stmt`, `State`, `Exec`, `run`, `Triple`, `TimeTriple`, `SpaceTriple`, `Build`, `Exp`, `Buf`, `build`, `Fp p`), plus a short demo where `w` never appears |
-| `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound` checks and the **checked entry point `compile`**; differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear |
+| `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound` checks and the **checked entry point `compile`**; differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear; the headline program `testIsZero` is proved to be the witness IR extracted from the Clean circuit `Gadgets.IsZeroField.circuit` (`isZeroCircuitIR_eq_testIsZero`) |
 | `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40` |
 | `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded `WitgenIR.eval` output (which doubles as memory safety); combined with phase 2 in `isZero_witgen_correct_140` |
 
@@ -74,6 +74,19 @@ bounds combine into the headline corollary
 — an execution computing the **correct encoded witness output** in **exactly 140
 unit-cost steps** (2090 under the calibrated cycles table; both far below `2^40`,
 see `isZero_witgen_correct_lt_2_40`) with **peak memory 1 word**.
+
+The witness program is not a hand-written fixture: Clean circuits embed their
+witness generators structurally (each `witness` is a `FlatOperation.witness m ir`
+carrying its `WitgenIR` payload), and `testIsZero` is the payload extracted from
+the bundled circuit `Gadgets.IsZeroField.circuit` itself. `isZeroCircuitIR`
+(`WitgenCompile.lean`) is that extraction — via `FlatOperation.witnessOperations`
+on the circuit's flat operations at input `var ⟨0⟩` — and
+`isZeroCircuitIR_eq_testIsZero` proves the two are definitionally equal (`rfl`), so
+the headline is a theorem about the circuit's own witness program; the
+circuit-anchored statement is `isZero_witgen_correct_140_circuit`
+(`WitgenSimIR.lean`). The circuit's only other witness generator is the trivial
+`<==` copy for its output `b`; `isZeroCircuit_witnessIRs` certifies these two are
+*all* of its witness operations (the equality-assertion subcircuits carry none).
 
 Costs scale linearly in circuit size (each IR node compiles to O(1) instructions,
 `mapRange n` to n copies of its body, field inverse to ~2·log p multiply-reduce
