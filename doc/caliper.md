@@ -1,6 +1,6 @@
-# The low-level unit-cost DSL (`Clean/LowLevel/`)
+# Caliper: the low-level unit-cost DSL (`Clean/LowLevel/`)
 
-A deep-embedded imperative language whose every instruction runs in constant time,
+**Caliper** is a deep-embedded imperative language whose every instruction runs in constant time,
 intended as the compilation target for the witness-generation IR
 (`Clean/Circuit/WitnessIR.lean`). Programs carry machine-checked **upper bounds** on
 running time and on allocated memory. The pipeline is complete through the witgen-IR

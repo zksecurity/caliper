@@ -106,7 +106,7 @@ deriving DecidableEq, Repr, Inhabited
 
 /-- Shifts by an amount `≥ w` produce `0` (`BitVec` semantics). A backend targeting
 x86/ARM, where the shift amount is masked, must emit an explicit mask; see
-`doc/lowlevel-dsl.md`. -/
+`doc/caliper.md`. -/
 @[simp] def BinOp.eval : BinOp → Word w → Word w → Word w
   | .add, x, y => x + y
   | .sub, x, y => x - y
