@@ -36,6 +36,11 @@ variable {w : ℕ}
 structure BuildState (w : ℕ) where
   nextReg : ℕ := 0
   nextBuf : ℕ := 0
+  /-- Registers already released by a (necessarily inner) `Build.scope`.
+  `freshReg` never reuses names — `nextReg` only grows — so a freed name is never
+  re-allocated and this set is monotone; an enclosing scope consults it so a
+  register an inner scope already freed does not get a second `regFree`. -/
+  freedRegs : List Reg := []
   /-- Emitted code, in **reverse** order (prepending keeps generation linear;
   `capture`/`build` reverse once at the end). -/
   code : List (Stmt w) := []
@@ -127,18 +132,24 @@ namespace Build
 
 /-- Run `m` and release its register temporaries: every register allocated inside
 `m` (tracked by the `nextReg` counter delta — fresh names are handed out in
-order) gets a `regFree`, except those in `regsOf` of the result. Frees are
-emitted in **reverse allocation order** (stack-like). Freed names are never
-reused — fresh-name monotonicity — which is fine: the liveness *count* is what
-the memory profile meters, and a lowering can interval-color disciplined
+order) gets a `regFree`, except those in `regsOf` of the result and those a
+nested inner scope already freed (recorded in `freedRegs` — without the check an
+outer scope would re-free its whole counter delta, emitting duplicate `regFree`s
+for inner-scope temporaries). The registers freed here are recorded in turn.
+Frees are emitted in **reverse allocation order** (stack-like). Freed names are
+never reused — fresh-name monotonicity — which is fine: the liveness *count* is
+what the memory profile meters, and a lowering can interval-color disciplined
 (bracket-nested) lifetimes onto physical slots, so peak live count = slots
 needed. -/
 def scope {α : Type} [RegCarrier α] (m : Build w α) : Build w α := fun s =>
   let (a, s') := m s
   let keep := RegCarrier.regsOf a
   let toFree :=
-    (List.range' s.nextReg (s'.nextReg - s.nextReg)).filter (fun r => !keep.contains r)
-  (a, { s' with code := (toFree.map .regFree) ++ s'.code })
+    (List.range' s.nextReg (s'.nextReg - s.nextReg)).filter
+      (fun r => !keep.contains r && !s'.freedRegs.contains r)
+  (a, { s' with
+    code := (toFree.map .regFree) ++ s'.code
+    freedRegs := toFree ++ s'.freedRegs })
 
 end Build
 

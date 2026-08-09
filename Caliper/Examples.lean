@@ -6,7 +6,7 @@ import Clean.Caliper.Render
 /-!
 # Worked examples
 
-Six programs, in increasing order of interest:
+The worked programs, in increasing order of interest:
 
 1. `swapCode` — straight-line code: functional spec, *exact* constant time from the
    syntax alone, and the data-independence (constant-time) corollary.
@@ -22,7 +22,10 @@ Six programs, in increasing order of interest:
 6. `CountUp`/`Drain` — decoupled judgments via `TimeTriple`/`SpaceTriple`: a time
    bound proved without touching memory algebra, and a space bound for a loop whose
    trip count admits **no** uniform time bound.
-7. `ScopedSumSq` — the register resource: builder blocks under `Build.scope`
+7. `ReallocLoop` — register re-allocation: a loop whose body re-executes
+   `regAlloc` on an already-allocated register (the builder-loop pattern) gets a
+   **trip-count-independent** register bound via `SpaceTriple.regAlloc'`.
+8. `ScopedSumSq` — the register resource: builder blocks under `Build.scope`
    release their temporaries, so of 5 registers acquired the live peak is **3** —
    a `SpaceTriple` where the register words are visible in the memory profile.
 
@@ -775,7 +778,108 @@ loop {
 #guard_msgs in
 #eval IO.println (SumBuf.code (w := 64) 0).renderString
 
-/-! ## Example 7: the register resource — scoped temporaries, small live peak
+/-! ## Example 7: register re-allocation is memory-idempotent
+
+`sumBCore`'s loop re-executes `regAlloc` on the same names (`r3`, `r4`, `r5`)
+every iteration. The `Exec` accounting charges a re-allocation net 0, and
+`SpaceTriple.regAlloc'` (precondition: the register is already allocated) is the
+proof rule that collects that 0 — without it every in-loop acquisition would cost
+a word per iteration in any bound derived from `whileNZ_measure`. -/
+
+/-- The 3-line demo: `regAlloc 3 ;; regAlloc 3` nets and peaks at **1** word, not
+2 — the second acquisition hits a still-allocated register, so
+`SpaceTriple.regAlloc'` prices it at net 0, peak 0. -/
+example {C : CostModel} : SpaceTriple C (fun _ => True)
+    (.regAlloc 3 ;; .regAlloc 3 : Stmt w) (fun s => s.regsAlloc 3 = true) 1 1 :=
+  ((SpaceTriple.regAlloc fun s _ => by simp).seq
+    (SpaceTriple.regAlloc' fun s hs => ⟨hs, by simp⟩)).weaken (by omega) (by omega)
+
+/-! The loop-scale payoff, on a compact `CountUp`-shaped program. Note the demo
+pre-allocates the loop's register: `whileNZ_measure`'s per-iteration profile is
+uniform over iterations, so the invariant must carry `regsAlloc 3 = true` already
+at loop entry. In `sumBCore` itself the *first* iteration genuinely allocates
+`r3`/`r4`/`r5`, so its worst-iteration net is positive and this rule still yields
+only a trip-count-linear bound for it — hoisting the first acquisition before the
+loop (as below) is what makes every in-loop `regAlloc` a re-allocation. -/
+
+namespace ReallocLoop
+
+/-- `regAlloc 3; i = 0; while (i < n) { regAlloc 3; r3 = 1; i += r3 }` — the body
+re-acquires its constant register each iteration, the builder-loop pattern
+(`sumBCore`'s body), with the first acquisition hoisted. `n` is passed in `r2`;
+`r0` index, `r1` flag. -/
+def code : Stmt w :=
+  .regAlloc 3 ;;
+  .imm 0 0 ;;
+  .whileNZ (.bin .ult 1 0 2) 1
+    (.regAlloc 3 ;; .imm 3 1 ;; .bin .add 0 0 3)
+
+/-- Loop invariant: the re-allocated register is *already allocated* — the fact
+`SpaceTriple.regAlloc'` consumes each iteration. -/
+def Inv (n k : ℕ) (s : State w) : Prop :=
+  s.regs 2 = BitVec.ofNat w n ∧ (s.regs 0).toNat + k = n ∧ s.regsAlloc 3 = true
+
+def InvG (n k : ℕ) (s : State w) : Prop :=
+  Inv n k s ∧ s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
+
+/-- Net **1**, peak **1**, for any trip count `n`: each iteration's `regAlloc 3`
+is a re-allocation (the invariant carries `s.regsAlloc 3 = true`), so the body is
+net 0 and `whileNZ_measure`'s `k * max (Dg + Db) 0` term vanishes. Counting
+acquisitions would have said `n + 1`. -/
+theorem space_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
+    SpaceTriple C (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
+      (fun _ => True) 1 1 := by
+  have hguard : ∀ k, SpaceTriple C (Inv (w := w) n k) (.bin .ult 1 0 2)
+      (InvG (w := w) n k) 0 0 := by
+    intro k
+    apply SpaceTriple.bin
+    rintro s ⟨hlim, hik, hal⟩
+    exact ⟨⟨by simp [hlim], by simp [hik], by simp [hal]⟩,
+      by simp [hlim, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hn]⟩
+  have hpos : ∀ k (s : State w), InvG n k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
+    rintro k s ⟨⟨hlim, hik, hal⟩, hflag⟩ hnz
+    have hlt := cond_of_flag_ne hflag hnz
+    exact ⟨k - 1, by omega⟩
+  have hbody : ∀ k, SpaceTriple C
+      (fun (s : State w) => InvG n (k + 1) s ∧ s.regs 1 ≠ 0)
+      (.regAlloc 3 ;; .imm 3 1 ;; .bin .add 0 0 3) (Inv n k) 0 0 := by
+    intro k
+    have ha : SpaceTriple C
+        (fun (s : State w) => InvG n (k + 1) s ∧ s.regs 1 ≠ 0) (.regAlloc 3)
+        (fun s => s.regs 2 = BitVec.ofNat w n ∧ (s.regs 0).toNat + (k + 1) = n ∧
+          (s.regs 0).toNat < n ∧ s.regsAlloc 3 = true) 0 0 := by
+      apply SpaceTriple.regAlloc'
+      rintro s ⟨⟨⟨hlim, hik, hal⟩, hflag⟩, hnz⟩
+      exact ⟨hal, by simp [hlim], by simp [hik],
+        by simp [cond_of_flag_ne hflag hnz], by simp⟩
+    have hrest : SpaceTriple C
+        (fun (s : State w) => s.regs 2 = BitVec.ofNat w n ∧
+          (s.regs 0).toNat + (k + 1) = n ∧
+          (s.regs 0).toNat < n ∧ s.regsAlloc 3 = true)
+        (.imm 3 1 ;; .bin .add 0 0 3) (Inv n k) 0 0 := by
+      rintro s ⟨hlim, hik, hlt, hal⟩
+      refine ⟨_, _, _, _, .seq .imm .bin, ⟨?_, ?_, ?_⟩, by omega, by omega⟩
+      · simp [hlim]
+      · simp [-BitVec.toNat_add]
+        rw [toNat_add_ofNat_one hlt hn]
+        omega
+      · simp [hal]
+    exact (ha.seq hrest).weaken (by omega) (by omega)
+  have h0 : SpaceTriple C (fun (s : State w) => s.regs 2 = BitVec.ofNat w n)
+      (.regAlloc 3) (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.regsAlloc 3 = true)
+      1 1 :=
+    SpaceTriple.regAlloc fun s hs => ⟨by simp [hs], by simp⟩
+  have h1 : SpaceTriple C
+      (fun (s : State w) => s.regs 2 = BitVec.ofNat w n ∧ s.regsAlloc 3 = true)
+      (.imm 0 0) (Inv n n) 0 0 :=
+    SpaceTriple.imm fun s hs => ⟨by simp [hs.1], by simp, by simp [hs.2]⟩
+  have hW := SpaceTriple.whileNZ_measure hguard hpos hbody n
+  exact (h0.seq (h1.seq hW)).conseq (fun _ h => h) (fun _ _ => trivial)
+    (by simp) (by simp)
+
+end ReallocLoop
+
+/-! ## Example 8: the register resource — scoped temporaries, small live peak
 
 Registers are words of live memory, acquired by `regAlloc` (one step) and released
 by `regFree` (free) — the same resource as buffer capacity, under a scalar naming
@@ -887,6 +991,46 @@ def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
 #eval demo
 
 end ScopedSumSq
+
+/-! ### Nested scopes free each register exactly once
+
+An outer `Build.scope`'s counter delta includes every register an inner scope
+allocated. Freed registers are recorded (`BuildState.freedRegs` — monotone, since
+`freshReg` never reuses names), and a scope skips them, so the inner stage's
+scratch `r0` gets its one `regFree` from the inner scope only; the outer scope
+releases just the surviving `r1`. -/
+
+open Build in
+/-- A squaring stage in an inner scope, its result consumed by an outer scope. -/
+def nestedScopeB : Build 64 Reg := Build.scope do
+  let a ← Build.scope do
+    let x ← var 3
+    var ((x : Exp 64) * x)
+  var ((a : Exp 64) + a)
+
+/--
+info: reg.alloc r0
+imm   r0, 3
+reg.alloc r1
+mul  r1, r0, r0
+reg.free  r0
+reg.alloc r2
+add  r2, r1, r1
+reg.free  r1
+-/
+#guard_msgs in
+#eval IO.println (Build.build nestedScopeB).2.renderString
+
+/-- Value `3² + 3² = 18`; net 1 (only the result register survives), peak 2 —
+a double-freed `r0` would not change the profile (freeing an unallocated
+register credits nothing), but would emit dead code. -/
+def nestedDemo : Option (Word 64 × ℕ × ℤ × ℤ) :=
+  (run .unit 100 (Build.build nestedScopeB).2 (State.init 64)).map
+    fun (s, t, d, p) => (s.regs 2, t, d, p)
+
+/-- info: some (18#64, 6, 1, 2) -/
+#guard_msgs in
+#eval nestedDemo
 
 /-! ## Executable
 

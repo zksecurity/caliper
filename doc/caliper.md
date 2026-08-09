@@ -449,6 +449,22 @@ frame size: a RISC-V lowering's stack frame for the `reg.*` file needs exactly
 the peak live register count the profile bounds, fresh-name monotonicity
 notwithstanding.
 
+That "peak = physical slots" transfer is scoped to **disciplined programs** —
+builder- and compiler-generated code, which never touches a register outside its
+`reg.alloc`…`reg.free` bracket. No formal predicate enforces the discipline for
+arbitrary code: the machine keeps a freed register's *value* readable
+(`reg.free` changes allocation status, never the value), so a hand-written
+`Stmt` can read — or write — a register it has already freed and still satisfy
+every cost theorem. For such code the certified peak is only a **lower bound**
+on physical slots: a slot reused by the colorer would clobber a value the
+program still consumes. Note the contrast with the buffer side, where `memLoad`'s
+in-range obligation is *semantic* — baked into the `Exec` rule, so every proved
+triple entails it; register discipline is instead by construction: the builder's
+`Build.scope` and the witgen compiler's step-boundary releases (whose `CodeShape`
+invariant in `WitgenCost.lean` certifies syntactically that expression code
+allocates exactly its temp range and frees nothing early) emit only
+bracket-respecting code, and only such code is the subject of the lowering claim.
+
 The witgen compiler (`WitgenCompile.lean`) follows the same discipline, at scope
 granularity chosen by the IR's own structure: every fresh temporary is acquired
 at its first write (`reg.alloc r` immediately before the instruction writing

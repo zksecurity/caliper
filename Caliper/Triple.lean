@@ -184,6 +184,21 @@ protected theorem regAlloc {P Q : State w → Prop} {r : Reg}
   intro s hs
   refine ⟨_, _, _, _, .regAlloc, h s hs, le_refl _, ?_, ?_⟩ <;> omega
 
+/-- Acquire a register known to be *already* allocated: the idempotent charge
+vanishes — net 0, peak 0 — while the time is still exactly
+`C.regAlloc + C.allocPerWord` (acquisition is priced whether or not it is new).
+The re-allocation mirror of `regFree'`/`memFree'`: it is what lets loops whose
+per-iteration `regAlloc`s hit already-allocated registers (the builder-loop
+pattern — guard and body re-emit their acquisitions every iteration) take
+`whileNZ_measure` with iteration net `≤ 0`, i.e. a memory bound independent of
+the trip count, instead of charging one word per iteration. -/
+protected theorem regAlloc' {P Q : State w → Prop} {r : Reg}
+    (h : ∀ s, P s → s.regsAlloc r = true ∧ Q (s.setRegAlloc r true)) :
+    Triple C P (.regAlloc r) Q (C.regAlloc + C.allocPerWord) 0 0 := by
+  intro s hs
+  obtain ⟨ha, hq⟩ := h s hs
+  refine ⟨_, _, _, _, .regAlloc, hq, le_refl _, ?_, ?_⟩ <;> simp [ha]
+
 /-- Release a register: never charges memory, time `C.regFree` (0 in both shipped
 tables — releasing is free). -/
 protected theorem regFree {P Q : State w → Prop} {r : Reg}
@@ -490,7 +505,9 @@ protected theorem memPop {P Q : State w → Prop} {b : BufId}
     TimeTriple C P (.memPop b) Q C.memPop :=
   (Triple.memPop h).time
 
-/-- Acquire a register: statically priced at `C.regAlloc + C.allocPerWord`. -/
+/-- Acquire a register: statically priced at `C.regAlloc + C.allocPerWord` —
+whether or not `r` was already allocated, so there is no primed time rule (like
+`regFree'`/`memFree'`, the primed `regAlloc'` refines only the memory bounds). -/
 protected theorem regAlloc {P Q : State w → Prop} {r : Reg}
     (h : ∀ s, P s → Q (s.setRegAlloc r true)) :
     TimeTriple C P (.regAlloc r) Q (C.regAlloc + C.allocPerWord) :=
@@ -693,6 +710,13 @@ protected theorem regAlloc {P Q : State w → Prop} {r : Reg}
     (h : ∀ s, P s → Q (s.setRegAlloc r true)) :
     SpaceTriple C P (.regAlloc r) Q 1 1 :=
   (Triple.regAlloc h).space
+
+/-- Acquire a register known to be already allocated: the idempotent charge
+vanishes — net 0, peak 0 (`Triple.regAlloc'`). -/
+protected theorem regAlloc' {P Q : State w → Prop} {r : Reg}
+    (h : ∀ s, P s → s.regsAlloc r = true ∧ Q (s.setRegAlloc r true)) :
+    SpaceTriple C P (.regAlloc r) Q 0 0 :=
+  (Triple.regAlloc' h).space
 
 /-- Release a register: never charges memory. -/
 protected theorem regFree {P Q : State w → Prop} {r : Reg}
