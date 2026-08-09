@@ -12,14 +12,14 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 
 | File | Contents |
 |---|---|
-| `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`, including the per-word allocation charge `allocPerWord`), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems and the partial static clock (`staticTime?`), **peak memory ≤ running time** (`Exec.peak_le_time`), well-formed states and absolute live memory (`State.WellFormed`, `State.liveMem`), reference interpreter (`run`) + soundness |
+| `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`, including the per-word allocation charge `allocPerWord`; the `CostModel.Admissible` predicate — every entry ≥ 1 — with both shipped tables proved admissible), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems and the partial static clock (`staticTime?`), **peak memory ≤ running time** (`Exec.peak_le_time`), well-formed states and absolute live memory (`State.WellFormed`, `State.liveMem`), reference interpreter (`run`) + soundness |
 | `Render.lean` | Canonical pretty-printer: `Stmt.render`/`Stmt.renderString` emit the `mem.`-qualified assembly dialect (`mem.load r4, b0[r1]`, `loop { … bifz r<c> … }`), one instruction per line — the notation used for the instruction listing in this document |
 | `Triple.lean` | Upper-bound Hoare triples (`Triple`), one rule per instruction, `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule `whileNZ_measure`, frame rules; decoupled time-only/space-only judgments (`TimeTriple`/`SpaceTriple`) with the same rule set, recombinable into a full `Triple` via determinism (`TimeTriple.and_space`) |
 | `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_`, typed buffer handles (`Buf`), product types (`PairR`, `PairBuf`) |
 | `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs, Fermat inverse generated from the bits of `p - 2` at generation time |
 | `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
 | `W64.lean` | Fixed 64-bit surface: namespace `Caliper64` of reducible `abbrev`s pinning `w := 64` (`Word`, `Stmt`, `State`, `Exec`, `run`, `Triple`, `TimeTriple`, `SpaceTriple`, `Build`, `Exp`, `Buf`, `build`, `Fp p`), plus a short demo where `w` never appears |
-| `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound` checks and the **checked entry point `compile`**; differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear; the headline program `testIsZero` is proved to be the witness IR extracted from the Clean circuit `Gadgets.IsZeroField.circuit` (`isZeroCircuitIR_eq_testIsZero`); certified native witnesses compile as their IR reimplementation (`compile_certified_eq_ir`), demonstrated on `isZeroCertified` = the closure `isZeroNative` + `testIsZero`'s IR + equivalence proof |
+| `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound`/field-size checks and the **checked entry point `compile`** (rejecting moduli outside the single-word design point `2 < p`, `p·p ≤ 2^64`: 40-bit, Goldilocks and BN254 rejection tests); differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear; the headline program `testIsZero` is proved to be the witness IR extracted from the Clean circuit `Gadgets.IsZeroField.circuit` (`isZeroCircuitIR_eq_testIsZero`); certified native witnesses compile as their IR reimplementation (`compile_certified_eq_ir`), demonstrated on `isZeroCertified` = the closure `isZeroNative` + `testIsZero`'s IR + equivalence proof |
 | `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40`, plus the certified-native pins `compile_isZeroCertified` / `isZeroCertified_witgen_lt_2_40` (the same 140 steps, now for a witness whose prover-side evaluation is a native closure) |
 | `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded IR reference output `WitgenIR.irEval` (= `eval` on `.ir` programs; doubles as memory safety); on certified programs the equivalence transports this to the native closure itself (`compile_sim_certified`); combined with phase 2 in `isZero_witgen_correct_140` and `isZeroCertified_witgen_correct_140` |
 | `WitgenComputable.lean` | **The checks → circuit-layer bridge**: `compilable` + `envBound N` imply `ProverEnvironment.OnlyAccessedBelow N` (`WitgenIR.onlyAccessedBelow_of_checks`; `onlyAccessedBelow_of_ir_equiv` / `onlyAccessedBelow_certified` for native closures with a certified IR equivalent — covering `WitgenIR.certified` witnesses, whose `eval` is the closure), lifted per-offset to whole circuits (`circuit_computableWitnesses_of_checks`) so that `Circuit.ComputableWitnesses` obligations discharge by one boolean evaluation — demonstrated on the instantiated `IsZeroField` and `Addition8FullCarry` circuits and on the bare closure `isZeroNative` by `native_decide` |
@@ -46,25 +46,35 @@ generation-time check passes — `ir` carries structured IR (a `.ir` program, or
 `N ≤ 2^64`, `m < 2^64` (environment indices and per-output-element immediates
 survive their 64-bit encodings; the output buffer's capacity itself is a
 `memAllocI` immediate — a bare `ℕ`, so the capacity *accounting* never wraps,
-while `memLen` exactness on the output buffer needs the same `m < 2^64`) — and it
-computes the
+while `memLen` exactness on the output buffer needs the same `m < 2^64`), and the
+field-size side conditions `2 < p` and `p * p ≤ 2^64` (the single-word-reduction
+design point; the modulus `p = FiniteField.size F` is a generation-time value, so
+both are decided right there) — and it computes the
 local-register count from the program itself
 (`L := steps.length`), so no caller-supplied `L` can corrupt the register layout.
 The raw compiler `compileIR` is internal and unchecked; it exists as the object the
 proofs do induction over. All user-facing theorems are stated about `compile`.
 
-What cannot be decided at generation time for a generic `FiniteField` — `p` prime,
-`2 < p`, `p * p ≤ 2^64` (single-word moduli) — is not checked but carried as
-hypotheses of the correctness theorems: `compile`'s output is verified exactly under
-the field side conditions those theorems state.
+Of the field side conditions, only **primality** cannot be decided at generation
+time (not at cryptographic sizes); it remains the `[Fact p.Prime]` hypothesis of
+the correctness theorems. The size conditions are checked: a field outside the
+design point — where the emitted single-`umod` reduction would overflow and
+return wrong answers while the cost theorems still applied — is rejected
+outright. The field-size rejection tests pin this: the ~40-bit prime `2^40 + 15`,
+Goldilocks (`2^64 − 2^32 + 1`) and the BN254 scalar field all get `none`
+(`testIsZero40`, `compile_goldilocks_none`, `compile_bn254_none`,
+`WitgenCompile.lean`), while BabyBear (`p² ≈ 2^62`) passes — the positive control
+is every pinned BabyBear number. Downstream, `compile … = some code` itself
+certifies `2 < p` and `p * p ≤ 2^64` (`compile_size_checks`), so `compile_sim`
+and its corollaries no longer ask callers to supply them.
 
 The simulation is end to end: `compile_sim` (`WitgenSimIR.lean`) proves that for
 every witness program the checked entry accepts, from any start state whose
 buffer `0` encodes the environment, the compiled code has an execution ending with
 the output buffer holding exactly the encoded reference output `WitgenIR.eval`
 (elementwise canonical words) — `compile ... = some code` already carries the
-compilability, environment-bound and size facts, so no separate side conditions
-remain beyond the field hypotheses and the environment encoding. Because
+compilability, environment-bound, size *and* field-size facts, so no separate
+side conditions remain beyond primality and the environment encoding. Because
 out-of-range buffer accesses have no `Exec` derivation, that existence theorem is
 simultaneously a memory-safety proof; by determinism, its costs and output are
 those of *every* execution.
@@ -106,8 +116,15 @@ Costs scale linearly in circuit size (each IR node compiles to O(1) instructions
 steps), so full-circuit witgen bounds are sums of per-gadget constants — evaluated,
 not estimated. Exclusions: `.native` closures (not compilable, by construction —
 but see "Certified native witnesses" below for the sanctioned way to keep a native
-closure *and* get certified compilation), `dataGet`/`hintGet` prover-data reads and
-`listGet` (deferred; they are additional buffers/select-chains, no new machinery).
+closure *and* get certified compilation), `listGet` computed-index reads (deferred
+plumbing; additional buffers/select-chains, no new machinery), and
+`dataGet`/`hintGet` prover-data reads — which are **not** deferred plumbing:
+pricing hints is an open modeling question. A hint is unpriced oracle work, and
+relocating cost into an oracle is the standard way provers move work off the
+books (compute a value outside the priced path, have the priced path merely read
+it back). Admitting a one-tick `hintGet` into a unit-cost table would let
+arbitrary computation hide behind it; until hint provenance carries its own cost
+story, hints stay outside the compilable fragment.
 
 ### Certified native witnesses
 
@@ -153,6 +170,17 @@ fields; the equivalence transports each guarantee to the closure:
 * **export** — `#assert_exportable` / `#witgen_json` (`WitnessExport.lean`)
   serialize the IR reimplementation, which computes exactly what the closure the
   Lean prover runs computes.
+
+To be blunt about what the equivalence proof transports: **access and output
+properties, not cost**. The quoted time is the time of the *compiled artifact*;
+the native closure's own Lean evaluation is unpriced, and nothing here bounds it.
+This is a design rule, not an omission to be fixed: no cost-transfer analogue of
+`onlyAccessedBelow_of_ir_equiv` must ever be added. The packed equivalence is
+*extensional* — it constrains only the closure's input-output graph — while cost
+is *intensional*: a slow closure extensionally equal to a fast IR satisfies
+exactly the same equivalence proof, so any rule deriving a cost claim about the
+closure from the equivalence would certify the slow closure too, i.e. would be
+unsound by construction.
 
 Worked instance, end to end: `isZeroNative` — the `IsZeroField` conditional-inverse
 witness written as an ordinary Lean closure — is certified against `testIsZero`'s
@@ -268,6 +296,16 @@ state. `Exec C c s s' t d p` charges each instruction its table entry, so:
   (all 1) or `CostModel.cycles` (a rough modern-CPU latency table). This is where
   "roughly a cycle on a modern CPU" lives: the *shape* of the machine guarantees
   state-independence, the *table* calibrates it.
+- Genericity cuts both ways: a degenerate table (some entry 0) makes cost claims
+  vacuous — a model that prices real work at zero certifies any program under any
+  budget. `CostModel.Admissible` (`Core.lean`) packages "every table entry ≥ 1,
+  including the per-op `un`/`bin` entries and `allocPerWord`" as a predicate;
+  both shipped tables are proved admissible (`CostModel.unit.admissible`,
+  `CostModel.cycles.admissible`), so every headline number in this document is
+  accounted in a model where no instruction is free. Under an admissible model,
+  `Exec.peak_le_time` applies via `Exec.peak_le_time_admissible` (its
+  `1 ≤ allocPerWord` hypothesis is the `allocPerWord` field), and the headline
+  claims should be read against admissible tables.
 
 Consequences for the instruction set:
 
@@ -321,6 +359,17 @@ charged. Over such states the absolute footprint `State.liveMem` changes by *exa
 (`Exec.memFree_credit_le`), and every state the execution passes through stays within
 `p` of the start (`Exec.reaches_liveMem_le_peak`, `Exec.liveMem_le_peak`) — so `p` is
 a true high-water mark on physical memory, not merely relative growth.
+
+Presentation note, to keep the two readings apart: a code *fragment's* quoted peak
+`p` is **growth over its start state** — that is what makes Triple-level profiles
+compose as relative high-water marks. Absolute-**footprint** statements are the
+`State.WellFormed`/`liveMem` forms above, which anchor the same indices to
+physical live memory over honestly-reachable states; quote those when the claim
+is "this program never holds more than X words", and the relative form when the
+claim is "this fragment adds at most X words". One dimension the profile does not
+yet meter is the register file (registers are a function `Reg → Word`, unbounded
+and uncharged): that is the upcoming `reg.*` register-file phase, for which the
+pretty-printer already reserves the `reg.` qualifier.
 
 The loop rule `Triple.whileNZ_measure` takes an invariant indexed by a
 remaining-iterations budget `k`; time is linear in `k`, and both memory bounds have
@@ -409,7 +458,20 @@ The guarantee this machine is designed around is *not* a statement about Turing
 machines. It is: **every `Stmt` instruction is implementable in a constant number of
 machine instructions on a 64-bit CPU**, so an `Exec` derivation of cost `t` (unit
 model) corresponds to a real execution of at most `c · t` cycles, with `c` the maximum
-over the per-instruction table. Since every `Exec` rule charges a syntactic constant
+over the per-instruction table.
+
+That claim is **relative to the built word width `w`**: one `w`-word operation is a
+constant number of machine operations *for the `w` the code was built at*. The core
+is generic in `w`, and nothing stops instantiating it at a million-bit word — but
+that is a different machine, whose "unit" add is a million-bit add and whose `c` is
+correspondingly enormous; a cost certified at one `w` says nothing about another.
+The headline claims of this document are therefore about the fixed 64-bit surface:
+`Caliper64` (`W64.lean`) is the machine they are stated for — words are exactly
+`u64`, the witgen backend pins `w = 64` throughout, and the per-instruction table
+below is a table about 64-bit hardware. Write programs and read cost claims against
+`Caliper64` unless you are deliberately doing generic-`w` metatheory.
+
+Since every `Exec` rule charges a syntactic constant
 and the table has a dozen entries, the trusted argument is a per-instruction inspection:
 
 | Instruction | Real implementation | Cost |
@@ -463,6 +525,18 @@ The theorems stop at the abstract machine. Stated plainly:
   instruction maps to O(1) machine operations on a modern 64-bit CPU — is an
   engineering argument, made per-instruction and kept inspectable; it is not a
   theorem.
+- **Three execution engines exist; only one is priced.** A witness program can be
+  run by (1) the Lean reference semantics `WitgenIR.eval` (and, for certified
+  witnesses, the native closure it wraps), (2) the Rust witgen interpreter
+  consuming the exported JSON (`WitnessExport.lean`), and (3) the compiled
+  Caliper `Stmt` under `Exec`. The cost theorems price engine (3) only, and the
+  ratio between the engines is **not a constant**. Illustration: a field inverse
+  in engine (1) is `ZMod`'s inverse — extended Euclid, value-dependent running
+  time — while the priced Caliper path is the ~130-step straight-line Fermat
+  ladder; the Rust interpreter's cost profile is its own again. A step count
+  certified for the Caliper artifact says nothing numerical about the other two
+  engines beyond the fact (proved, for (1) vs (3), by `compile_sim`) that they
+  compute the same outputs.
 - **`CostModel` is a parameter, not a fact about hardware.** Every theorem is
   generic in `C`. The shipped `.unit` and `.cycles` tables are calibration choices,
   and the `cycles` entries are estimates (`memLoad := 4` assumes an L1 hit,

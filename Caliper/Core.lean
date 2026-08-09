@@ -248,6 +248,47 @@ def CostModel.cycles : CostModel where
   memPush := 5
   branch := 2     -- mispredict-amortised
 
+/-- **Admissibility**: every cost-table entry is at least one time unit — no
+instruction is free, and no word of capacity is acquired for free.
+
+Why this predicate exists: every cost theorem is generic in `C`, and a degenerate
+table with a zero entry makes cost claims vacuous — a model that prices real work
+at zero can certify any program under any budget, and an execution's peak memory
+can exceed its running time. Admissibility is the one-line hypothesis that rules
+this out: under an admissible model every executed instruction contributes at
+least one tick to `t`, and the per-word allocation charge keeps
+`Exec.peak_le_time` applicable (its `1 ≤ C.allocPerWord` hypothesis is exactly
+the `allocPerWord` field of this structure — the field accessor *is* the lemma).
+Both shipped headline tables are proved admissible (`CostModel.unit.admissible`,
+`CostModel.cycles.admissible`), so every headline number in this development is
+accounted in a model where nothing runs for free. -/
+structure CostModel.Admissible (C : CostModel) : Prop where
+  imm : 1 ≤ C.imm
+  mov : 1 ≤ C.mov
+  un : ∀ op, 1 ≤ C.un op
+  bin : ∀ op, 1 ≤ C.bin op
+  memAlloc : 1 ≤ C.memAlloc
+  allocPerWord : 1 ≤ C.allocPerWord
+  memFree : 1 ≤ C.memFree
+  memLen : 1 ≤ C.memLen
+  memLoad : 1 ≤ C.memLoad
+  memStore : 1 ≤ C.memStore
+  memPush : 1 ≤ C.memPush
+  memPop : 1 ≤ C.memPop
+  branch : 1 ≤ C.branch
+
+/-- The uniform table is admissible: every entry is literally 1. -/
+theorem CostModel.unit.admissible : CostModel.unit.Admissible := by
+  constructor <;> first
+    | decide
+    | exact fun op => by cases op <;> decide
+
+/-- The calibrated cycles table is admissible: every entry is ≥ 1. -/
+theorem CostModel.cycles.admissible : CostModel.cycles.Admissible := by
+  constructor <;> first
+    | decide
+    | exact fun op => by cases op <;> decide
+
 /-! ## Machine state -/
 
 /-- Registers hold words; buffers hold arrays of words (the filled prefix) plus a
@@ -474,6 +515,18 @@ running time as well. -/
 theorem Exec.net_le_time {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (h : Exec C c s s' t d p) (hC : 1 ≤ C.allocPerWord) : d ≤ (t : ℤ) :=
   (h.net_and_peak_le_time hC).1
+
+/-- `Exec.peak_le_time` under the packaged `CostModel.Admissible` hypothesis
+(satisfied by both shipped tables: `CostModel.unit.admissible`,
+`CostModel.cycles.admissible`). -/
+theorem Exec.peak_le_time_admissible {C : CostModel} {c : Stmt w} {s s' : State w}
+    {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hC : C.Admissible) : p ≤ (t : ℤ) :=
+  h.peak_le_time hC.allocPerWord
+
+/-- `Exec.net_le_time` under the packaged `CostModel.Admissible` hypothesis. -/
+theorem Exec.net_le_time_admissible {C : CostModel} {c : Stmt w} {s s' : State w}
+    {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hC : C.Admissible) : d ≤ (t : ℤ) :=
+  h.net_le_time hC.allocPerWord
 
 /-! ### Framing: which registers and buffers a statement can touch
 
