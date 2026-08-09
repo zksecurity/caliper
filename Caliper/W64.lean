@@ -16,7 +16,8 @@ a thin layer of **reducible abbreviations** (`abbrev`) fixing `w := 64`, so that
 
 Only names where a user would otherwise write `(w := 64)` or a `w`-annotated type are
 covered. Everything that infers `w` from its arguments (the `Build` combinators
-`var`/`while_`/`alloc`/…, the `Triple` proof rules, `CostModel`, `Reg`, `BufId`, …)
+`var`/`while_`/`Mem.alloc`/the `Buf` methods/…, the `Triple` proof rules,
+`CostModel`, `Reg`, `BufId`, …)
 is used directly from the `Caliper` namespace, unchanged.
 
 The demo at the end writes a small program and proves a `Triple` about it entirely

@@ -12,18 +12,18 @@ derivation exists), the result satisfies `Q`, and
 * peak live-memory growth `p ≤ M`.
 
 Live memory is the sum of reserved capacities: only the alloc instructions
-(`bufAlloc`/`bufAllocI`) charge and only `bufFree` credits; push/pop move the fill
+(`memAlloc`/`memAllocI`) charge and only `memFree` credits; push/pop move the fill
 level inside capacity already paid for. Allocation time is charged per word
-(`C.bufAlloc + cap * C.allocPerWord`), so the alloc time rules carry a capacity
-bound; for the dynamic `bufAlloc` the caller must bound the requested capacity.
+(`C.memAlloc + cap * C.allocPerWord`), so the alloc time rules carry a capacity
+bound; for the dynamic `memAlloc` the caller must bound the requested capacity.
 Bounding the *pair* (net, peak) is what makes reuse compose: sequencing peaks as
-`max M₁ (D₁ + M₂)` means an alloc…free block (net 0, via `bufFree'`) contributes its
+`max M₁ (D₁ + M₂)` means an alloc…free block (net 0, via `memFree'`) contributes its
 peak once, not once per occurrence, and `whileNZ_measure` gives loops whose iteration
 net is `≤ 0` a peak bound independent of the trip count.
 
 Bounds are `≤` throughout, so specs stay simple and weakening is free. The rules are
 the complete proof system used by the examples: one rule per instruction
-(`bufGet`/`bufSet` demand the index in range, `bufPush` demands free capacity —
+(`memLoad`/`memStore` demand the index in range, `memPush` demands free capacity —
 the memory-safety obligations), `seq`/`conseq`/`ifNZ`, the measure-indexed loop
 rule, and decidable-side-condition frame rules replacing separation logic.
 
@@ -101,78 +101,78 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
 /-- Reserve capacity (dynamic). The caller supplies an upper bound `N` on the
 *requested capacity* (the register value); it bounds the memory charge
 (`newCap - oldCap ≤ newCap ≤ N`, capacities being nonnegative) **and** the
-data-dependent time charge `C.bufAlloc + newCap * C.allocPerWord ≤
-C.bufAlloc + N * C.allocPerWord`. -/
-protected theorem bufAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
+data-dependent time charge `C.memAlloc + newCap * C.allocPerWord ≤
+C.memAlloc + N * C.allocPerWord`. -/
+protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
     (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ Q (s.allocBuf b (s.regs n).toNat)) :
-    Triple C P (.bufAlloc b n) Q (C.bufAlloc + N * C.allocPerWord) N N := by
+    Triple C P (.memAlloc b n) Q (C.memAlloc + N * C.allocPerWord) N N := by
   intro s hs
   obtain ⟨hN, hq⟩ := h s hs
-  refine ⟨_, _, _, _, .bufAlloc, hq, ?_, by omega, by omega⟩
+  refine ⟨_, _, _, _, .memAlloc, hq, ?_, by omega, by omega⟩
   have := Nat.mul_le_mul_right C.allocPerWord hN
   omega
 
 /-- Reserve capacity (immediate): the syntactic capacity `n` prices both time
 (exactly) and memory (as a bound, the old capacity being unknown but
 nonnegative). -/
-protected theorem bufAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
+protected theorem memAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
     (h : ∀ s, P s → Q (s.allocBuf b n)) :
-    Triple C P (.bufAllocI b n) Q (C.bufAlloc + n * C.allocPerWord) n n :=
-  fun s hs => ⟨_, _, _, _, .bufAllocI, h s hs, le_refl _, by omega, by omega⟩
+    Triple C P (.memAllocI b n) Q (C.memAlloc + n * C.allocPerWord) n n :=
+  fun s hs => ⟨_, _, _, _, .memAllocI, h s hs, le_refl _, by omega, by omega⟩
 
 /-- Free a buffer: never charges memory. -/
-protected theorem bufFree {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → Q (s.allocBuf b 0)) : Triple C P (.bufFree b) Q C.bufFree 0 0 :=
-  fun s hs => ⟨_, _, _, _, .bufFree, h s hs, le_refl _, by omega, le_refl _⟩
+protected theorem memFree {P Q : State w → Prop} {b : BufId}
+    (h : ∀ s, P s → Q (s.allocBuf b 0)) : Triple C P (.memFree b) Q C.memFree 0 0 :=
+  fun s hs => ⟨_, _, _, _, .memFree, h s hs, le_refl _, by omega, le_refl _⟩
 
 /-- Free with a known lower bound `K` on the capacity being released: credits `-K`.
 This is the rule that makes an alloc…free block's net vanish. -/
-protected theorem bufFree' {P Q : State w → Prop} {b : BufId} {K : ℕ}
+protected theorem memFree' {P Q : State w → Prop} {b : BufId} {K : ℕ}
     (h : ∀ s, P s → K ≤ s.caps b ∧ Q (s.allocBuf b 0)) :
-    Triple C P (.bufFree b) Q C.bufFree (-(K : ℤ)) 0 := by
+    Triple C P (.memFree b) Q C.memFree (-(K : ℤ)) 0 := by
   intro s hs
   obtain ⟨hK, hq⟩ := h s hs
-  exact ⟨_, _, _, _, .bufFree, hq, le_refl _, by omega, le_refl _⟩
+  exact ⟨_, _, _, _, .memFree, hq, le_refl _, by omega, le_refl _⟩
 
-protected theorem bufLen {P Q : State w → Prop} {d : Reg} {b : BufId}
+protected theorem memLen {P Q : State w → Prop} {d : Reg} {b : BufId}
     (h : ∀ s, P s → Q (s.setReg d (BitVec.ofNat w (s.bufs b).size))) :
-    Triple C P (.bufLen d b) Q C.bufLen 0 0 :=
-  fun s hs => ⟨_, _, _, _, .bufLen, h s hs, le_refl _, le_refl _, le_refl _⟩
+    Triple C P (.memLen d b) Q C.memLen 0 0 :=
+  fun s hs => ⟨_, _, _, _, .memLen, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 /-- The in-range obligation `hlt` is the memory-safety proof; there is no rule for the
 out-of-range case, so a completed triple entails safety. -/
-protected theorem bufGet {P Q : State w → Prop} {d : Reg} {b : BufId} {i : Reg}
+protected theorem memLoad {P Q : State w → Prop} {d : Reg} {b : BufId} {i : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setReg d (s.bufs b)[(s.regs i).toNat])) :
-    Triple C P (.bufGet d b i) Q C.bufGet 0 0 := by
+    Triple C P (.memLoad d b i) Q C.memLoad 0 0 := by
   intro s hs
   obtain ⟨hlt, hq⟩ := h s hs
-  exact ⟨_, _, _, _, .bufGet hlt, hq, le_refl _, le_refl _, le_refl _⟩
+  exact ⟨_, _, _, _, .memLoad hlt, hq, le_refl _, le_refl _, le_refl _⟩
 
-protected theorem bufSet {P Q : State w → Prop} {b : BufId} {i src : Reg}
+protected theorem memStore {P Q : State w → Prop} {b : BufId} {i src : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) hlt))) :
-    Triple C P (.bufSet b i src) Q C.bufSet 0 0 := by
+    Triple C P (.memStore b i src) Q C.memStore 0 0 := by
   intro s hs
   obtain ⟨hlt, hq⟩ := h s hs
-  exact ⟨_, _, _, _, .bufSet hlt, hq, le_refl _, le_refl _, le_refl _⟩
+  exact ⟨_, _, _, _, .memStore hlt, hq, le_refl _, le_refl _, le_refl _⟩
 
 /-- Push demands free capacity (`size < cap`) — the second memory-safety obligation,
 which is what makes push worst-case unit time. Memory-neutral: the word was charged
-at `bufAlloc`. -/
-protected theorem bufPush {P Q : State w → Prop} {b : BufId} {src : Reg}
+at `memAlloc`. -/
+protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
     (h : ∀ s, P s → (s.bufs b).size < s.caps b
       ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
-    Triple C P (.bufPush b src) Q C.bufPush 0 0 := by
+    Triple C P (.memPush b src) Q C.memPush 0 0 := by
   intro s hs
   obtain ⟨hcap, hq⟩ := h s hs
-  exact ⟨_, _, _, _, .bufPush hcap, hq, le_refl _, le_refl _, le_refl _⟩
+  exact ⟨_, _, _, _, .memPush hcap, hq, le_refl _, le_refl _, le_refl _⟩
 
 /-- Pop keeps the capacity: memory-neutral. -/
-protected theorem bufPop {P Q : State w → Prop} {b : BufId}
+protected theorem memPop {P Q : State w → Prop} {b : BufId}
     (h : ∀ s, P s → Q (s.setBuf b (s.bufs b).pop)) :
-    Triple C P (.bufPop b) Q C.bufPop 0 0 :=
-  fun s hs => ⟨_, _, _, _, .bufPop, h s hs, le_refl _, le_refl _, le_refl _⟩
+    Triple C P (.memPop b) Q C.memPop 0 0 :=
+  fun s hs => ⟨_, _, _, _, .memPop, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T : ℕ}
     {D M : ℤ}
@@ -346,7 +346,7 @@ theorem and_space' {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
   (h₁.and_space h₂).conseq (fun _ => id) (fun _ h => h.1) (le_refl _) (le_refl _)
     (le_refl _)
 
-/-- Code containing no `bufAlloc` gets a space triple for free from a time triple:
+/-- Code containing no `memAlloc` gets a space triple for free from a time triple:
 the execution the time triple already exhibits satisfies `d ≤ 0 ∧ p ≤ 0` outright
 (`Exec.allocFree_space`). -/
 theorem space_of_allocFree {P Q : State w → Prop} {c : Stmt w} {T : ℕ}
@@ -384,7 +384,7 @@ protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂
 
 /-! ### Instruction rules
 
-Projections of the corresponding `Triple` rules — except `bufAlloc`, whose full rule
+Projections of the corresponding `Triple` rules — except `memAlloc`, whose full rule
 carries a memory obligation that a time bound does not need. -/
 
 protected theorem imm {P Q : State w → Prop} {d : Reg} {v : Word w}
@@ -406,51 +406,51 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
   (Triple.bin h).time
 
 /-- Reserve capacity (dynamic). Unlike the other time rules the capacity bound `N`
-does **not** disappear: the time charge `C.bufAlloc + newCap * C.allocPerWord` is
+does **not** disappear: the time charge `C.memAlloc + newCap * C.allocPerWord` is
 data-dependent, so bounding the requested capacity is exactly what a time bound
 needs. -/
-protected theorem bufAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
+protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
     (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ Q (s.allocBuf b (s.regs n).toNat)) :
-    TimeTriple C P (.bufAlloc b n) Q (C.bufAlloc + N * C.allocPerWord) :=
-  (Triple.bufAlloc h).time
+    TimeTriple C P (.memAlloc b n) Q (C.memAlloc + N * C.allocPerWord) :=
+  (Triple.memAlloc h).time
 
 /-- Reserve capacity (immediate): statically priced, no side obligation. -/
-protected theorem bufAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
+protected theorem memAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
     (h : ∀ s, P s → Q (s.allocBuf b n)) :
-    TimeTriple C P (.bufAllocI b n) Q (C.bufAlloc + n * C.allocPerWord) :=
-  (Triple.bufAllocI h).time
+    TimeTriple C P (.memAllocI b n) Q (C.memAlloc + n * C.allocPerWord) :=
+  (Triple.memAllocI h).time
 
-protected theorem bufFree {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → Q (s.allocBuf b 0)) : TimeTriple C P (.bufFree b) Q C.bufFree :=
-  (Triple.bufFree h).time
+protected theorem memFree {P Q : State w → Prop} {b : BufId}
+    (h : ∀ s, P s → Q (s.allocBuf b 0)) : TimeTriple C P (.memFree b) Q C.memFree :=
+  (Triple.memFree h).time
 
-protected theorem bufLen {P Q : State w → Prop} {d : Reg} {b : BufId}
+protected theorem memLen {P Q : State w → Prop} {d : Reg} {b : BufId}
     (h : ∀ s, P s → Q (s.setReg d (BitVec.ofNat w (s.bufs b).size))) :
-    TimeTriple C P (.bufLen d b) Q C.bufLen :=
-  (Triple.bufLen h).time
+    TimeTriple C P (.memLen d b) Q C.memLen :=
+  (Triple.memLen h).time
 
-protected theorem bufGet {P Q : State w → Prop} {d : Reg} {b : BufId} {i : Reg}
+protected theorem memLoad {P Q : State w → Prop} {d : Reg} {b : BufId} {i : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setReg d (s.bufs b)[(s.regs i).toNat])) :
-    TimeTriple C P (.bufGet d b i) Q C.bufGet :=
-  (Triple.bufGet h).time
+    TimeTriple C P (.memLoad d b i) Q C.memLoad :=
+  (Triple.memLoad h).time
 
-protected theorem bufSet {P Q : State w → Prop} {b : BufId} {i src : Reg}
+protected theorem memStore {P Q : State w → Prop} {b : BufId} {i src : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) hlt))) :
-    TimeTriple C P (.bufSet b i src) Q C.bufSet :=
-  (Triple.bufSet h).time
+    TimeTriple C P (.memStore b i src) Q C.memStore :=
+  (Triple.memStore h).time
 
-protected theorem bufPush {P Q : State w → Prop} {b : BufId} {src : Reg}
+protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
     (h : ∀ s, P s → (s.bufs b).size < s.caps b
       ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
-    TimeTriple C P (.bufPush b src) Q C.bufPush :=
-  (Triple.bufPush h).time
+    TimeTriple C P (.memPush b src) Q C.memPush :=
+  (Triple.memPush h).time
 
-protected theorem bufPop {P Q : State w → Prop} {b : BufId}
+protected theorem memPop {P Q : State w → Prop} {b : BufId}
     (h : ∀ s, P s → Q (s.setBuf b (s.bufs b).pop)) :
-    TimeTriple C P (.bufPop b) Q C.bufPop :=
-  (Triple.bufPop h).time
+    TimeTriple C P (.memPop b) Q C.memPop :=
+  (Triple.memPop h).time
 
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T : ℕ}
     (ht : TimeTriple C (fun s => P s ∧ s.regs r ≠ 0) thn Q T)
@@ -577,59 +577,59 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
 /-- Reserve capacity (dynamic), charging at most `N`. Since no time bound is
 drawn, this rule keeps the finer *charge* bound (`newCap - oldCap ≤ N`, which may
 use knowledge of the old capacity and may even be negative) rather than
-`Triple.bufAlloc`'s bound on the requested capacity itself — direct, not
+`Triple.memAlloc`'s bound on the requested capacity itself — direct, not
 projected. -/
-protected theorem bufAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℤ}
+protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℤ}
     (h : ∀ s, P s → (((s.regs n).toNat : ℤ) - (s.caps b : ℤ) ≤ N)
       ∧ Q (s.allocBuf b (s.regs n).toNat)) :
-    SpaceTriple C P (.bufAlloc b n) Q N (max N 0) := by
+    SpaceTriple C P (.memAlloc b n) Q N (max N 0) := by
   intro s hs
   obtain ⟨hN, hq⟩ := h s hs
-  exact ⟨_, _, _, _, .bufAlloc, hq, hN, by omega⟩
+  exact ⟨_, _, _, _, .memAlloc, hq, hN, by omega⟩
 
 /-- Reserve capacity (immediate), charging at most the syntactic capacity `n`. -/
-protected theorem bufAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
+protected theorem memAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
     (h : ∀ s, P s → Q (s.allocBuf b n)) :
-    SpaceTriple C P (.bufAllocI b n) Q n n :=
-  (Triple.bufAllocI h).space
+    SpaceTriple C P (.memAllocI b n) Q n n :=
+  (Triple.memAllocI h).space
 
-protected theorem bufFree {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → Q (s.allocBuf b 0)) : SpaceTriple C P (.bufFree b) Q 0 0 :=
-  (Triple.bufFree h).space
+protected theorem memFree {P Q : State w → Prop} {b : BufId}
+    (h : ∀ s, P s → Q (s.allocBuf b 0)) : SpaceTriple C P (.memFree b) Q 0 0 :=
+  (Triple.memFree h).space
 
 /-- Free with a known lower bound `K` on the released capacity: credits `-K`. -/
-protected theorem bufFree' {P Q : State w → Prop} {b : BufId} {K : ℕ}
+protected theorem memFree' {P Q : State w → Prop} {b : BufId} {K : ℕ}
     (h : ∀ s, P s → K ≤ s.caps b ∧ Q (s.allocBuf b 0)) :
-    SpaceTriple C P (.bufFree b) Q (-(K : ℤ)) 0 :=
-  (Triple.bufFree' h).space
+    SpaceTriple C P (.memFree b) Q (-(K : ℤ)) 0 :=
+  (Triple.memFree' h).space
 
-protected theorem bufLen {P Q : State w → Prop} {d : Reg} {b : BufId}
+protected theorem memLen {P Q : State w → Prop} {d : Reg} {b : BufId}
     (h : ∀ s, P s → Q (s.setReg d (BitVec.ofNat w (s.bufs b).size))) :
-    SpaceTriple C P (.bufLen d b) Q 0 0 :=
-  (Triple.bufLen h).space
+    SpaceTriple C P (.memLen d b) Q 0 0 :=
+  (Triple.memLen h).space
 
-protected theorem bufGet {P Q : State w → Prop} {d : Reg} {b : BufId} {i : Reg}
+protected theorem memLoad {P Q : State w → Prop} {d : Reg} {b : BufId} {i : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setReg d (s.bufs b)[(s.regs i).toNat])) :
-    SpaceTriple C P (.bufGet d b i) Q 0 0 :=
-  (Triple.bufGet h).space
+    SpaceTriple C P (.memLoad d b i) Q 0 0 :=
+  (Triple.memLoad h).space
 
-protected theorem bufSet {P Q : State w → Prop} {b : BufId} {i src : Reg}
+protected theorem memStore {P Q : State w → Prop} {b : BufId} {i src : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) hlt))) :
-    SpaceTriple C P (.bufSet b i src) Q 0 0 :=
-  (Triple.bufSet h).space
+    SpaceTriple C P (.memStore b i src) Q 0 0 :=
+  (Triple.memStore h).space
 
-protected theorem bufPush {P Q : State w → Prop} {b : BufId} {src : Reg}
+protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
     (h : ∀ s, P s → (s.bufs b).size < s.caps b
       ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
-    SpaceTriple C P (.bufPush b src) Q 0 0 :=
-  (Triple.bufPush h).space
+    SpaceTriple C P (.memPush b src) Q 0 0 :=
+  (Triple.memPush h).space
 
-protected theorem bufPop {P Q : State w → Prop} {b : BufId}
+protected theorem memPop {P Q : State w → Prop} {b : BufId}
     (h : ∀ s, P s → Q (s.setBuf b (s.bufs b).pop)) :
-    SpaceTriple C P (.bufPop b) Q 0 0 :=
-  (Triple.bufPop h).space
+    SpaceTriple C P (.memPop b) Q 0 0 :=
+  (Triple.memPop h).space
 
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {D M : ℤ}
     (ht : SpaceTriple C (fun s => P s ∧ s.regs r ≠ 0) thn Q D M)

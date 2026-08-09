@@ -174,77 +174,90 @@ At the surface, buffers are handled through the newtype `Buf w`, not raw `BufId`
 so without the wrapper a buffer name could be passed where a register — or an
 arbitrary index — was expected. The newtype prevents *accidental* mixing of the
 three; it is not an enforced capability: the constructor stays public (tests write
-`⟨0⟩` directly), so the intended source `Build.alloc` is a convention, not a
-guarantee. -/
+`⟨0⟩` directly), so the intended source `Mem.alloc` is a convention, not a
+guarantee.
 
-/-- Typed handle to a buffer of `w`-bit words. Obtain one from `Build.alloc` or
-`Build.allocI`. -/
+Allocation lives in the `Mem` namespace (`Mem.alloc`/`Mem.allocI` — the two ways to
+obtain a handle); everything that already *has* a handle is a method on `Buf`
+(`Buf.load`, `Buf.store`, `Buf.push`, `Buf.pop`, `Buf.len`, `Buf.free`), so buffer
+code reads as `b.push e`, `b.load i`, `b.free`. -/
+
+/-- Typed handle to a buffer of `w`-bit words. Obtain one from `Mem.alloc` or
+`Mem.allocI`. -/
 structure Buf (w : ℕ) where
   id : BufId
 deriving Repr
 
-namespace Build
+namespace Mem
 
 /-- Allocate a fresh buffer with capacity `n` (an expression, evaluated at runtime).
 The capacity is charged now; pushes into it are memory-free. Emits a *dynamic*
-`bufAlloc`, whose time charge `C.bufAlloc + cap * C.allocPerWord` depends on the
+`memAlloc`, whose time charge `C.memAlloc + cap * C.allocPerWord` depends on the
 runtime capacity — the emitted code is therefore not `Stmt.Straight`. When the
-capacity is known at generation time, prefer `allocI`, which is statically
+capacity is known at generation time, prefer `Mem.allocI`, which is statically
 priced. -/
 def alloc (n : Exp w) : Build w (Buf w) := do
-  let rn ← compileExp n
-  let b ← freshBuf
-  emit (.bufAlloc b rn)
+  let rn ← Build.compileExp n
+  let b ← Build.freshBuf
+  Build.emit (.memAlloc b rn)
   return ⟨b⟩
 
-/-- Allocate a fresh buffer with the *immediate* capacity `n`, emitting `bufAllocI`:
+/-- Allocate a fresh buffer with the *immediate* capacity `n`, emitting `memAllocI`:
 one instruction, no capacity register, and the time charge
-`C.bufAlloc + n * C.allocPerWord` is a syntactic constant, so the emitted code
-stays `Stmt.Straight` (statically priced). Semantics are identical to `alloc` at
-that capacity.
+`C.memAlloc + n * C.allocPerWord` is a syntactic constant, so the emitted code
+stays `Stmt.Straight` (statically priced). Semantics are identical to `Mem.alloc`
+at that capacity.
 
-The immediate capacity of `Stmt.bufAllocI` is a bare `ℕ` — unlike `alloc`, whose
-capacity comes from a `w`-bit register and is therefore `< 2 ^ w`. An oversized
-immediate (`n ≥ 2 ^ w`) would let the fill level grow past `2 ^ w`, at which point
-`bufLen` reads back a *wrapped* length while every theorem still holds. The
-autoparam closes that hole at the builder surface: `allocI` requires
-`n < 2 ^ w`, discharged by `norm_num` at concrete capacities (and suppliable
-explicitly otherwise). The proof is not threaded anywhere — it exists purely so
-that builder-produced programs keep `bufLen` exact. -/
+The immediate capacity of `Stmt.memAllocI` is a bare `ℕ` — unlike `Mem.alloc`,
+whose capacity comes from a `w`-bit register and is therefore `< 2 ^ w`. An
+oversized immediate (`n ≥ 2 ^ w`) would let the fill level grow past `2 ^ w`, at
+which point `memLen` reads back a *wrapped* length while every theorem still
+holds. The autoparam closes that hole at the builder surface: `Mem.allocI`
+requires `n < 2 ^ w`, discharged by `norm_num` at concrete capacities (and
+suppliable explicitly otherwise). The proof is not threaded anywhere — it exists
+purely so that builder-produced programs keep `memLen` exact. -/
 def allocI (n : ℕ) (_h : n < 2 ^ w := by norm_num) : Build w (Buf w) := do
-  let b ← freshBuf
-  emit (.bufAllocI b n)
+  let b ← Build.freshBuf
+  Build.emit (.memAllocI b n)
   return ⟨b⟩
 
-/-- Release a buffer's capacity. -/
-def free (b : Buf w) : Build w Unit :=
-  emit (.bufFree b.id)
+end Mem
+
+namespace Buf
 
 /-- Read `b[i]` into a fresh register. -/
-def get (b : Buf w) (i : Exp w) : Build w Reg := do
-  let ri ← compileExp i
-  let d ← freshReg
-  emit (.bufGet d b.id ri)
+def load (b : Buf w) (i : Exp w) : Build w Reg := do
+  let ri ← Build.compileExp i
+  let d ← Build.freshReg
+  Build.emit (.memLoad d b.id ri)
   return d
 
 /-- Write `b[i] ← e`. -/
-def set (b : Buf w) (i e : Exp w) : Build w Unit := do
-  let ri ← compileExp i
-  let re ← compileExp e
-  emit (.bufSet b.id ri re)
+def store (b : Buf w) (i e : Exp w) : Build w Unit := do
+  let ri ← Build.compileExp i
+  let re ← Build.compileExp e
+  Build.emit (.memStore b.id ri re)
 
 /-- Append `e` to `b`. -/
 def push (b : Buf w) (e : Exp w) : Build w Unit := do
-  let re ← compileExp e
-  emit (.bufPush b.id re)
+  let re ← Build.compileExp e
+  Build.emit (.memPush b.id re)
+
+/-- Drop `b`'s last element (a no-op on an empty buffer; keeps the capacity). -/
+def pop (b : Buf w) : Build w Unit :=
+  Build.emit (.memPop b.id)
 
 /-- Length of `b`, in a fresh register. -/
 def len (b : Buf w) : Build w Reg := do
-  let d ← freshReg
-  emit (.bufLen d b.id)
+  let d ← Build.freshReg
+  Build.emit (.memLen d b.id)
   return d
 
-end Build
+/-- Release `b`'s capacity. -/
+def free (b : Buf w) : Build w Unit :=
+  Build.emit (.memFree b.id)
+
+end Buf
 
 /-! ## Product types
 
@@ -276,28 +289,28 @@ structure PairBuf (w : ℕ) where
 /-- Allocate an array of pairs with room for `nPairs` entries (2·nPairs words,
 charged now — pushes are then memory-free). -/
 def Build.mkPairBuf (nPairs : Exp w) : Build w (PairBuf w) := do
-  let b ← Build.alloc (2 * nPairs)
+  let b ← Mem.alloc (2 * nPairs)
   return ⟨b⟩
 
 namespace PairBuf
 
 /-- Append a pair: two pushes, requiring two words of free capacity. -/
 def push (pb : PairBuf w) (x y : Exp w) : Build w Unit := do
-  Build.push pb.buf x
-  Build.push pb.buf y
+  pb.buf.push x
+  pb.buf.push y
 
 /-- Number of pairs, in a fresh register. -/
 def size (pb : PairBuf w) : Build w Reg := do
-  let n ← Build.len pb.buf
+  let n ← pb.buf.len
   Build.var ((n : Exp w) / 2)
 
 /-- First component of pair `i`. -/
 def fst (pb : PairBuf w) (i : Exp w) : Build w Reg :=
-  Build.get pb.buf (2 * i)
+  pb.buf.load (2 * i)
 
 /-- Second component of pair `i`. -/
 def snd (pb : PairBuf w) (i : Exp w) : Build w Reg :=
-  Build.get pb.buf (2 * i + 1)
+  pb.buf.load (2 * i + 1)
 
 end PairBuf
 

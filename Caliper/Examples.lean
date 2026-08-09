@@ -1,6 +1,7 @@
 import Clean.Caliper.Triple
 import Clean.Caliper.Builder
 import Clean.Caliper.Field
+import Clean.Caliper.Render
 
 /-!
 # Worked examples
@@ -126,9 +127,9 @@ while (i < n) { acc += xs[i]; i += 1; }
 def code (xs : BufId) : Stmt w :=
   .imm 0 0 ;;
   .imm 1 0 ;;
-  .bufLen 2 xs ;;
+  .memLen 2 xs ;;
   .whileNZ (.bin .ult 3 1 2) 3
-    (.bufGet 4 xs 1 ;;
+    (.memLoad 4 xs 1 ;;
      .bin .add 0 0 4 ;;
      .imm 5 1 ;;
      .bin .add 1 1 5)
@@ -153,8 +154,8 @@ def InvG (xs : BufId) (arr : Array (Word w)) (k : ℕ) (s : State w) : Prop :=
 /-- The linear time bound: 3 setup instructions, `n + 1` guard evaluations,
 `n` loop bodies. -/
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
-  2 * C.imm + C.bufLen + (n + 1) * (C.bin .ult + C.branch)
-    + n * (C.bufGet + 2 * C.bin .add + C.imm)
+  2 * C.imm + C.memLen + (n + 1) * (C.bin .ult + C.branch)
+    + n * (C.memLoad + 2 * C.bin .add + C.imm)
 
 /-- `code xs` sums the buffer `xs` into `r0`, in time `O(n)` and **zero allocation**,
 for any cost model. The `arr.size < 2 ^ w` assumption is what makes the index
@@ -183,13 +184,13 @@ theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
     exact ⟨k - 1, by omega⟩
   -- the body: read, accumulate, increment
   have hbody : ∀ k, Triple C (fun s => InvG xs arr (k + 1) s ∧ s.regs 3 ≠ 0)
-      (.bufGet 4 xs 1 ;; .bin .add 0 0 4 ;; .imm 5 1 ;; .bin .add 1 1 5)
+      (.memLoad 4 xs 1 ;; .bin .add 0 0 4 ;; .imm 5 1 ;; .bin .add 1 1 5)
       (Inv xs arr k)
-      (C.bufGet + (C.bin .add + (C.imm + C.bin .add))) 0 0 := by
+      (C.memLoad + (C.bin .add + (C.imm + C.bin .add))) 0 0 := by
     rintro k s ⟨⟨⟨hb, hlen, hik, hacc⟩, hflag⟩, hnz⟩
     have hlt : (s.regs 1).toNat < arr.size := cond_of_flag_ne hflag hnz
     have hltb : (s.regs 1).toNat < (s.bufs xs).size := by rw [hb]; exact hlt
-    refine ⟨_, _, _, _, .seq (.bufGet hltb) (.seq .bin (.seq .imm .bin)),
+    refine ⟨_, _, _, _, .seq (.memLoad hltb) (.seq .bin (.seq .imm .bin)),
       ⟨?_, ?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
     · simp [hb]
     · simp [hlen]
@@ -207,8 +208,8 @@ theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
       (fun s => s.bufs xs = arr ∧ s.regs 0 = 0 ∧ s.regs 1 = 0) C.imm 0 0 :=
     Triple.imm fun s hs => by simp [hs.1, hs.2]
   have h3 : Triple C (fun s => s.bufs xs = arr ∧ s.regs 0 = 0 ∧ s.regs 1 = 0)
-      (.bufLen 2 xs) (Inv xs arr arr.size) C.bufLen 0 0 := by
-    apply Triple.bufLen
+      (.memLen 2 xs) (Inv xs arr arr.size) C.memLen 0 0 := by
+    apply Triple.memLen
     rintro s ⟨hb, h0, h1'⟩
     refine ⟨?_, ?_, ?_, ?_⟩
     · simp [hb]
@@ -240,7 +241,7 @@ end SumBuf
 /-! ## Example 3: filling a buffer — the allocation bound
 
 `iota n`: reserve capacity `n`, then push `0, 1, ..., n-1`. The capacity is charged at
-`bufAlloc` (net and peak `n`); every push is then memory-free and worst-case unit
+`memAlloc` (net and peak `n`); every push is then memory-free and worst-case unit
 time. The push rule's capacity obligation is discharged from the invariant.
 
 Register conventions: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1. -/
@@ -254,10 +255,10 @@ while (i < n) { b.push(i); i += 1; }
 ```
 `n` is passed in `r2`. -/
 def code (b : BufId) : Stmt w :=
-  .bufAlloc b 2 ;;
+  .memAlloc b 2 ;;
   .imm 0 0 ;;
   .whileNZ (.bin .ult 1 0 2) 1
-    (.bufPush b 0 ;;
+    (.memPush b 0 ;;
      .imm 3 1 ;;
      .bin .add 0 0 3)
 
@@ -282,13 +283,13 @@ def InvG (b : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
 
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
-  C.bufAlloc + n * C.allocPerWord + C.imm + (n + 1) * (C.bin .ult + C.branch)
-    + n * (C.bufPush + C.imm + C.bin .add)
+  C.memAlloc + n * C.allocPerWord + C.imm + (n + 1) * (C.bin .ult + C.branch)
+    + n * (C.memPush + C.imm + C.bin .add)
 
 /-- `code b` fills `b` with `0..n-1`. Time is linear; memory is charged once, at the
 allocation: net and peak are both `n`. The capacity is *dynamic* (read from `r2`),
 so the allocation's per-word time charge is data-dependent and enters the bound as
-`n * C.allocPerWord` through the capacity bound of `Triple.bufAlloc`. -/
+`n * C.allocPerWord` through the capacity bound of `Triple.memAlloc`. -/
 theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code b)
       (fun s => s.bufs b = iotaTo w n)
@@ -309,15 +310,15 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
   have hbody : ∀ k, Triple C (fun (s : State w) => InvG b n (k + 1) s ∧ s.regs 1 ≠ 0)
-      (.bufPush b 0 ;; .imm 3 1 ;; .bin .add 0 0 3)
+      (.memPush b 0 ;; .imm 3 1 ;; .bin .add 0 0 3)
       (Inv b n k)
-      (C.bufPush + (C.imm + C.bin .add)) 0 0 := by
+      (C.memPush + (C.imm + C.bin .add)) 0 0 := by
     rintro k s ⟨⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hnz⟩
     have hlt : (s.regs 0).toNat < n := cond_of_flag_ne hflag hnz
     have hpush : (s.bufs b).size < s.caps b := by
       rw [hbuf, hcap, iotaTo_size]
       exact hlt
-    refine ⟨_, _, _, _, .seq (.bufPush hpush) (.seq .imm .bin),
+    refine ⟨_, _, _, _, .seq (.memPush hpush) (.seq .imm .bin),
       ⟨?_, ?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
     · simp [hlim]
     · simp [-BitVec.toNat_add]
@@ -327,10 +328,10 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
       rw [toNat_add_ofNat_one hlt hn]
       simp [iotaTo]
     · simp [hcap]
-  have h1 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.bufAlloc b 2)
+  have h1 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.memAlloc b 2)
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps b = n ∧ s.bufs b = #[])
-      (C.bufAlloc + n * C.allocPerWord) n n := by
-    apply Triple.bufAlloc
+      (C.memAlloc + n * C.allocPerWord) n n := by
+    apply Triple.memAlloc
     intro s hs
     have hval : (s.regs 2).toNat = n := by
       rw [hs, BitVec.toNat_ofNat]
@@ -367,7 +368,7 @@ end Iota
 A one-slot scratch buffer is allocated once, each of the `n` iterations pushes into it
 and pops again (inside the fixed capacity, so both are memory-free), and the buffer is
 freed at the end. Net memory 0, **peak 1**, for any `n` — a total-allocation counter
-would have reported `n`. `Triple.bufFree'` (free with known capacity) credits the
+would have reported `n`. `Triple.memFree'` (free with known capacity) credits the
 word back so the whole program nets to zero.
 
 Registers: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1. -/
@@ -381,17 +382,17 @@ while (i < n) { s.push(i); s.pop(); i += 1; }
 free(s);
 ```
 `n` is passed in `r2`. The one-word capacity is known at generation time, so the
-allocation uses the statically priced `bufAllocI` — no register setup, and the
+allocation uses the statically priced `memAllocI` — no register setup, and the
 per-word charge is the syntactic constant `1 * C.allocPerWord`. -/
 def code (sb : BufId) : Stmt w :=
-  .bufAllocI sb 1 ;;
+  .memAllocI sb 1 ;;
   .imm 0 0 ;;
   .whileNZ (.bin .ult 1 0 2) 1
-    (.bufPush sb 0 ;;
-     .bufPop sb ;;
+    (.memPush sb 0 ;;
+     .memPop sb ;;
      .imm 3 1 ;;
      .bin .add 0 0 3) ;;
-  .bufFree sb
+  .memFree sb
 
 def Inv (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 2 = BitVec.ofNat w n ∧
@@ -404,8 +405,8 @@ def InvG (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
 
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
-  C.bufAlloc + C.allocPerWord + C.bufFree + C.imm + (n + 1) * (C.bin .ult + C.branch)
-    + n * (C.bufPush + C.bufPop + C.imm + C.bin .add)
+  C.memAlloc + C.allocPerWord + C.memFree + C.imm + (n + 1) * (C.bin .ult + C.branch)
+    + n * (C.memPush + C.memPop + C.imm + C.bin .add)
 
 /-- Linear time — net memory 0 and **peak memory 1**, for any `n`. -/
 theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
@@ -428,15 +429,15 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
   have hbody : ∀ k, Triple C (fun (s : State w) => InvG sb n (k + 1) s ∧ s.regs 1 ≠ 0)
-      (.bufPush sb 0 ;; .bufPop sb ;; .imm 3 1 ;; .bin .add 0 0 3)
+      (.memPush sb 0 ;; .memPop sb ;; .imm 3 1 ;; .bin .add 0 0 3)
       (Inv sb n k)
-      (C.bufPush + (C.bufPop + (C.imm + C.bin .add))) 0 0 := by
+      (C.memPush + (C.memPop + (C.imm + C.bin .add))) 0 0 := by
     rintro k s ⟨⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hnz⟩
     have hlt : (s.regs 0).toNat < n := cond_of_flag_ne hflag hnz
     have hpush : (s.bufs sb).size < s.caps sb := by
       rw [hbuf, hcap]
       simp
-    refine ⟨_, _, _, _, .seq (.bufPush hpush) (.seq .bufPop (.seq .imm .bin)),
+    refine ⟨_, _, _, _, .seq (.memPush hpush) (.seq .memPop (.seq .imm .bin)),
       ⟨?_, ?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
     · simp [hlim]
     · simp [-BitVec.toNat_add, hbuf]
@@ -446,10 +447,10 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     · simp [hcap]
   have h1 : Triple C
       (fun s => s.regs 2 = BitVec.ofNat w n)
-      (.bufAllocI sb 1)
+      (.memAllocI sb 1)
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
-      (C.bufAlloc + 1 * C.allocPerWord) 1 1 := by
-    apply Triple.bufAllocI
+      (C.memAlloc + 1 * C.allocPerWord) 1 1 := by
+    apply Triple.memAllocI
     intro s hlim
     refine ⟨?_, ?_, ?_⟩
     · simp [hlim]
@@ -467,9 +468,9 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     · simp [hcap]
   have hW := Triple.whileNZ_measure hguard hpos hbody n
   have hF : Triple C (fun s => ∃ k', InvG (w := w) sb n k' s ∧ s.regs 1 = 0)
-      (.bufFree sb) (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
-      C.bufFree (-(1 : ℤ)) 0 := by
-    apply Triple.bufFree' (K := 1)
+      (.memFree sb) (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
+      C.memFree (-(1 : ℤ)) 0 := by
+    apply Triple.memFree' (K := 1)
     rintro s ⟨k', ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hzero⟩
     exact ⟨by omega, by simp, by simp⟩
   refine ((h1.seq (h2.seq (hW.seq hF))).conseq (fun _ h => h)
@@ -604,7 +605,7 @@ theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
   · omega
 
 /-- Recombined: the time-only proof above, and a space triple obtained for free
-(`code` contains no `bufAlloc`), glued into a full `Triple` by determinism. -/
+(`code` contains no `memAlloc`), glued into a full `Triple` by determinism. -/
 theorem spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
     Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
       (fun s => (s.regs 0).toNat = n) (timeBound C n) 0 0 :=
@@ -622,7 +623,7 @@ while (b.len != 0) { b.pop(); }
 The flag is `r1`. The trip count is the buffer's length — a *runtime* quantity with
 no static bound. -/
 def code (b : BufId) : Stmt w :=
-  .whileNZ (.bufLen 1 b) 1 (.bufPop b)
+  .whileNZ (.memLen 1 b) 1 (.memPop b)
 
 def Inv (b : BufId) (k : ℕ) (s : State w) : Prop := (s.bufs b).size = k
 
@@ -634,10 +635,10 @@ loop runs longer than any given time bound (`no_time_bound`). The measure (the
 buffer length) still drives the induction; it just never appears in the bounds. -/
 theorem space_spec {C : CostModel} (b : BufId) :
     SpaceTriple C (fun _ => True) (code (w := w) b) (fun _ => True) 0 0 := by
-  have hguard : ∀ k, SpaceTriple C (Inv (w := w) b k) (.bufLen 1 b)
+  have hguard : ∀ k, SpaceTriple C (Inv (w := w) b k) (.memLen 1 b)
       (InvG (w := w) b k) 0 0 := by
     intro k
-    apply SpaceTriple.bufLen
+    apply SpaceTriple.memLen
     intro s hs
     exact ⟨hs, by simp [show (s.bufs b).size = k from hs]⟩
   have hpos : ∀ k (s : State w), InvG b k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
@@ -645,9 +646,9 @@ theorem space_spec {C : CostModel} (b : BufId) :
     · exact absurd (hflag.trans (by simp)) hnz
     · exact ⟨k, rfl⟩
   have hbody : ∀ k, SpaceTriple C (fun (s : State w) => InvG b (k + 1) s ∧ s.regs 1 ≠ 0)
-      (.bufPop b) (Inv b k) 0 0 := by
+      (.memPop b) (Inv b k) 0 0 := by
     intro k
-    apply SpaceTriple.bufPop
+    apply SpaceTriple.memPop
     rintro s ⟨⟨hsz, _⟩, _⟩
     show ((s.setBuf b (s.bufs b).pop).bufs b).size = k
     simp [show (s.bufs b).size = k + 1 from hsz]
@@ -673,7 +674,7 @@ steps under the unit cost model. (The hypothesis keeps the length register from
 wrapping; it is preserved as the buffer shrinks.) -/
 private theorem time_lower {b : BufId} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (h : Exec .unit c s s' t d p)
-    (hc : c = .whileNZ (.bufLen 1 b) 1 (.bufPop b))
+    (hc : c = .whileNZ (.memLen 1 b) 1 (.memPop b))
     (hsz : (s.bufs b).size < 2 ^ w) : (s.bufs b).size ≤ t := by
   induction h with
   | while_done hg hz =>
@@ -689,9 +690,9 @@ private theorem time_lower {b : BufId} {c : Stmt w} {s s' : State w} {t : ℕ}
     simp only [regs_setReg_self, ne_eq, ofNat_eq_zero_iff hsz] at hnz
     have hlow := ihl rfl (by simp; omega)
     simp only [bufs_setBuf_self, bufs_setReg, Array.size_pop] at hlow
-    have e1 : CostModel.unit.bufLen = 1 := rfl
+    have e1 : CostModel.unit.memLen = 1 := rfl
     have e2 : CostModel.unit.branch = 1 := rfl
-    have e3 : CostModel.unit.bufPop = 1 := rfl
+    have e3 : CostModel.unit.memPop = 1 := rfl
     omega
   | _ => simp_all
 
@@ -723,9 +724,9 @@ open Build in
 def sumB (xs : Buf w) : Build w Reg := do
   let acc ← var 0
   let i ← var 0
-  let n ← len xs
+  let n ← xs.len
   while_ (var (i .< n)) do
-    let tmp ← get xs i
+    let tmp ← xs.load i
     acc <~ (acc : Exp w) + tmp
     i <~ (i : Exp w) + 1
   return acc
@@ -733,6 +734,24 @@ def sumB (xs : Buf w) : Build w Reg := do
 /-- info: true -/
 #guard_msgs in
 #eval (Build.build (sumB (w := 64) ⟨0⟩)).2 == SumBuf.code 0
+
+/- The canonical rendering (`Stmt.render`, `Render.lean`) of that program — the
+listing quoted in `doc/caliper.md`. -/
+/--
+info: imm   r0, 0
+imm   r1, 0
+mem.len   r2, b0
+loop {
+  ult  r3, r1, r2
+  bifz r3
+  mem.load  r4, b0[r1]
+  add  r0, r0, r4
+  imm   r5, 1
+  add  r1, r1, r5
+}
+-/
+#guard_msgs in
+#eval IO.println (SumBuf.code (w := 64) 0).renderString
 
 /-! ## Executable
 
