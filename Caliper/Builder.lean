@@ -201,8 +201,17 @@ def alloc (n : Exp w) : Build w (Buf w) := do
 one instruction, no capacity register, and the time charge
 `C.bufAlloc + n * C.allocPerWord` is a syntactic constant, so the emitted code
 stays `Stmt.Straight` (statically priced). Semantics are identical to `alloc` at
-that capacity. -/
-def allocI (n : ℕ) : Build w (Buf w) := do
+that capacity.
+
+The immediate capacity of `Stmt.bufAllocI` is a bare `ℕ` — unlike `alloc`, whose
+capacity comes from a `w`-bit register and is therefore `< 2 ^ w`. An oversized
+immediate (`n ≥ 2 ^ w`) would let the fill level grow past `2 ^ w`, at which point
+`bufLen` reads back a *wrapped* length while every theorem still holds. The
+autoparam closes that hole at the builder surface: `allocI` requires
+`n < 2 ^ w`, discharged by `norm_num` at concrete capacities (and suppliable
+explicitly otherwise). The proof is not threaded anywhere — it exists purely so
+that builder-produced programs keep `bufLen` exact. -/
+def allocI (n : ℕ) (_h : n < 2 ^ w := by norm_num) : Build w (Buf w) := do
   let b ← freshBuf
   emit (.bufAllocI b n)
   pure ⟨b⟩

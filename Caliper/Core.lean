@@ -164,11 +164,22 @@ inductive Stmt (w : ℕ) where
   /-- `b ← alloc(n)` with the capacity `n` an **immediate** in the syntax: same
   semantics as `bufAlloc` at that capacity, but the per-word time charge
   `C.bufAlloc + n * C.allocPerWord` is a pure function of the instruction, so
-  static pricing (`Stmt.Straight`, `staticTime`) applies. -/
+  static pricing (`Stmt.Straight`, `staticTime`) applies.
+
+  **Hazard**: the immediate is a bare `ℕ`. Unlike `bufAlloc`, whose capacity is
+  read from a `w`-bit register and is therefore `< 2 ^ w`, a `bufAllocI` with
+  `n ≥ 2 ^ w` is expressible — and a buffer filled past `2 ^ w` words makes
+  `bufLen` read back a *wrapped* length (see `bufLen`) while every cost/semantics
+  theorem still holds. Keep immediate capacities `< 2 ^ w`; the builder surface
+  `Build.allocI` enforces exactly this bound. -/
   | bufAllocI (b : BufId) (n : ℕ)
   /-- `free b`: release `b`'s capacity entirely. -/
   | bufFree (b : BufId)
-  /-- `d ← |b|` (the filled length, not the capacity). -/
+  /-- `d ← |b|` (the filled length, not the capacity). The length is loaded as the
+  word `BitVec.ofNat w size`, so it is **exact only while the size is `< 2 ^ w`**:
+  a buffer filled past that — reachable only through a `bufAllocI` immediate
+  capacity `≥ 2 ^ w`, since register-driven `bufAlloc` capacities are `< 2 ^ w` —
+  reads back wrapped. -/
   | bufLen (d : Reg) (b : BufId)
   /-- `d ← b[i]`; requires `i < |b|`. -/
   | bufGet (d : Reg) (b : BufId) (i : Reg)

@@ -22,7 +22,7 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 | `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40`, plus the certified-native pins `compile_isZeroCertified` / `isZeroCertified_witgen_lt_2_40` (the same 140 steps, now for a witness whose prover-side evaluation is a native closure) |
 | `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded IR reference output `WitgenIR.irEval` (= `eval` on `.ir` programs; doubles as memory safety); on certified programs the equivalence transports this to the native closure itself (`compile_sim_certified`); combined with phase 2 in `isZero_witgen_correct_140` and `isZeroCertified_witgen_correct_140` |
 | `WitgenComputable.lean` | **The checks → circuit-layer bridge**: `compilable` + `envBound N` imply `ProverEnvironment.OnlyAccessedBelow N` (`WitgenIR.onlyAccessedBelow_of_checks`; `onlyAccessedBelow_of_ir_equiv` / `onlyAccessedBelow_certified` for native closures with a certified IR equivalent — covering `WitgenIR.certified` witnesses, whose `eval` is the closure), lifted per-offset to whole circuits (`circuit_computableWitnesses_of_checks`) so that `Circuit.ComputableWitnesses` obligations discharge by one boolean evaluation — demonstrated on the instantiated `IsZeroField` and `Addition8FullCarry` circuits and on the bare closure `isZeroNative` by `native_decide` |
-| `TimedCircuit.lean` | **`TimedCircuit`: budgeted witgen as a type** — per-operation certified cost (`FlatOperation.witgenCost`), the offset-threaded whole-circuit fold (`Operations.witgenTime`), its per-generator meaning theorem (`WitnessCosts`, `witgenTime_sound`, `WitnessCosts.forAll_exec`), and the `TimedCircuit` structure whose `witgen_bounded` obligation is one `native_decide`; demonstrated on `IsZeroField` (`isZeroTimed`, pinned total 159) |
+| `TimedCircuit.lean` | **`TimedCircuit`: budgeted witgen as a type** — per-operation certified cost (`FlatOperation.witgenCost`), the offset-threaded whole-circuit fold (`FlatOperation.witgenTime`), its per-generator meaning theorem (`WitnessCosts`, `witgenTime_sound`, `WitnessCosts.forAll_exec`), and the `TimedCircuit` structure whose `witgen_bounded` obligation is one `native_decide`; demonstrated on `IsZeroField` (`isZeroTimed`, pinned total 159) |
 
 ## The witgen pipeline: `witgen in < 2^N steps`, machine-checked
 
@@ -44,7 +44,9 @@ generation-time check passes — `ir` carries structured IR (a `.ir` program, or
 `localVar`s), `WitgenIR.envBound N ir` (every environment read below `N`), and
 `N ≤ 2^64`, `m < 2^64` (environment indices and per-output-element immediates
 survive their 64-bit encodings; the output buffer's capacity itself is a
-`bufAllocI` immediate — a bare `ℕ` — so it never wraps) — and it computes the
+`bufAllocI` immediate — a bare `ℕ`, so the capacity *accounting* never wraps,
+while `bufLen` exactness on the output buffer needs the same `m < 2^64`) — and it
+computes the
 local-register count from the program itself
 (`L := steps.length`), so no caller-supplied `L` can corrupt the register layout.
 The raw compiler `compileIR` is internal and unchecked; it exists as the object the
@@ -178,7 +180,7 @@ without a machine-checked bound on its witness-generation cost.
       witgen_bounded : underBudget costModel (size Input) witgenBudget
         ((main (varFromOffset Input 0)).operations (size Input)).toFlat = true
 
-**The obligation is decidable.** `Operations.witgenTime` folds
+**The obligation is decidable.** `FlatOperation.witgenTime` folds
 `FlatOperation.witgenCost` — `compile` followed by the honest partial clock
 `staticTime?` — over the circuit's flat operations, threading the offset exactly
 like `FlatOperation.localLength` and `computableChecks`: each generator is priced,
