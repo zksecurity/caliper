@@ -20,10 +20,10 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 | `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound and the `ScopedSumSq` register-scoping bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
 | `W64.lean` | Fixed 64-bit surface: namespace `Caliper64` of reducible `abbrev`s pinning `w := 64` (`Word`, `Stmt`, `State`, `Exec`, `run`, `Triple`, `TimeTriple`, `SpaceTriple`, `Build`, `Exp`, `Buf`, `build`, `Fp p`), plus a short demo where `w` never appears |
 | `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound`/field-size checks and the **checked entry point `compile`** (rejecting moduli outside the single-word design point `2 < p`, `p·p ≤ 2^64`: 40-bit, Goldilocks and BN254 rejection tests); differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear; the headline program `testIsZero` is proved to be the witness IR extracted from the Clean circuit `Gadgets.IsZeroField.circuit` (`isZeroCircuitIR_eq_testIsZero`); certified native witnesses compile as their IR reimplementation (`compile_certified_eq_ir`), demonstrated on `isZeroCertified` = the closure `isZeroNative` + `testIsZero`'s IR + equivalence proof |
-| `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40`, plus the certified-native pins `compile_isZeroCertified` / `isZeroCertified_witgen_lt_2_40` (the same 140 steps, now for a witness whose prover-side evaluation is a native closure) |
-| `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded IR reference output `WitgenIR.irEval` (= `eval` on `.ir` programs; doubles as memory safety); on certified programs the equivalence transports this to the native closure itself (`compile_sim_certified`); combined with phase 2 in `isZero_witgen_correct_140` and `isZeroCertified_witgen_correct_140` |
+| `WitgenCost.lean` | **Phase 2**: the compiled code's register discipline (`CodeShape`: straight-line, heap-free, no `regFree` inside expression code, exactly one `regAlloc` per temp of the range `[next, next')`), `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (net ≤ output length `m`; peak ≤ `m` + the certified register live set `WitgenIR.regPeak` = locals + idx + worst single-scope temp count), and concrete certified bounds: `isZero_witgen_lt_2_40`, plus the certified-native pins `compile_isZeroCertified` / `isZeroCertified_witgen_lt_2_40` (the same 155 steps, now for a witness whose prover-side evaluation is a native closure) |
+| `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded IR reference output `WitgenIR.irEval` (= `eval` on `.ir` programs; doubles as memory safety); on certified programs the equivalence transports this to the native closure itself (`compile_sim_certified`); combined with phase 2 in `isZero_witgen_correct_155` and `isZeroCertified_witgen_correct_155` |
 | `WitgenComputable.lean` | **The checks → circuit-layer bridge**: `compilable` + `envBound N` imply `ProverEnvironment.OnlyAccessedBelow N` (`WitgenIR.onlyAccessedBelow_of_checks`; `onlyAccessedBelow_of_ir_equiv` / `onlyAccessedBelow_certified` for native closures with a certified IR equivalent — covering `WitgenIR.certified` witnesses, whose `eval` is the closure), lifted per-offset to whole circuits (`circuit_computableWitnesses_of_checks`) so that `Circuit.ComputableWitnesses` obligations discharge by one boolean evaluation — demonstrated on the instantiated `IsZeroField` and `Addition8FullCarry` circuits and on the bare closure `isZeroNative` by `native_decide` |
-| `TimedCircuit.lean` | **`TimedCircuit`: budgeted witgen as a type** — per-operation certified cost (`FlatOperation.witgenCost`), the offset-threaded whole-circuit fold (`FlatOperation.witgenTime`), its per-generator meaning theorem (`WitnessCosts`, `witgenTime_sound`, `WitnessCosts.forAll_exec`), and the `TimedCircuit` structure whose `witgen_bounded` obligation is one `native_decide`; demonstrated on `IsZeroField` (`isZeroTimed`, pinned total 159) |
+| `TimedCircuit.lean` | **`TimedCircuit`: budgeted witgen as a type** — per-operation certified cost (`FlatOperation.witgenCost`), the offset-threaded whole-circuit fold (`FlatOperation.witgenTime`), its per-generator meaning theorem (`WitnessCosts`, `witgenTime_sound`, `WitnessCosts.forAll_exec`), and the `TimedCircuit` structure whose `witgen_bounded` obligation is one `native_decide`; demonstrated on `IsZeroField` (`isZeroTimed`, pinned total 187) |
 
 ## The witgen pipeline: `witgen in < 2^N steps`, machine-checked
 
@@ -79,19 +79,46 @@ out-of-range buffer accesses have no `Exec` derivation, that existence theorem i
 simultaneously a memory-safety proof; by determinism, its costs and output are
 those of *every* execution.
 
+The compiled code is honest about its registers. Every register the code writes
+it first acquires (`reg.alloc` immediately before the first write — inside
+`fieldOp`/`selectCode` too), and every acquisition has a scope: expression
+temporaries die *in bulk at step boundaries* — `compileStep` releases its
+expression's temps `L+1 .. next'-1` (highest first, stack-like) right after the
+binding `mov`, and each output element of `compileV` does the same after its
+`memPush` (`bitsOf` keeps the decomposed value's temps across its per-bit blocks
+and frees them after the loop) — while the locals `0 .. L-1` and the idx register
+`L` are acquired once in the prologue (`allocRegs`) and released as the program's
+last code (`freeTemps 0 (L+1)`). Phase 2 certifies this discipline syntactically
+(`CodeShape`: expression code for temp range `[next, next')` is straight-line,
+heap-free, contains no `regFree` and exactly one `regAlloc` per register of the
+range) and cashes it out as the strengthened space theorem `compile_space_le`:
+the net live-memory change stays `≤ m` (each scope-exit release provably credits
+its full word — the coverage lemma `exec_regsAlloc_of_touches`), and the peak is
+`≤ m + WitgenIR.regPeak ir` where `regPeak = L + 1 + max` over steps/output
+elements of their temp counts — the **live set**, not the acquisition count. That
+number is exactly the register file a register allocator must provide, and since
+all lifetimes are bracket-nested it is realizable by interval (indeed stack)
+coloring. For `testIsZero`: `regPeak = 15` (`isZero_regPeak`), so peak `≤ 16`
+words total.
+
 Concretely, for the BabyBear `IsZeroField` witness, correctness and the phase-2 cost
 bounds combine into the headline corollary
 
-    theorem isZero_witgen_correct_140
+    theorem isZero_witgen_correct_155
         (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
         (hbuf : s.bufs 0 = envArr) :
-        ∃ s' d pp, Exec .unit isZeroCompiled s s' 140 d pp ∧
+        ∃ s' d pp, Exec .unit isZeroCompiled s s' 155 d pp ∧
           s'.bufs 1 = (Vector.map encF (testIsZero.eval env)).toArray ∧
-          pp ≤ 1
+          pp ≤ 16
 
-— an execution computing the **correct encoded witness output** in **exactly 140
-unit-cost steps** (2090 under the calibrated cycles table; both far below `2^40`,
-see `isZero_witgen_correct_lt_2_40`) with **peak memory 1 word**.
+— an execution computing the **correct encoded witness output** in **exactly 155
+unit-cost steps** (2105 under the calibrated cycles table; both far below `2^40`,
+see `isZero_witgen_correct_lt_2_40`) with **peak live memory 16 words**: the one
+output word plus the program's certified 15-register live set (`isZero_regPeak` —
+idx register + the 14 temporaries of its single output expression). Of the 155
+unit ticks, 140 are the arithmetic of the free-register era and 15 are the
+register acquisitions the honest metric now charges (the matching releases are
+free).
 
 The witness program is not a hand-written fixture: Clean circuits embed their
 witness generators structurally (each `witness` is a `FlatOperation.witness m ir`
@@ -101,13 +128,13 @@ the bundled circuit `Gadgets.IsZeroField.circuit` itself. `isZeroCircuitIR`
 on the circuit's flat operations at input `var ⟨0⟩` — and
 `isZeroCircuitIR_eq_testIsZero` proves the two are definitionally equal (`rfl`), so
 the headline is a theorem about the circuit's own witness program; the
-circuit-anchored statement is `isZero_witgen_correct_140_circuit`
+circuit-anchored statement is `isZero_witgen_correct_155_circuit`
 (`WitgenSimIR.lean`). The circuit's only other witness generator is the trivial
 `<==` copy for its output `b`; `isZeroCircuit_witnessIRs` certifies these two are
 *all* of its witness operations (the equality-assertion subcircuits carry none).
-That copy generator is priced too (`isZeroCopyCompiled`, exactly 19 unit steps /
-169 cycles), and `isZeroCircuit_total_witgen_time_unit` (`WitgenCost.lean`) sums the
-two into `140 + 19 = 159` unit steps with the `< 2^40` corollary
+That copy generator is priced too (`isZeroCopyCompiled`, exactly 32 unit steps /
+182 cycles), and `isZeroCircuit_total_witgen_time_unit` (`WitgenCost.lean`) sums the
+two into `155 + 32 = 187` unit steps with the `< 2^40` corollary
 `isZeroCircuit_total_witgen_lt_2_40` — so the headline now covers the circuit's
 complete witness list.
 
@@ -186,10 +213,10 @@ Worked instance, end to end: `isZeroNative` — the `IsZeroField` conditional-in
 witness written as an ordinary Lean closure — is certified against `testIsZero`'s
 IR program as `isZeroCertified` (`WitgenCompile.lean`, equivalence lemma
 `isZeroNative_eq_testIsZero`). The differential test compares the machine against
-the *closure*; `compile` emits `isZeroCompiled` with the pinned 140-unit-step /
-2090-cycle cost (`compile_isZeroCertified`, `isZeroCertified_witgen_time_unit`,
+the *closure*; `compile` emits `isZeroCompiled` with the pinned 155-unit-step /
+2105-cycle cost (`compile_isZeroCertified`, `isZeroCertified_witgen_time_unit`,
 `WitgenCost.lean`); the machine provably computes the closure's own output in
-exactly 140 steps with peak memory ≤ 1 word (`isZeroCertified_witgen_correct_140`,
+exactly 155 steps with peak memory ≤ 16 words (`isZeroCertified_witgen_correct_155`,
 `WitgenSimIR.lean`); and `OnlyAccessedBelow 1 isZeroNative` discharges by
 `native_decide` (`WitgenComputable.lean`).
 
@@ -216,7 +243,7 @@ like `FlatOperation.localLength` and `computableChecks`: each generator is price
 and its `envBound` checked, at its own accumulated offset. `underBudget` is one
 boolean, so at a concrete circuit `witgen_bounded := by native_decide` (the default
 field tactic) is the entire proof. `IsZeroField` upgrades to `isZeroTimed` this
-way, with pinned total `140 + 19 = 159` unit steps.
+way, with pinned total `155 + 32 = 187` unit steps.
 
 **The number carries meaning.** `witgenTime_sound` reifies `witgenTime = some T`
 into a per-generator certificate (`WitnessCosts`): every witness generator, at its
@@ -421,6 +448,18 @@ physical slots with peak-live-count many slots. The certified peak *is* the
 frame size: a RISC-V lowering's stack frame for the `reg.*` file needs exactly
 the peak live register count the profile bounds, fresh-name monotonicity
 notwithstanding.
+
+The witgen compiler (`WitgenCompile.lean`) follows the same discipline, at scope
+granularity chosen by the IR's own structure: every fresh temporary is acquired
+at its first write (`reg.alloc r` immediately before the instruction writing
+`r`), temporaries are released in bulk at *step boundaries* — after a `let`-step's
+binding `mov`, after an output element's `memPush` (highest first, stack-like) —
+and the always-live locals + idx register are acquired in the prologue and
+released at program end. The resulting certified peak (`compile_space_le`,
+`WitgenCost.lean`) is `m + L + 1 + maxTempsPerScope` — output buffer + locals +
+idx + the worst *single* step's or element's temp count — the honest live set of
+the compiled program, never the total acquisition count, and interval-colorable
+because the lifetimes are bracket-nested.
 
 The loop rule `Triple.whileNZ_measure` takes an invariant indexed by a
 remaining-iterations budget `k`; time is linear in `k`, and both memory bounds have
@@ -662,7 +701,7 @@ The theorems stop at the abstract machine. Stated plainly:
 
 Checking the theorems requires trusting the Lean kernel plus the three standard
 axioms (`propext`, `Classical.choice`, `Quot.sound`). The concrete headline
-numerals — BabyBear primality, the `staticTime` numerals like `140`/`2090` —
+numerals — BabyBear primality, the `staticTime` numerals like `155`/`2105` —
 additionally use `Lean.ofReduceBool` via `native_decide` (trusting the Lean
 compiler to evaluate closed booleans; needed because `toBits` is well-founded
 recursion, which `rfl` cannot reduce). `#print axioms <theorem>` is the audit
