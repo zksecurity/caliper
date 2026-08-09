@@ -22,6 +22,9 @@ Six programs, in increasing order of interest:
 6. `CountUp`/`Drain` — decoupled judgments via `TimeTriple`/`SpaceTriple`: a time
    bound proved without touching memory algebra, and a space bound for a loop whose
    trip count admits **no** uniform time bound.
+7. `ScopedSumSq` — the register resource: builder blocks under `Build.scope`
+   release their temporaries, so of 5 registers acquired the live peak is **3** —
+   a `SpaceTriple` where the register words are visible in the memory profile.
 
 At the end, the builder surface syntax is connected to the hand-written core syntax by
 evaluation, and `#eval` runs the reference interpreter against the proved bounds.
@@ -715,9 +718,13 @@ end Drain
 
 /-! ## The builder produces the same programs
 
-`sumB` is `SumBuf.code` written in the surface syntax: automatic register allocation,
-infix expressions, structured `while`. The `rfl` below checks the two coincide — the
-sugar adds nothing to the trusted surface. -/
+`sumB` is the buffer-summing loop written in the surface syntax: automatic register
+allocation, infix expressions, structured `while`. Since `freshReg` emits
+`regAlloc`, the builder's output is `SumBuf.code` with the register acquisitions
+made explicit; `sumBCore` below is that program hand-written in core syntax, and
+the `#eval` checks the two coincide — the sugar adds nothing to the trusted
+surface. (The proved `SumBuf` theorems stay about the registerless `SumBuf.code`,
+which remains a perfectly valid program of the machine.) -/
 
 open Build in
 /-- `SumBuf.code`, ergonomically — note the typed buffer handle `Buf w`. -/
@@ -731,9 +738,24 @@ def sumB (xs : Buf w) : Build w Reg := do
     i <~ (i : Exp w) + 1
   return acc
 
+/-- The builder's output, hand-written: `SumBuf.code 0` plus the explicit
+`regAlloc` of each of the six registers the program names, each emitted at the
+point the builder first acquires the name (so the guard's flag register and the
+body's temporaries are acquired inside the loop — idempotently re-charged in
+time, memory-neutral after the first iteration). -/
+def sumBCore : Stmt w :=
+  .regAlloc 0 ;; .imm 0 0 ;;
+  .regAlloc 1 ;; .imm 1 0 ;;
+  .regAlloc 2 ;; .memLen 2 0 ;;
+  .whileNZ (.regAlloc 3 ;; .bin .ult 3 1 2) 3
+    (.regAlloc 4 ;; .memLoad 4 0 1 ;;
+     .bin .add 0 0 4 ;;
+     .regAlloc 5 ;; .imm 5 1 ;;
+     .bin .add 1 1 5)
+
 /-- info: true -/
 #guard_msgs in
-#eval (Build.build (sumB (w := 64) ⟨0⟩)).2 == SumBuf.code 0
+#eval (Build.build (sumB (w := 64) ⟨0⟩)).2 == sumBCore
 
 /- The canonical rendering (`Stmt.render`, `Render.lean`) of that program — the
 listing quoted in `doc/caliper.md`. -/
@@ -752,6 +774,119 @@ loop {
 -/
 #guard_msgs in
 #eval IO.println (SumBuf.code (w := 64) 0).renderString
+
+/-! ## Example 7: the register resource — scoped temporaries, small live peak
+
+Registers are words of live memory, acquired by `regAlloc` (one step) and released
+by `regFree` (free) — the same resource as buffer capacity, under a scalar naming
+convention. `Build.scope` releases a block's register temporaries at the block
+boundary (all but the ones its result consists of, per `RegCarrier`). In this
+chain each squaring stage acquires a literal scratch and a result register; the
+scratch dies at the stage boundary, so of **5 registers acquired, at most 3 are
+ever live** — and the `SpaceTriple` below shows the register words in the memory
+profile (net 3, peak 3), where an unscoped chain would peak at 5. -/
+
+namespace ScopedSumSq
+
+open Build in
+/-- `3² + 4²`, each square in its own `Build.scope`: the stage's literal scratch
+is freed at the boundary, only the stage results survive into the final sum. -/
+def sumSqB : Build 64 Reg := do
+  let a ← Build.scope do
+    let x ← var 3
+    var ((x : Exp 64) * x)
+  let b ← Build.scope do
+    let y ← var 4
+    var ((y : Exp 64) * y)
+  var ((a : Exp 64) + b)
+
+/-- The generated program, hand-written in core syntax: each stage is
+`regAlloc scratch; imm; regAlloc result; mul; regFree scratch`. -/
+def code : Stmt 64 :=
+  .regAlloc 0 ;; .imm 0 3 ;; .regAlloc 1 ;; .bin .mul 1 0 0 ;; .regFree 0 ;;
+  .regAlloc 2 ;; .imm 2 4 ;; .regAlloc 3 ;; .bin .mul 3 2 2 ;; .regFree 2 ;;
+  .regAlloc 4 ;; .bin .add 4 1 3
+
+/-- info: true -/
+#guard_msgs in
+#eval (Build.build sumSqB).2 == code
+
+/-- Net 3, peak **3**: of the five `regAlloc`s only three words are ever live at
+once, because each stage's scratch is credited back (`SpaceTriple.regFree'`, with
+the allocation fact carried from the stage's own `regAlloc`) before the next
+stage allocates. Holds from any start state, in any cost model. -/
+theorem space_spec {C : CostModel} :
+    SpaceTriple C (fun _ => True) code (fun _ => True) 3 3 := by
+  have h1 : SpaceTriple (w := 64) C (fun _ => True) (.regAlloc 0)
+      (fun s => s.regsAlloc 0 = true) 1 1 :=
+    SpaceTriple.regAlloc fun s _ => by simp
+  have h2 : SpaceTriple (w := 64) C (fun s => s.regsAlloc 0 = true) (.imm 0 3)
+      (fun s => s.regsAlloc 0 = true) 0 0 :=
+    SpaceTriple.imm fun s hs => by simp [hs]
+  have h3 : SpaceTriple (w := 64) C (fun s => s.regsAlloc 0 = true) (.regAlloc 1)
+      (fun s => s.regsAlloc 0 = true) 1 1 :=
+    SpaceTriple.regAlloc fun s hs => by simp [hs]
+  have h4 : SpaceTriple (w := 64) C (fun s => s.regsAlloc 0 = true) (.bin .mul 1 0 0)
+      (fun s => s.regsAlloc 0 = true) 0 0 :=
+    SpaceTriple.bin fun s hs => by simp [hs]
+  have h5 : SpaceTriple (w := 64) C (fun s => s.regsAlloc 0 = true) (.regFree 0)
+      (fun _ => True) (-1) 0 :=
+    SpaceTriple.regFree' fun s hs => ⟨hs, trivial⟩
+  have h6 : SpaceTriple (w := 64) C (fun _ => True) (.regAlloc 2)
+      (fun s => s.regsAlloc 2 = true) 1 1 :=
+    SpaceTriple.regAlloc fun s _ => by simp
+  have h7 : SpaceTriple (w := 64) C (fun s => s.regsAlloc 2 = true) (.imm 2 4)
+      (fun s => s.regsAlloc 2 = true) 0 0 :=
+    SpaceTriple.imm fun s hs => by simp [hs]
+  have h8 : SpaceTriple (w := 64) C (fun s => s.regsAlloc 2 = true) (.regAlloc 3)
+      (fun s => s.regsAlloc 2 = true) 1 1 :=
+    SpaceTriple.regAlloc fun s hs => by simp [hs]
+  have h9 : SpaceTriple (w := 64) C (fun s => s.regsAlloc 2 = true) (.bin .mul 3 2 2)
+      (fun s => s.regsAlloc 2 = true) 0 0 :=
+    SpaceTriple.bin fun s hs => by simp [hs]
+  have h10 : SpaceTriple (w := 64) C (fun s => s.regsAlloc 2 = true) (.regFree 2)
+      (fun _ => True) (-1) 0 :=
+    SpaceTriple.regFree' fun s hs => ⟨hs, trivial⟩
+  have h11 : SpaceTriple (w := 64) C (fun _ => True) (.regAlloc 4)
+      (fun _ => True) 1 1 :=
+    SpaceTriple.regAlloc fun _ _ => trivial
+  have h12 : SpaceTriple (w := 64) C (fun _ => True) (.bin .add 4 1 3)
+      (fun _ => True) 0 0 :=
+    SpaceTriple.bin fun _ _ => trivial
+  have hall := h1.seq (h2.seq (h3.seq (h4.seq (h5.seq (h6.seq (h7.seq (h8.seq
+    (h9.seq (h10.seq (h11.seq h12))))))))))
+  exact hall.conseq (fun _ h => h) (fun _ _ => trivial) (by omega) (by omega)
+
+/- The canonical rendering: the `reg.*` register-file instructions alongside the
+ALU work. -/
+/--
+info: reg.alloc r0
+imm   r0, 3
+reg.alloc r1
+mul  r1, r0, r0
+reg.free  r0
+reg.alloc r2
+imm   r2, 4
+reg.alloc r3
+mul  r3, r2, r2
+reg.free  r2
+reg.alloc r4
+add  r4, r1, r3
+-/
+#guard_msgs in
+#eval IO.println code.renderString
+
+/-- Value `3² + 4² = 25`, and the proved profile realized: unit time 10 (five
+1-tick `regAlloc`s, five ALU/imm instructions, two free `regFree`s), net 3,
+peak **3**. -/
+def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
+  (run .unit 100 code (State.init 64)).map fun (s, t, d, p) => (s.regs 4, t, d, p)
+
+/-- info: some (25#64, 10, 3, 3) -/
+#guard_msgs in
+#eval demo
+
+end ScopedSumSq
 
 /-! ## Executable
 
@@ -798,8 +933,10 @@ def demoScratch : Option (ℕ × ℤ × ℤ) :=
 `PairBuf` (see `Builder.lean`) is an array-of-structs: one buffer, stride 2. Field
 access is compiled index arithmetic, so its cost is ordinary instruction cost. The
 demo allocates room for two pairs, pushes them, reads `fst 1` (= 30) and `snd 0`
-(= 20), and returns their sum: value 50, and memory (4, 4) — the four words charged
-at allocation; the pushes themselves are memory-free. -/
+(= 20), and returns their sum: value 50, and memory (22, 22) — the four buffer
+words charged at allocation plus the 18 register words the straight-line
+expression code acquires (the pushes themselves are memory-free; no `Build.scope`
+is used, so nothing is released — contrast `ScopedSumSq` above). -/
 
 def pairDemo : Option (Word 64 × ℤ × ℤ) :=
   let (r, prog) := Build.build (w := 64) do
@@ -811,7 +948,7 @@ def pairDemo : Option (Word 64 × ℤ × ℤ) :=
     Build.var ((x : Exp 64) + y)
   (run .unit 1000 prog (State.init 64)).map fun (s, _, d, p) => (s.regs r, d, p)
 
-/-- info: some (50#64, 4, 4) -/
+/-- info: some (50#64, 22, 22) -/
 #guard_msgs in
 #eval pairDemo
 
@@ -819,7 +956,11 @@ def pairDemo : Option (Word 64 × ℤ × ℤ) :=
 
 `Fp w p` (see `Field.lean`) needs nothing but `p`. Here it is instantiated at
 BabyBear: the program computes `5⁻¹` via the generated Fermat ladder (whose exponent
-bits Lean computed at generation time) and multiplies back. Expect `5⁻¹ * 5 = 1`. -/
+bits Lean computed at generation time) and multiplies back. Expect `5⁻¹ * 5 = 1`.
+Time is 133: the former 128 ALU steps plus one tick for each of the 5 registers
+acquired (`x`, the ladder's `t`/`acc`, the final `mul`'s `t`/`d`); the two scratch
+`regFree`s emitted by `Build.scope` inside `Fp.inv`/`Fp.mul` are free, and thanks
+to them the register peak is 4 with net 3. -/
 
 def babybear : ℕ := 2 ^ 31 - 2 ^ 27 + 1
 
@@ -832,7 +973,7 @@ def fieldDemo : Option (Word 64 × Word 64 × ℕ) :=
   (run .unit 10000 prog (State.init 64)).map fun (s, t, _, _) =>
     (s.regs rs.1, s.regs rs.2, t)
 
-/-- info: some (1610612737#64, 1#64, 128) -/
+/-- info: some (1610612737#64, 1#64, 133) -/
 #guard_msgs in
 #eval fieldDemo
 

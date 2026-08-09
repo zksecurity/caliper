@@ -90,25 +90,36 @@ namespace Demo
 open Caliper.Build (var)
 
 /-- `x ← 3; y ← 4; r ← x + y`: the result register together with the generated
-program. -/
+program. Each `var` acquires its register explicitly (`freshReg` emits
+`regAlloc`), so the three words the program keeps live are visible instructions. -/
 def sum34 : ℕ × Stmt := build do
   let x ← var 3
   let y ← var 4
   var ((x : Exp) + y)
 
-/-- The builder emitted exactly three instructions. -/
-example : sum34.2 = (.imm 0 3 ;; .imm 1 4 ;; .bin .add 2 0 1) := rfl
+/-- The builder emitted the three-instruction sum plus the three explicit
+register acquisitions. -/
+example : sum34.2 = (.regAlloc 0 ;; .imm 0 3 ;; .regAlloc 1 ;; .imm 1 4 ;;
+    .regAlloc 2 ;; .bin .add 2 0 1) := rfl
 
-/-- The sum lands in the result register within 3 unit-cost instructions, touching
-no memory. -/
+/-- The sum lands in the result register within 6 unit-cost instructions — the
+3 ALU/imm steps plus one tick per register acquired — holding at most the 3
+register words of live memory. -/
 example :
-    Triple .unit (fun _ => True) sum34.2 (fun s => s.regs sum34.1 = 7) 3 0 0 := by
+    Triple .unit (fun _ => True) sum34.2 (fun s => s.regs sum34.1 = 7) 6 3 3 := by
   intro s _
-  refine ⟨_, _, _, _, .seq .imm (.seq .imm .bin), ?_, le_refl _, le_refl _, le_refl _⟩
-  simp [show sum34.1 = 2 from rfl, Caliper.State.setReg]
+  refine ⟨_, _, _, _,
+    .seq .regAlloc (.seq .imm (.seq .regAlloc (.seq .imm (.seq .regAlloc .bin)))),
+    ?_, ?_, ?_, ?_⟩
+  · simp [show sum34.1 = 2 from rfl, Caliper.State.setReg]
+  · decide
+  · simp
+    omega
+  · simp
+    omega
 
 /-- The reference interpreter agrees. -/
-example : (run .unit 9 sum34.2 State.init).map (fun r => r.1.regs sum34.1)
+example : (run .unit 20 sum34.2 State.init).map (fun r => r.1.regs sum34.1)
     = some 7 := rfl
 
 end Demo

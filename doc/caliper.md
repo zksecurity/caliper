@@ -12,12 +12,12 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 
 | File | Contents |
 |---|---|
-| `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`, including the per-word allocation charge `allocPerWord`; the `CostModel.Admissible` predicate — every entry ≥ 1 — with both shipped tables proved admissible), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems and the partial static clock (`staticTime?`), **peak memory ≤ running time** (`Exec.peak_le_time`), well-formed states and absolute live memory (`State.WellFormed`, `State.liveMem`), reference interpreter (`run`) + soundness |
-| `Render.lean` | Canonical pretty-printer: `Stmt.render`/`Stmt.renderString` emit the `mem.`-qualified assembly dialect (`mem.load r4, b0[r1]`, `loop { … bifz r<c> … }`), one instruction per line — the notation used for the instruction listing in this document |
-| `Triple.lean` | Upper-bound Hoare triples (`Triple`), one rule per instruction, `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule `whileNZ_measure`, frame rules; decoupled time-only/space-only judgments (`TimeTriple`/`SpaceTriple`) with the same rule set, recombinable into a full `Triple` via determinism (`TimeTriple.and_space`) |
-| `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_`, typed buffer handles (`Buf`), product types (`PairR`, `PairBuf`) |
-| `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs, Fermat inverse generated from the bits of `p - 2` at generation time |
-| `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
+| `Core.lean` | Syntax (`Stmt`, including the register-file instructions `regAlloc`/`regFree`), cost models (`CostModel`, including the per-word allocation charge `allocPerWord`; the `CostModel.Admissible` predicate — every instruction-pricing entry ≥ 1, with the deliberate free-is-free exemptions for `regFree` and the `regAlloc` *base* — with both shipped tables proved admissible), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`/`RegAllocTouches`), the unit-time theorems and the partial static clock (`staticTime?`), **peak memory ≤ running time** (`Exec.peak_le_time`, covering registers and buffers under the one `1 ≤ allocPerWord` hypothesis), well-formed states and absolute live memory (`State.WellFormed`, `State.liveMem` — buffer capacities *plus* allocated registers), reference interpreter (`run`) + soundness |
+| `Render.lean` | Canonical pretty-printer: `Stmt.render`/`Stmt.renderString` emit the `mem.`/`reg.`-qualified assembly dialect (`mem.load r4, b0[r1]`, `reg.alloc r5`, `loop { … bifz r<c> … }`), one instruction per line — the notation used for the instruction listing in this document |
+| `Triple.lean` | Upper-bound Hoare triples (`Triple`), one rule per instruction (including `regAlloc`/`regFree`/`regFree'`), `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule `whileNZ_measure`, frame rules; decoupled time-only/space-only judgments (`TimeTriple`/`SpaceTriple`) with the same rule set, recombinable into a full `Triple` via determinism (`TimeTriple.and_space`) |
+| `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation (`freshReg` emits `regAlloc`, so builder programs pay for the registers they acquire), the scoping machinery (`Build.scope` + the `RegCarrier` class) releasing block temporaries, expression compiler (`Exp`), structured `if_`/`while_`, typed buffer handles (`Buf`), product types (`PairR`, `PairBuf`) |
+| `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs (the raw `addCode`/`mulCode` take caller-provided registers and stay register-instruction-free; the `Build` wrappers own the register lifecycle via `Build.scope`), Fermat inverse generated from the bits of `p - 2` at generation time |
+| `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound and the `ScopedSumSq` register-scoping bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
 | `W64.lean` | Fixed 64-bit surface: namespace `Caliper64` of reducible `abbrev`s pinning `w := 64` (`Word`, `Stmt`, `State`, `Exec`, `run`, `Triple`, `TimeTriple`, `SpaceTriple`, `Build`, `Exp`, `Buf`, `build`, `Fp p`), plus a short demo where `w` never appears |
 | `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound`/field-size checks and the **checked entry point `compile`** (rejecting moduli outside the single-word design point `2 < p`, `p·p ≤ 2^64`: 40-bit, Goldilocks and BN254 rejection tests); differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear; the headline program `testIsZero` is proved to be the witness IR extracted from the Clean circuit `Gadgets.IsZeroField.circuit` (`isZeroCircuitIR_eq_testIsZero`); certified native witnesses compile as their IR reimplementation (`compile_certified_eq_ir`), demonstrated on `isZeroCertified` = the closure `isZeroNative` + `testIsZero`'s IR + equivalence proof |
 | `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40`, plus the certified-native pins `compile_isZeroCertified` / `isZeroCertified_witgen_lt_2_40` (the same 140 steps, now for a witness whose prover-side evaluation is a native closure) |
@@ -271,17 +271,23 @@ state. `Exec C c s s' t d p` charges each instruction its table entry, so:
   instruction trace of straight-line code is input-independent), but it does not
   cover memory-access addresses, allocation sizes, memory profiles, or faults, and
   is not by itself a side-channel security statement — see "What is NOT proved".
-- One deliberate exception: **allocation is charged per word**. `memAlloc`(`I`)
-  costs `C.memAlloc + cap * C.allocPerWord` — a base cost plus at least one tick
-  per word of capacity acquired — so no instruction can acquire `n` words in
-  `o(n)` time. For `memAllocI` the capacity is an *immediate* in the syntax, so
-  the charge is still a pure function of the instruction and static pricing is
-  untouched; the *dynamic* `memAlloc` reads its capacity from a register, so its
-  time is data-dependent **by design** and it is excluded from `Stmt.Straight`
-  (like a loop). The payoff is the standing theorem `Exec.peak_le_time`: in any
-  model with `1 ≤ C.allocPerWord` (both shipped tables), every execution satisfies
-  `p ≤ t` — peak live memory is bounded by running time, so **one time certificate
-  bounds both resources**.
+- One deliberate exception: **acquiring live memory is charged per word**.
+  `memAlloc`(`I`) costs `C.memAlloc + cap * C.allocPerWord` — a base cost plus at
+  least one tick per word of capacity acquired — so no instruction can acquire
+  `n` words in `o(n)` time; and `regAlloc` costs `C.regAlloc + C.allocPerWord` —
+  the same shape at capacity 1, with the base 0 in both shipped tables since
+  acquiring a register creates no heap object, so a register costs exactly one
+  tick, priced through the *same* per-word entry as buffer words. For `memAllocI`
+  the capacity is an *immediate* in the syntax, so the charge is still a pure
+  function of the instruction and static pricing is untouched (`regAlloc` and
+  `regFree` are statically priced too); the *dynamic* `memAlloc` reads its
+  capacity from a register, so its time is data-dependent **by design** and it is
+  excluded from `Stmt.Straight` (like a loop). The payoff is the standing theorem
+  `Exec.peak_le_time`: in any model with `1 ≤ C.allocPerWord` (both shipped
+  tables), every execution satisfies `p ≤ t` — peak live memory, **registers
+  included**, is bounded by running time under that one unchanged hypothesis and
+  unconditionally over all programs, so one time certificate bounds both
+  resources.
 - `Stmt.staticTime?` is the safe way to *quote* a static time: `some n` iff the
   code is straight-line with static time `n` (`staticTime?_eq_some`), in which case
   every execution takes exactly `n` (`Exec.staticTime?_time_eq`); `none` for
@@ -298,14 +304,21 @@ state. `Exec C c s s' t d p` charges each instruction its table entry, so:
   state-independence, the *table* calibrates it.
 - Genericity cuts both ways: a degenerate table (some entry 0) makes cost claims
   vacuous — a model that prices real work at zero certifies any program under any
-  budget. `CostModel.Admissible` (`Core.lean`) packages "every table entry ≥ 1,
-  including the per-op `un`/`bin` entries and `allocPerWord`" as a predicate;
-  both shipped tables are proved admissible (`CostModel.unit.admissible`,
-  `CostModel.cycles.admissible`), so every headline number in this document is
-  accounted in a model where no instruction is free. Under an admissible model,
-  `Exec.peak_le_time` applies via `Exec.peak_le_time_admissible` (its
-  `1 ≤ allocPerWord` hypothesis is the `allocPerWord` field), and the headline
-  claims should be read against admissible tables.
+  budget. `CostModel.Admissible` (`Core.lean`) packages "every table entry
+  pricing an instruction ≥ 1, including the per-op `un`/`bin` entries and
+  `allocPerWord`" as a predicate; both shipped tables are proved admissible
+  (`CostModel.unit.admissible`, `CostModel.cycles.admissible`), so every headline
+  number in this document is accounted in a model where no instruction runs for
+  free. Two entries are *deliberately* exempt, both instances of the free-is-free
+  principle (a release's cost is covered by its acquisition): `regFree` (0 in
+  both tables — a register release compiles to nothing) has no `≥ 1` field, and
+  the `regAlloc` *base* (also 0) needs none because a `regAlloc` instruction's
+  full charge `regAlloc + allocPerWord` is already kept ≥ 1 by the
+  `allocPerWord` field — an admissible model still executes no instruction in
+  zero time. Under an admissible model, `Exec.peak_le_time` applies via
+  `Exec.peak_le_time_admissible` (its `1 ≤ allocPerWord` hypothesis is the
+  `allocPerWord` field), and the headline claims should be read against
+  admissible tables.
 
 Consequences for the instruction set:
 
@@ -331,10 +344,28 @@ live-memory change, signed) and `p ≤ M` (peak live-memory growth). Exhibiting 
 underlying `Exec` derivation also proves **memory safety** (out-of-range accesses have
 no derivation — the `memLoad`/`memStore` rules demand an in-range proof).
 
-Memory is *not* an allocation counter — memory gets reused. Live memory is the sum
-of reserved capacities: only `memAlloc`/`memAllocI` charge (`newCap - oldCap`), only
-`memFree` credits, and push/pop move the fill level inside capacity already paid
-for. Profiles compose like high-water marks:
+Memory is *not* an allocation counter — memory gets reused. The model's memory
+principle, in one paragraph:
+
+> There is one resource: words of live memory. Acquiring a word costs one step
+> (plus one step per heap object created — the malloc fast path). Holding it is
+> free. Releasing it is free — always. Registers and buffers are naming
+> conventions over the same resource, chosen by access pattern:
+> statically-addressed scalar names (no bounds obligations, release compiles to
+> nothing) versus dynamically-indexed array names (bounds obligations, a runtime
+> object).
+
+Live memory is therefore the sum of reserved buffer capacities **plus the count
+of allocated registers**: `memAlloc`/`memAllocI` charge `newCap - oldCap` and
+`regAlloc` charges one word (idempotently — re-allocating an allocated register
+charges nothing more), only `memFree`/`regFree` credit, and push/pop move the
+fill level inside capacity already paid for. Releasing is free in *time* as well:
+`C.regFree = 0` in both shipped tables — the free-is-free half of the principle,
+sound for the cost story because a release only ever shrinks the footprint and
+its cost is amortized into the acquisition charge that created the word (the same
+reasoning that lets a real compiler emit no code for a register death, and a
+`free(NULL)`-style no-op release cost nothing). Profiles compose like high-water
+marks:
 
     seq:  net = d₁ + d₂        peak = max p₁ (d₁ + p₂)
 
@@ -342,11 +373,17 @@ so a block with net 0 (an alloc…free pair, or work inside fixed capacity)
 contributes its peak once, not once per occurrence. The `ScratchLoop` example
 allocates a one-slot scratch buffer, runs `n` iterations that each push and pop a
 word inside it, and frees it: proved net 0 and peak **1 word, independent of `n`**
-(an allocation counter would report `n`). Invariants `0 ≤ p` and `d ≤ p` hold
-always, code containing no allocation has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`),
-and — because acquiring capacity costs at least a tick per word — `p ≤ t` in any
-model with `1 ≤ allocPerWord` (`Exec.peak_le_time`): a time bound subsumes a
-peak-memory bound, one certificate for both resources.
+(an allocation counter would report `n`); `ScopedSumSq` is the register-side
+counterpart — five registers acquired, scratch freed at each scope boundary,
+proved peak **3**. Invariants `0 ≤ p` and `d ≤ p` hold always, code acquiring no
+live memory (no `memAlloc`/`memAllocI`/`regAlloc`) has `d ≤ 0 ∧ p ≤ 0`
+(`allocFree_space` — `memFree`/`regFree` are allowed, they only shrink the
+footprint), and — because acquiring a word of live memory costs at least a tick,
+whether it is buffer capacity or a register — `p ≤ t` in any model with
+`1 ≤ allocPerWord` (`Exec.peak_le_time`): the register file is covered by the
+same single hypothesis (satisfied by both shipped tables), unconditionally over
+all programs, so a time bound subsumes a peak-memory bound — one certificate for
+both resources, registers included.
 
 These indices are anchored to *absolute* live memory, not just to an arbitrary
 baseline. `State.WellFormed` (every buffer's fill within its reserved capacity,
@@ -366,10 +403,24 @@ compose as relative high-water marks. Absolute-**footprint** statements are the
 `State.WellFormed`/`liveMem` forms above, which anchor the same indices to
 physical live memory over honestly-reachable states; quote those when the claim
 is "this program never holds more than X words", and the relative form when the
-claim is "this fragment adds at most X words". One dimension the profile does not
-yet meter is the register file (registers are a function `Reg → Word`, unbounded
-and uncharged): that is the upcoming `reg.*` register-file phase, for which the
-pretty-printer already reserves the `reg.` qualifier.
+claim is "this fragment adds at most X words". The register file is part of the
+metered footprint: registers are explicitly acquired (`reg.alloc`, one step) and
+released (`reg.free`, free), `State.liveMem` counts allocated registers alongside
+buffer capacities, and the whole `WellFormed`/`liveMem` theorem block — exact net
+(`Exec.liveMem_eq`), intermediate-state peak (`Exec.reaches_liveMem_le_peak`),
+no phantom credit (`Exec.memFree_credit_le`, `Exec.regFree_credit_le`), support
+bounds and preservation — covers both naming conventions uniformly, with the
+register-side framing carried by the decidable footprint `Stmt.RegAllocTouches`
+and its frame rule `Exec.frame_regAlloc`. (Register *values* are still framed by
+`Stmt.Writes` — `reg.alloc`/`reg.free` change allocation status, never the value.)
+
+A note on lowering: builder-produced register lifetimes are bracket-nested
+(`Build.scope` frees in reverse allocation order), so they are interval- (indeed
+stack-) colorable — a backend can rename the unboundedly many fresh names onto
+physical slots with peak-live-count many slots. The certified peak *is* the
+frame size: a RISC-V lowering's stack frame for the `reg.*` file needs exactly
+the peak live register count the profile bounds, fresh-name monotonicity
+notwithstanding.
 
 The loop rule `Triple.whileNZ_measure` takes an invariant indexed by a
 remaining-iterations budget `k`; time is linear in `k`, and both memory bounds have
@@ -405,7 +456,16 @@ would be a separate artifact with its own refinement proof against `Exec`.
 Programs can be written against the raw constructors (assembly-flavoured, what proofs
 are stated over) or through `Builder.lean`: a monad with `freshReg`/`freshBuf`,
 compound expressions (`x + y * z` compiling through fresh temporaries), `while_`/`if_`,
-and subroutines as ordinary Lean functions. At the surface, buffers are the newtype
+and subroutines as ordinary Lean functions. `freshReg` **emits `regAlloc`**, so
+builder-generated programs pay for every register they acquire; `Build.scope`
+closes the loop by emitting `regFree` (in reverse allocation order — stack-like)
+for every register a block allocated except those its result consists of, where
+"consists of" is the `RegCarrier` typeclass of the result type (`Reg` keeps
+itself, `Unit` and `Buf` keep nothing, `PairR` both components, products/`Option`
+structurally, `Fp` its value register). The `Fp` gadgets use exactly this: their
+`Build` wrappers scope the modulus scratch away, so a field operation nets one
+register, while the raw `addCode`/`mulCode` (what the proved specs are about)
+stay register-instruction-free with caller-provided registers. At the surface, buffers are the newtype
 `Buf w`, produced only by `Mem.alloc` (dynamic capacity) / `Mem.allocI`
 (immediate capacity, statically priced); reads, writes, pushes, pops, length and
 free are methods on the handle (`b.load i`, `b.store i e`, `b.push e`, `b.pop`,
@@ -421,10 +481,11 @@ Generated programs are inspectable through the canonical pretty-printer
 (`Stmt.render`, `Render.lean`), which prints the machine's assembly dialect: memory
 instructions carry the `mem.` qualifier (their Lean constructors are `memLoad`,
 `memStore`, `memPush`, `memPop`, `memLen`, `memAlloc`, `memAllocI`, `memFree` —
-identifiers cannot contain dots), register-file instructions of a future phase will
-carry `reg.`, and `whileNZ` prints as a `loop { … }` whose guard ends in `bifz r<c>`
-(break-if-zero on the verdict register). The buffer-summing builder program `sumB`
-(= `SumBuf.code`, `Examples.lean`) renders as (pinned there by `#guard_msgs`):
+identifiers cannot contain dots), register-file instructions carry `reg.`
+(`reg.alloc r5` / `reg.free  r5`, constructors `regAlloc`/`regFree`), and
+`whileNZ` prints as a `loop { … }` whose guard ends in `bifz r<c>` (break-if-zero
+on the verdict register). The hand-written buffer-summing program `SumBuf.code`
+(`Examples.lean`) renders as (pinned there by `#guard_msgs`):
 
     imm   r0, 0
     imm   r1, 0
@@ -437,6 +498,18 @@ carry `reg.`, and `whileNZ` prints as a `loop { … }` whose guard ends in `bifz
       imm   r5, 1
       add  r1, r1, r5
     }
+
+The builder version `sumB` emits the same program with the register acquisitions
+explicit — a `reg.alloc` at each point a fresh name is first used (checked
+against the hand-written `sumBCore` there); the scoped-register listing with
+`reg.free` in play is pinned at `ScopedSumSq`:
+
+    reg.alloc r0
+    imm   r0, 3
+    reg.alloc r1
+    mul  r1, r0, r0
+    reg.free  r0
+    ...
 
 ### Fixed 64-bit surface (`Caliper64`)
 
@@ -485,13 +558,18 @@ and the table has a dozen entries, the trusted argument is a per-instruction ins
 | `memAlloc`, `memAllocI` | `malloc(8n)` — reserve, don't initialise: no `memset`. The model charges `memAlloc + n·allocPerWord` — deliberately **at least a tick per word**, an over-provision for the allocator's O(1) fast path that also absorbs lazy page-mapping / first-touch costs, and the price of the `p ≤ t` theorem | O(1) real, O(n) charged |
 | `memFree` | `free` — no per-element work for a `u64` buffer | O(1) |
 | `memPush` | length-check-free store at `base + 8·len` + length increment (capacity proved sufficient) — **worst-case** O(1), no doubling | 1–2 instr |
+| `reg.alloc` | reserve one statically-addressed word — a stack slot in the frame (or a rename register). Charged `regAlloc + allocPerWord` = 1 tick in both shipped tables: one word of live memory acquired, no heap object created | 0–1 instr real, 1 charged |
+| `reg.free` | nothing — a register death emits no code; the word's release was paid for by its acquisition. Charged `regFree` = 0 | 0 instr |
 | `ifNZ`, `whileNZ` guard | test + branch | 2 instr |
 
 The peak-memory bound transfers directly: physical footprint = sum of reserved
-capacities = exactly what the model charges, up to allocator metadata and
-fragmentation (a small constant for the few, long-lived, word-aligned buffers this
-machine uses). No shrinking policy or amortization argument is needed — capacity
-changes only at `memAlloc`/`memFree`. On the model side this identification is
+capacities plus live register slots = exactly what the model charges, up to
+allocator metadata and fragmentation (a small constant for the few, long-lived,
+word-aligned buffers this machine uses). No shrinking policy or amortization
+argument is needed — capacity changes only at `memAlloc`/`memFree` and register
+liveness only at `reg.alloc`/`reg.free`; and because scoped register lifetimes
+are stack-nested, interval coloring realizes the certified peak as the literal
+frame size. On the model side this identification is
 backed by the `State.WellFormed`/`State.liveMem` theorems (see the memory-profile
 section above): over every state reachable from an honest start, `d` is the exact
 change and `p` a true high-water mark of the *absolute* footprint — not growth
@@ -503,6 +581,9 @@ Supporting facts, all discharged by the machine's design rather than by proof:
 - The syntax of any program mentions finitely many registers and buffer names, both
   known statically. Registers become stack slots (L1-resident) or machine registers;
   each buffer becomes its own `Vec<u64>`. No dynamic name ever needs resolving.
+  With disciplined (bracket-nested, `Build.scope`-shaped) register lifetimes the
+  slots are reusable by interval/stack coloring, so the *certified peak live
+  count* — not the number of fresh names — is the physical register/stack demand.
 - Words are exactly `u64`; no bignum arithmetic can hide inside an instruction (this
   is why the DSL exists instead of measuring Lean's GMP-backed `Nat`).
 - No instruction does hidden work the model fails to charge (`memAlloc`
