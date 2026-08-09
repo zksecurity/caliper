@@ -22,6 +22,7 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 | `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40`, plus the certified-native pins `compile_isZeroCertified` / `isZeroCertified_witgen_lt_2_40` (the same 140 steps, now for a witness whose prover-side evaluation is a native closure) |
 | `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded IR reference output `WitgenIR.irEval` (= `eval` on `.ir` programs; doubles as memory safety); on certified programs the equivalence transports this to the native closure itself (`compile_sim_certified`); combined with phase 2 in `isZero_witgen_correct_140` and `isZeroCertified_witgen_correct_140` |
 | `WitgenComputable.lean` | **The checks → circuit-layer bridge**: `compilable` + `envBound N` imply `ProverEnvironment.OnlyAccessedBelow N` (`WitgenIR.onlyAccessedBelow_of_checks`; `onlyAccessedBelow_of_ir_equiv` / `onlyAccessedBelow_certified` for native closures with a certified IR equivalent — covering `WitgenIR.certified` witnesses, whose `eval` is the closure), lifted per-offset to whole circuits (`circuit_computableWitnesses_of_checks`) so that `Circuit.ComputableWitnesses` obligations discharge by one boolean evaluation — demonstrated on the instantiated `IsZeroField` and `Addition8FullCarry` circuits and on the bare closure `isZeroNative` by `native_decide` |
+| `TimedCircuit.lean` | **`TimedCircuit`: budgeted witgen as a type** — per-operation certified cost (`FlatOperation.witgenCost`), the offset-threaded whole-circuit fold (`Operations.witgenTime`), its per-generator meaning theorem (`WitnessCosts`, `witgenTime_sound`, `WitnessCosts.forAll_exec`), and the `TimedCircuit` structure whose `witgen_bounded` obligation is one `native_decide`; demonstrated on `IsZeroField` (`isZeroTimed`, pinned total 159) |
 
 ## The witgen pipeline: `witgen in < 2^N steps`, machine-checked
 
@@ -164,6 +165,52 @@ exactly 140 steps with peak memory ≤ 1 word (`isZeroCertified_witgen_correct_1
 Bare `.native` remains the visibly-uncertified escape hatch: `compile`, the export
 commands and the computability checks all reject it, so an uncertified closure can
 never silently acquire a cost claim.
+
+## TimedCircuit: budgeted witgen as a type
+
+`TimedCircuit.lean` turns the pipeline's cost story into a *type*: a
+`TimedCircuit F Input Output` is a `FormalCircuit` that cannot be constructed
+without a machine-checked bound on its witness-generation cost.
+
+    structure TimedCircuit ... extends FormalCircuit F Input Output where
+      costModel : CostModel := .unit
+      witgenBudget : ℕ := 2 ^ 40
+      witgen_bounded : underBudget costModel (size Input) witgenBudget
+        ((main (varFromOffset Input 0)).operations (size Input)).toFlat = true
+
+**The obligation is decidable.** `Operations.witgenTime` folds
+`FlatOperation.witgenCost` — `compile` followed by the honest partial clock
+`staticTime?` — over the circuit's flat operations, threading the offset exactly
+like `FlatOperation.localLength` and `computableChecks`: each generator is priced,
+and its `envBound` checked, at its own accumulated offset. `underBudget` is one
+boolean, so at a concrete circuit `witgen_bounded := by native_decide` (the default
+field tactic) is the entire proof. `IsZeroField` upgrades to `isZeroTimed` this
+way, with pinned total `140 + 19 = 159` unit steps.
+
+**The number carries meaning.** `witgenTime_sound` reifies `witgenTime = some T`
+into a per-generator certificate (`WitnessCosts`): every witness generator, at its
+own offset, is accepted by `compile` with a static time `tᵢ`, and `Σ tᵢ = T`. Via
+the phase-2/3 machinery, each certified `tᵢ` is the exact running time of every
+execution of that generator's compiled code, with live-memory peak `≤ tᵢ`
+(`WitnessCosts.forAll_exec`, citing `Exec.staticTime?_time_eq` and
+`Exec.peak_le_time`), and `compile_sim` supplies the execution computing the
+encoded reference output. `TimedCircuit.witgen_lt_budget` packages this: every
+generator of a `TimedCircuit` runs in exactly its certified time, strictly below
+the budget.
+
+**`.native` makes the type unattainable; `.certified` restores it.** `compile`
+rejects bare native closures, so one uncertified witness poisons `witgenTime` to
+`none` and no budget check can pass. Certifying the closure against an IR
+reimplementation (`WitgenIR.certified`) re-admits it — and the cost certificate
+then applies to the very closure the prover runs.
+
+**Scope.** The obligation is stated at the canonical instantiation (fresh input
+variables `varFromOffset Input 0`, witnesses from offset `size Input`): compiled
+cost depends on the syntactic shape of embedded input expressions, so a single
+number cannot cover arbitrary compound-expression instantiations. Future work:
+input-congruence over variable-only instantiations, and whole-circuit sequential
+composition — budgets already sum over composition by construction (the fold of an
+append is the sum), but the composed machine-level run is not yet stated.
 
 ## Design decisions
 
