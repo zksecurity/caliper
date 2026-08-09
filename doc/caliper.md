@@ -18,10 +18,10 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 | `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs, Fermat inverse generated from the bits of `p - 2` at generation time |
 | `Examples.lean` | Worked examples with full proofs (including the `ScratchLoop` memory-reuse bound), builder ↔ core checks, interpreter demos, BabyBear field demo |
 | `W64.lean` | Fixed 64-bit surface: namespace `Caliper64` of reducible `abbrev`s pinning `w := 64` (`Word`, `Stmt`, `State`, `Exec`, `run`, `Triple`, `TimeTriple`, `SpaceTriple`, `Build`, `Exp`, `Buf`, `build`, `Fp p`), plus a short demo where `w` never appears |
-| `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound` checks and the **checked entry point `compile`**; differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear; the headline program `testIsZero` is proved to be the witness IR extracted from the Clean circuit `Gadgets.IsZeroField.circuit` (`isZeroCircuitIR_eq_testIsZero`) |
-| `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40` |
-| `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded `WitgenIR.eval` output (which doubles as memory safety); combined with phase 2 in `isZero_witgen_correct_140` |
-| `WitgenComputable.lean` | **The checks → circuit-layer bridge**: `compilable` + `envBound N` imply `ProverEnvironment.OnlyAccessedBelow N` (`WitgenIR.onlyAccessedBelow_of_checks`; `onlyAccessedBelow_of_ir_equiv` for native closures with a certified IR equivalent), lifted per-offset to whole circuits (`circuit_computableWitnesses_of_checks`) so that `Circuit.ComputableWitnesses` obligations discharge by one boolean evaluation — demonstrated on the instantiated `IsZeroField` and `Addition8FullCarry` circuits by `native_decide` |
+| `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound` checks and the **checked entry point `compile`**; differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear; the headline program `testIsZero` is proved to be the witness IR extracted from the Clean circuit `Gadgets.IsZeroField.circuit` (`isZeroCircuitIR_eq_testIsZero`); certified native witnesses compile as their IR reimplementation (`compile_certified_eq_ir`), demonstrated on `isZeroCertified` = the closure `isZeroNative` + `testIsZero`'s IR + equivalence proof |
+| `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40`, plus the certified-native pins `compile_isZeroCertified` / `isZeroCertified_witgen_lt_2_40` (the same 140 steps, now for a witness whose prover-side evaluation is a native closure) |
+| `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded IR reference output `WitgenIR.irEval` (= `eval` on `.ir` programs; doubles as memory safety); on certified programs the equivalence transports this to the native closure itself (`compile_sim_certified`); combined with phase 2 in `isZero_witgen_correct_140` and `isZeroCertified_witgen_correct_140` |
+| `WitgenComputable.lean` | **The checks → circuit-layer bridge**: `compilable` + `envBound N` imply `ProverEnvironment.OnlyAccessedBelow N` (`WitgenIR.onlyAccessedBelow_of_checks`; `onlyAccessedBelow_of_ir_equiv` / `onlyAccessedBelow_certified` for native closures with a certified IR equivalent — covering `WitgenIR.certified` witnesses, whose `eval` is the closure), lifted per-offset to whole circuits (`circuit_computableWitnesses_of_checks`) so that `Circuit.ComputableWitnesses` obligations discharge by one boolean evaluation — demonstrated on the instantiated `IsZeroField` and `Addition8FullCarry` circuits and on the bare closure `isZeroNative` by `native_decide` |
 
 ## The witgen pipeline: `witgen in < 2^N steps`, machine-checked
 
@@ -37,8 +37,9 @@ side channels is spelled out in "What is NOT proved" below.)
     compile (N : ℕ) (ir : WitgenIR F m) : Option (Stmt 64)
 
 with `N` the environment size. It returns `some code` only when every
-generation-time check passes — `ir` is a structured `.ir` program (no `native`
-closure), `WitgenIR.compilable ir` (no `listGet`/`dataGet`/`hintGet`, well-sorted
+generation-time check passes — `ir` carries structured IR (a `.ir` program, or a
+`.certified` program compiled as its IR reimplementation; bare `native` closures →
+`none`), `WitgenIR.compilable ir` (no `listGet`/`dataGet`/`hintGet`, well-sorted
 `localVar`s), `WitgenIR.envBound N ir` (every environment read below `N`), and
 `N ≤ 2^64`, `m < 2^64` (environment indices and per-output-element immediates
 survive their 64-bit encodings; the output buffer's capacity itself is a
@@ -99,9 +100,70 @@ complete witness list.
 Costs scale linearly in circuit size (each IR node compiles to O(1) instructions,
 `mapRange n` to n copies of its body, field inverse to ~2·log p multiply-reduce
 steps), so full-circuit witgen bounds are sums of per-gadget constants — evaluated,
-not estimated. Exclusions: `.native` closures (not compilable, by construction),
-`dataGet`/`hintGet` prover-data reads and `listGet` (deferred; they are additional
-buffers/select-chains, no new machinery).
+not estimated. Exclusions: `.native` closures (not compilable, by construction —
+but see "Certified native witnesses" below for the sanctioned way to keep a native
+closure *and* get certified compilation), `dataGet`/`hintGet` prover-data reads and
+`listGet` (deferred; they are additional buffers/select-chains, no new machinery).
+
+### Certified native witnesses
+
+`compile` rejects `WitgenIR.native` closures for a fundamental reason, not an
+implementation gap: a cost bound is a claim about *how* a value is computed, but a
+Lean function is only its input-output graph — functions are extensional, cost is
+intensional. A "running time of this closure" is not even expressible, let alone
+provable.
+
+The sanctioned path for witnesses that want native Lean evaluation is a
+**reimplementation in the IR plus a proof of equivalence**:
+`WitgenIR.certified f steps out h` (smart constructor `WitgenIR.certify`;
+provable-value form `WitgenIR.certifiedValue`, mirroring `nativeValue`) bundles
+
+* the native closure `f` — kept as the evaluation fast path:
+  `eval (certified f ..) = f` holds definitionally, so the Lean prover still runs
+  the closure, never the IR interpreter;
+* an IR reimplementation (`steps`, `out`, carried directly, so no nested-`WitgenIR`
+  junk terms exist); and
+* the equivalence proof `h : ∀ env, f env = (WitgenIR.ir steps out).eval env` — a
+  pure-function lemma, typically by `funext`/`Vector.ext` plus `simp` over the
+  evaluators.
+
+Compilation, cost, export and the computability checks all go through the IR
+fields; the equivalence transports each guarantee to the closure:
+
+* **compilation** — `compile` accepts a certified program iff it accepts its IR
+  reimplementation, and emits literally the same code (`compile_certified_eq_ir`,
+  definitional);
+* **cost** — `compile_time_eq`, `witgenTime`, `compile_space_le` apply unchanged:
+  the certified program's step count is the syntactic constant of its IR's code;
+* **correctness against the closure itself** — `compile_sim` is stated in terms of
+  the IR reference semantics `WitgenIR.irEval` (definitionally `eval` on `.ir`
+  programs); on a certified program the packed equivalence rewrites `irEval` to
+  `f`, giving `compile_sim_certified`: the machine's output buffer provably holds
+  the encoded output **of the native closure** — the guarantee a bare `.native f`
+  can never have;
+* **computability** — the decidable checks discharge
+  `ProverEnvironment.OnlyAccessedBelow N f` for the bare closure
+  (`onlyAccessedBelow_certified` / `onlyAccessedBelow_of_ir_equiv`), and
+  `computableChecks` / `circuit_computableWitnesses_of_checks` accept certified
+  witness operations for free;
+* **export** — `#assert_exportable` / `#witgen_json` (`WitnessExport.lean`)
+  serialize the IR reimplementation, which computes exactly what the closure the
+  Lean prover runs computes.
+
+Worked instance, end to end: `isZeroNative` — the `IsZeroField` conditional-inverse
+witness written as an ordinary Lean closure — is certified against `testIsZero`'s
+IR program as `isZeroCertified` (`WitgenCompile.lean`, equivalence lemma
+`isZeroNative_eq_testIsZero`). The differential test compares the machine against
+the *closure*; `compile` emits `isZeroCompiled` with the pinned 140-unit-step /
+2090-cycle cost (`compile_isZeroCertified`, `isZeroCertified_witgen_time_unit`,
+`WitgenCost.lean`); the machine provably computes the closure's own output in
+exactly 140 steps with peak memory ≤ 1 word (`isZeroCertified_witgen_correct_140`,
+`WitgenSimIR.lean`); and `OnlyAccessedBelow 1 isZeroNative` discharges by
+`native_decide` (`WitgenComputable.lean`).
+
+Bare `.native` remains the visibly-uncertified escape hatch: `compile`, the export
+commands and the computability checks all reject it, so an uncertified closure can
+never silently acquire a cost claim.
 
 ## Design decisions
 
