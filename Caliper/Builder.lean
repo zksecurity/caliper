@@ -177,7 +177,8 @@ three; it is not an enforced capability: the constructor stays public (tests wri
 `⟨0⟩` directly), so the intended source `Build.alloc` is a convention, not a
 guarantee. -/
 
-/-- Typed handle to a buffer of `w`-bit words. Obtain one from `Build.alloc`. -/
+/-- Typed handle to a buffer of `w`-bit words. Obtain one from `Build.alloc` or
+`Build.allocI`. -/
 structure Buf (w : ℕ) where
   id : BufId
 deriving Repr
@@ -185,11 +186,25 @@ deriving Repr
 namespace Build
 
 /-- Allocate a fresh buffer with capacity `n` (an expression, evaluated at runtime).
-The capacity is charged now; pushes into it are memory-free. -/
+The capacity is charged now; pushes into it are memory-free. Emits a *dynamic*
+`bufAlloc`, whose time charge `C.bufAlloc + cap * C.allocPerWord` depends on the
+runtime capacity — the emitted code is therefore not `Stmt.Straight`. When the
+capacity is known at generation time, prefer `allocI`, which is statically
+priced. -/
 def alloc (n : Exp w) : Build w (Buf w) := do
   let rn ← compileExp n
   let b ← freshBuf
   emit (.bufAlloc b rn)
+  pure ⟨b⟩
+
+/-- Allocate a fresh buffer with the *immediate* capacity `n`, emitting `bufAllocI`:
+one instruction, no capacity register, and the time charge
+`C.bufAlloc + n * C.allocPerWord` is a syntactic constant, so the emitted code
+stays `Stmt.Straight` (statically priced). Semantics are identical to `alloc` at
+that capacity. -/
+def allocI (n : ℕ) : Build w (Buf w) := do
+  let b ← freshBuf
+  emit (.bufAllocI b n)
   pure ⟨b⟩
 
 /-- Release a buffer's capacity. -/

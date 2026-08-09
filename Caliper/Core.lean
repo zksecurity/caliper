@@ -34,12 +34,19 @@ constant-time argument, not by itself a side-channel guarantee; see
 
 Two consequences for the instruction set:
 
-* Memory is *reserved*, not initialised: `bufAlloc b n` reserves capacity for `n`
-  words in O(1) — a `malloc` without `memset`. Reads are only allowed below the
+* Memory is *reserved*, not initialised: `bufAlloc`/`bufAllocI` reserve capacity for
+  `n` words — a `malloc` without `memset`. Reads are only allowed below the
   *filled* length (`bufGet` requires `i < size`), so uninitialised capacity is never
   observable, and initialisation is paid for by the `bufPush`/`bufSet` instructions
-  that perform it. There is no instruction that both allocates and initialises `n`
-  words — that would hide `O(n)` work in one tick.
+  that perform it. Allocation is *not* one tick: it is charged
+  `C.bufAlloc + n * C.allocPerWord` — a base cost plus at least one time unit per
+  word of capacity acquired — so no instruction can acquire `n` words of memory in
+  `o(n)` time, and peak memory is bounded by running time (`Exec.peak_le_time`).
+  For `bufAllocI` the capacity `n` is an *immediate* in the syntax, so this charge
+  is still a pure function of the instruction and static pricing
+  (`Stmt.Straight`/`staticTime`) applies; for the dynamic `bufAlloc` the capacity
+  comes from a register, so its time is data-dependent by design and it is excluded
+  from `Stmt.Straight` (like a loop).
 * `bufPush` requires free capacity (`size < cap` — a proof obligation, like the
   in-range obligation of `bufGet`) and is therefore **worst-case** unit time: no
   doubling, no amortisation anywhere in the machine. A growable vector is a *library*
@@ -61,7 +68,9 @@ so memory *reuse* is visible: code that frees (or works inside fixed capacity) d
 not accumulate a phantom footprint, and a working buffer reused across `n` loop
 iterations is charged once, not `n` times (see `ScratchLoop` in `Examples.lean`).
 `0 ≤ p` and `d ≤ p` always (`peak_nonneg`, `net_le_peak`); code containing no
-`bufAlloc` has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`). Time stays a plain `ℕ`; the
+allocation has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`); and because allocation is
+charged per word, `p ≤ t` whenever `1 ≤ C.allocPerWord` (`Exec.peak_le_time`) — a
+time bound is automatically a peak-memory bound. Time stays a plain `ℕ`; the
 memory indices are `ℤ` so that `omega` closes the arithmetic.
 
 Out-of-range buffer accesses have *no* `Exec` derivation, so exhibiting a derivation
@@ -147,8 +156,16 @@ inductive Stmt (w : ℕ) where
   | bin (op : BinOp) (d a b : Reg)
   /-- `b ← alloc(regs n)`: reserve capacity for that many words, empty fill. Frees
   whatever `b` previously held. Reserved words are charged but uninitialised —
-  unreadable until pushed. -/
+  unreadable until pushed. Time is `C.bufAlloc + cap * C.allocPerWord` with `cap`
+  the *runtime* register value, so this instruction's time is **data-dependent**:
+  it is excluded from `Stmt.Straight` and `staticTime?` returns `none` for it.
+  Use `bufAllocI` when the capacity is known at generation time. -/
   | bufAlloc (b : BufId) (n : Reg)
+  /-- `b ← alloc(n)` with the capacity `n` an **immediate** in the syntax: same
+  semantics as `bufAlloc` at that capacity, but the per-word time charge
+  `C.bufAlloc + n * C.allocPerWord` is a pure function of the instruction, so
+  static pricing (`Stmt.Straight`, `staticTime`) applies. -/
+  | bufAllocI (b : BufId) (n : ℕ)
   /-- `free b`: release `b`'s capacity entirely. -/
   | bufFree (b : BufId)
   /-- `d ← |b|` (the filled length, not the capacity). -/
@@ -183,8 +200,14 @@ structure CostModel where
   mov : ℕ := 1
   un : UnOp → ℕ := fun _ => 1
   bin : BinOp → ℕ := fun _ => 1
-  /-- Capacity reservation without initialisation — `malloc`, constant time. -/
+  /-- Base cost of a capacity reservation without initialisation — the `malloc`
+  call itself. The full charge of an allocation is
+  `bufAlloc + capacity * allocPerWord`. -/
   bufAlloc : ℕ := 1
+  /-- Per-word cost of acquiring capacity. Any model with `1 ≤ allocPerWord`
+  makes peak memory bounded by running time (`Exec.peak_le_time`): no program can
+  hold more live words than it has spent time steps. -/
+  allocPerWord : ℕ := 1
   bufFree : ℕ := 1
   bufLen : ℕ := 1
   bufGet : ℕ := 1
@@ -205,6 +228,9 @@ def CostModel.cycles : CostModel where
     | .udiv | .umod => 30
     | _ => 1
   bufAlloc := 50  -- malloc fast path
+  -- one cycle per acquired word: a cache-line-amortised first touch of the new
+  -- capacity. Deliberately kept ≥ 1 so `Exec.peak_le_time` applies to this table.
+  allocPerWord := 1
   bufFree := 30
   bufGet := 4     -- L1 hit
   bufSet := 4
@@ -302,11 +328,21 @@ inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℤ 
   | bin {op d a b s} :
       Exec C (.bin op d a b) s (s.setReg d (op.eval (s.regs a) (s.regs b)))
         (C.bin op) 0 0
-  /-- Reserve capacity: charges the new capacity, credits the old. -/
+  /-- Reserve capacity (dynamic, from a register): charges the new capacity,
+  credits the old. Time is `C.bufAlloc + cap * C.allocPerWord` — **state-dependent**,
+  since the capacity is read from a register at runtime. -/
   | bufAlloc {b n s} :
-      Exec C (.bufAlloc b n) s (s.allocBuf b (s.regs n).toNat) C.bufAlloc
+      Exec C (.bufAlloc b n) s (s.allocBuf b (s.regs n).toNat)
+        (C.bufAlloc + (s.regs n).toNat * C.allocPerWord)
         (((s.regs n).toNat : ℤ) - (s.caps b : ℤ))
         (max (((s.regs n).toNat : ℤ) - (s.caps b : ℤ)) 0)
+  /-- Reserve capacity (immediate): identical semantics at capacity `n`, with the
+  per-word time charge a pure function of the instruction. -/
+  | bufAllocI {b n s} :
+      Exec C (.bufAllocI b n) s (s.allocBuf b n)
+        (C.bufAlloc + n * C.allocPerWord)
+        ((n : ℤ) - (s.caps b : ℤ))
+        (max ((n : ℤ) - (s.caps b : ℤ)) 0)
   /-- Free: credits the whole capacity. -/
   | bufFree {b s} :
       Exec C (.bufFree b) s (s.allocBuf b 0) C.bufFree (-(s.caps b : ℤ)) 0
@@ -389,6 +425,45 @@ theorem Exec.net_le_peak {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (h : Exec C c s s' t d p) : d ≤ p := by
   induction h <;> omega
 
+/-- The induction core of `Exec.peak_le_time`: both memory indices are bounded by
+the running time, in one induction (the `seq`/`whileNZ` peak algebra needs the net
+bound of the prefix to bound the peak of the whole). -/
+theorem Exec.net_and_peak_le_time {C : CostModel} {c : Stmt w} {s s' : State w}
+    {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hC : 1 ≤ C.allocPerWord) :
+    d ≤ (t : ℤ) ∧ p ≤ (t : ℤ) := by
+  induction h with
+  | @bufAlloc b n s =>
+    have := Nat.le_mul_of_pos_right (s.regs n).toNat (show 0 < C.allocPerWord by omega)
+    constructor <;> push_cast <;> omega
+  | @bufAllocI b n s =>
+    have := Nat.le_mul_of_pos_right n (show 0 < C.allocPerWord by omega)
+    constructor <;> push_cast <;> omega
+  | seq _ _ ih₁ ih₂ => obtain ⟨h₁, h₂⟩ := ih₁; obtain ⟨h₃, h₄⟩ := ih₂
+                       constructor <;> push_cast <;> omega
+  | ifNZ_true _ _ ih | ifNZ_false _ _ ih =>
+    obtain ⟨h₁, h₂⟩ := ih; constructor <;> push_cast <;> omega
+  | while_done _ _ ihg =>
+    obtain ⟨h₁, h₂⟩ := ihg; constructor <;> push_cast <;> omega
+  | while_step _ _ _ _ ihg ihb ihl =>
+    obtain ⟨h₁, h₂⟩ := ihg; obtain ⟨h₃, h₄⟩ := ihb; obtain ⟨h₅, h₆⟩ := ihl
+    constructor <;> push_cast <;> omega
+  | _ => constructor <;> omega
+
+/-- **Peak memory is bounded by running time.** In any cost model that charges at
+least one time unit per word of acquired capacity (`1 ≤ C.allocPerWord` — true of
+both `CostModel.unit` and `CostModel.cycles`), no execution's live-memory peak can
+exceed its running time: a time bound is automatically a space bound, and a single
+certificate covers both resources. -/
+theorem Exec.peak_le_time {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} (h : Exec C c s s' t d p) (hC : 1 ≤ C.allocPerWord) : p ≤ (t : ℤ) :=
+  (h.net_and_peak_le_time hC).2
+
+/-- Corollary of `Exec.peak_le_time`: the net live-memory change is bounded by the
+running time as well. -/
+theorem Exec.net_le_time {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} (h : Exec C c s s' t d p) (hC : 1 ≤ C.allocPerWord) : d ≤ (t : ℤ) :=
+  (h.net_and_peak_le_time hC).1
+
 /-! ### Framing: which registers and buffers a statement can touch
 
 These are the ergonomic replacement for separation logic. Both are computed
@@ -404,6 +479,7 @@ def Stmt.Writes : Stmt w → Reg → Prop
   | .un _ d _, r => r = d
   | .bin _ d _ _, r => r = d
   | .bufAlloc .., _ => False
+  | .bufAllocI .., _ => False
   | .bufFree _, _ => False
   | .bufLen d _, r => r = d
   | .bufGet d _ _, r => r = d
@@ -418,6 +494,7 @@ def Stmt.Touches : Stmt w → BufId → Prop
   | .skip, _ => False
   | .seq c₁ c₂, b => c₁.Touches b ∨ c₂.Touches b
   | .bufAlloc b' _, b => b = b'
+  | .bufAllocI b' _, b => b = b'
   | .bufFree b', b => b = b'
   | .bufSet b' _ _, b => b = b'
   | .bufPush b' _, b => b = b'
@@ -437,6 +514,7 @@ instance instDecidableWrites : ∀ (c : Stmt w) (r : Reg), Decidable (c.Writes r
   | .un _ d _, r => inferInstanceAs (Decidable (r = d))
   | .bin _ d _ _, r => inferInstanceAs (Decidable (r = d))
   | .bufAlloc .., _ => inferInstanceAs (Decidable False)
+  | .bufAllocI .., _ => inferInstanceAs (Decidable False)
   | .bufFree _, _ => inferInstanceAs (Decidable False)
   | .bufLen d _, r => inferInstanceAs (Decidable (r = d))
   | .bufGet d _ _, r => inferInstanceAs (Decidable (r = d))
@@ -463,6 +541,7 @@ instance instDecidableTouches : ∀ (c : Stmt w) (b : BufId), Decidable (c.Touch
   | .un .., _ => inferInstanceAs (Decidable False)
   | .bin .., _ => inferInstanceAs (Decidable False)
   | .bufAlloc b' _, b => inferInstanceAs (Decidable (b = b'))
+  | .bufAllocI b' _, b => inferInstanceAs (Decidable (b = b'))
   | .bufFree b', b => inferInstanceAs (Decidable (b = b'))
   | .bufLen .., _ => inferInstanceAs (Decidable False)
   | .bufGet .., _ => inferInstanceAs (Decidable False)
@@ -496,7 +575,7 @@ theorem Exec.frame_reg {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     rw [ih₂ hr.2, ih₁ hr.1]
   | imm | mov | un | bin | bufLen | bufGet =>
     exact regs_setReg_ne _ _ hr
-  | bufAlloc | bufFree | bufSet | bufPush | bufPop => rfl
+  | bufAlloc | bufAllocI | bufFree | bufSet | bufPush | bufPop => rfl
   | ifNZ_true _ _ ih => exact ih fun hh => hr (Or.inl hh)
   | ifNZ_false _ _ ih => exact ih fun hh => hr (Or.inr hh)
   | while_done _ _ ihg => exact ihg fun hh => hr (Or.inl hh)
@@ -515,7 +594,7 @@ theorem Exec.frame_buf {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     rw [ih₂ hb.2, ih₁ hb.1]
   | imm | mov | un | bin | bufLen | bufGet => rfl
   | bufSet | bufPush | bufPop => exact bufs_setBuf_ne _ _ hb
-  | bufAlloc | bufFree => exact bufs_allocBuf_ne _ _ hb
+  | bufAlloc | bufAllocI | bufFree => exact bufs_allocBuf_ne _ _ hb
   | ifNZ_true _ _ ih => exact ih fun hh => hb (Or.inl hh)
   | ifNZ_false _ _ ih => exact ih fun hh => hb (Or.inr hh)
   | while_done _ _ ihg => exact ihg fun hh => hb (Or.inl hh)
@@ -533,7 +612,7 @@ theorem Exec.frame_cap {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     rw [ih₂ hb.2, ih₁ hb.1]
   | imm | mov | un | bin | bufLen | bufGet => rfl
   | bufSet | bufPush | bufPop => rfl
-  | bufAlloc | bufFree => exact caps_allocBuf_ne _ _ hb
+  | bufAlloc | bufAllocI | bufFree => exact caps_allocBuf_ne _ _ hb
   | ifNZ_true _ _ ih => exact ih fun hh => hb (Or.inl hh)
   | ifNZ_false _ _ ih => exact ih fun hh => hb (Or.inr hh)
   | while_done _ _ ihg => exact ihg fun hh => hb (Or.inl hh)
@@ -546,18 +625,24 @@ A statement with no branches costs a syntactically-determined number of time uni
 *every* input state. This is the theorem that makes the cost model meaningful: nothing
 in the machine can make an instruction cheaper or more expensive depending on data. -/
 
-/-- No `ifNZ`, no `whileNZ`. -/
+/-- No `ifNZ`, no `whileNZ`, and no *dynamic* `bufAlloc` — the three constructs
+whose time depends on the state. (`bufAllocI`, whose capacity is an immediate, IS
+straight: its per-word charge is a function of the syntax.) -/
 def Stmt.Straight : Stmt w → Prop
   | .seq c₁ c₂ => c₁.Straight ∧ c₂.Straight
+  | .bufAlloc .. => False
   | .ifNZ .. => False
   | .whileNZ .. => False
   | _ => True
 
-/-- No `whileNZ` anywhere; `ifNZ` is allowed (both branches must be loop-free). For
-such code `staticTime` is an upper bound on every execution
-(`Exec.time_le_staticTime_of_loopFree`). -/
+/-- No `whileNZ` and no dynamic `bufAlloc` anywhere; `ifNZ` is allowed (both
+branches must be loop-free). For such code `staticTime` is an upper bound on every
+execution (`Exec.time_le_staticTime_of_loopFree`). The dynamic `bufAlloc` is
+excluded for the same reason as loops: its time charge depends on the state
+(the runtime capacity), so no syntactic bound exists. -/
 def Stmt.LoopFree : Stmt w → Prop
   | .seq c₁ c₂ => c₁.LoopFree ∧ c₂.LoopFree
+  | .bufAlloc .. => False
   | .ifNZ _ thn els => thn.LoopFree ∧ els.LoopFree
   | .whileNZ .. => False
   | _ => True
@@ -566,17 +651,21 @@ def Stmt.LoopFree : Stmt w → Prop
 theorem Stmt.Straight.loopFree {c : Stmt w} (h : c.Straight) : c.LoopFree := by
   induction c with
   | seq _ _ ih₁ ih₂ => exact ⟨ih₁ h.1, ih₂ h.2⟩
-  | ifNZ | whileNZ => exact h.elim
+  | bufAlloc | ifNZ | whileNZ => exact h.elim
   | _ => trivial
 
 /-- The syntactic running time of a **branch-free** statement — exact for `Straight`
 code (`straight_time_eq`). For `ifNZ` it is the upper-bound shape `branch + max`,
 proved safe for loop-free code by `Exec.time_le_staticTime_of_loopFree`; for
 `whileNZ` it is 0 and **meaningless — it returns 0 for every loop**, so quoting this
-function for code containing `whileNZ` produces a number that bounds nothing. At the
+function for code containing `whileNZ` produces a number that bounds nothing.
+Likewise for the *dynamic* `bufAlloc` it returns only the base cost `C.bufAlloc`
+and **under-reports**: the real charge adds `cap * C.allocPerWord` for the runtime
+capacity `cap`, which no function of the syntax can know. At the
 API surface use `staticTime?` (which returns `none` unless the number is exact) or
 pair this function with a `Stmt.Straight` (exact) or `Stmt.LoopFree` (upper bound)
-proof; bounds for looping code come from the `Triple` logic, never from this
+proof — both exclude the dynamic `bufAlloc`; bounds for looping or
+dynamically-allocating code come from the `Triple` logic, never from this
 function. -/
 def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .skip => 0
@@ -586,6 +675,7 @@ def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .un op .. => C.un op
   | .bin op .. => C.bin op
   | .bufAlloc .. => C.bufAlloc
+  | .bufAllocI _ n => C.bufAlloc + n * C.allocPerWord
   | .bufFree _ => C.bufFree
   | .bufLen .. => C.bufLen
   | .bufGet .. => C.bufGet
@@ -595,12 +685,14 @@ def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .ifNZ _ t e => C.branch + max (t.staticTime C) (e.staticTime C)
   | .whileNZ .. => 0
 
-/-- `c` contains no `bufAlloc` — anywhere, including under branches and loops. -/
+/-- `c` contains no allocation (`bufAlloc` or `bufAllocI`) — anywhere, including
+under branches and loops. -/
 def Stmt.AllocFree : Stmt w → Prop
   | .seq c₁ c₂ => c₁.AllocFree ∧ c₂.AllocFree
   | .ifNZ _ t e => t.AllocFree ∧ e.AllocFree
   | .whileNZ g _ b => g.AllocFree ∧ b.AllocFree
   | .bufAlloc .. => False
+  | .bufAllocI .. => False
   | _ => True
 
 /-- **Branch-free code runs in constant time.** The running time is a function of the
@@ -609,7 +701,7 @@ theorem Exec.straight_time_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t :
     {d p : ℤ} (h : Exec C c s s' t d p) (hs : c.Straight) : t = c.staticTime C := by
   induction h with
   | seq _ _ ih₁ ih₂ => exact congrArg₂ (· + ·) (ih₁ hs.1) (ih₂ hs.2)
-  | ifNZ_true | ifNZ_false | while_done | while_step => exact hs.elim
+  | bufAlloc | ifNZ_true | ifNZ_false | while_done | while_step => exact hs.elim
   | _ => rfl
 
 /-- **Loop-free code is bounded by its static time.** With `ifNZ` in play the time is
@@ -625,7 +717,7 @@ theorem Exec.time_le_staticTime_of_loopFree {C : CostModel} {c : Stmt w}
     exact Nat.add_le_add_left ((ih hl.1).trans (le_max_left _ _)) _
   | ifNZ_false _ _ ih =>
     exact Nat.add_le_add_left ((ih hl.2).trans (le_max_right _ _)) _
-  | while_done | while_step => exact hl.elim
+  | bufAlloc | while_done | while_step => exact hl.elim
   | _ => exact le_rfl
 
 /-- Memory only ever enters through `bufAlloc`: alloc-free code — straight-line or
@@ -638,7 +730,7 @@ theorem Exec.allocFree_space {C : CostModel} {c : Stmt w} {s s' : State w} {t : 
     obtain ⟨h1, h2⟩ := ih₁ ha.1
     obtain ⟨h3, h4⟩ := ih₂ ha.2
     omega
-  | bufAlloc => exact ha.elim
+  | bufAlloc | bufAllocI => exact ha.elim
   | ifNZ_true _ _ ih => obtain ⟨h1, h2⟩ := ih ha.1; omega
   | ifNZ_false _ _ ih => obtain ⟨h1, h2⟩ := ih ha.2; omega
   | while_done _ _ ihg => obtain ⟨h1, h2⟩ := ihg ha.1; omega
@@ -661,12 +753,14 @@ theorem Exec.straight_data_independent {C : CostModel} {c : Stmt w}
 /-- The static running time as a *partial* function — the safe way to quote a static
 time. `some n` exactly when the statement is straight-line (`Stmt.Straight`) with
 static time `n`, in which case every execution takes exactly `n` time units
-(`Exec.staticTime?_time_eq`); `none` as soon as the statement contains an `ifNZ` or
-`whileNZ` anywhere. Unlike the raw `staticTime`, this function cannot silently return
-a meaningless number for code with branches or loops: it mirrors exactly the fragment
-on which `straight_time_eq` holds (`staticTime?_eq_some`). -/
+(`Exec.staticTime?_time_eq`); `none` as soon as the statement contains an `ifNZ`, a
+`whileNZ` or a dynamic `bufAlloc` anywhere. Unlike the raw `staticTime`, this
+function cannot silently return a meaningless number for code with branches, loops
+or data-dependent allocation: it mirrors exactly the fragment on which
+`straight_time_eq` holds (`staticTime?_eq_some`). -/
 def Stmt.staticTime? (C : CostModel) : Stmt w → Option ℕ
   | .seq c₁ c₂ => (c₁.staticTime? C).bind fun t₁ => (c₂.staticTime? C).map (t₁ + ·)
+  | .bufAlloc .. => none
   | .ifNZ .. => none
   | .whileNZ .. => none
   | c => some (c.staticTime C)
@@ -693,6 +787,9 @@ theorem Stmt.staticTime?_eq_some {C : CostModel} {c : Stmt w} {n : ℕ} :
     · rintro ⟨hs, rfl⟩
       simp only [Stmt.staticTime?, ih₁.mpr ⟨hs.1, rfl⟩, ih₂.mpr ⟨hs.2, rfl⟩,
         Option.bind_some, Option.map_some, Stmt.staticTime]
+  | bufAlloc =>
+    simp only [Stmt.staticTime?]
+    exact ⟨fun h => by simp at h, fun h => h.1.elim⟩
   | ifNZ =>
     simp only [Stmt.staticTime?]
     exact ⟨fun h => by simp at h, fun h => h.1.elim⟩
@@ -767,6 +864,7 @@ def Stmt.bufBound : Stmt w → ℕ
   | .skip | .imm .. | .mov .. | .un .. | .bin .. => 0
   | .seq c₁ c₂ => max c₁.bufBound c₂.bufBound
   | .bufAlloc b _ => b + 1
+  | .bufAllocI b _ => b + 1
   | .bufFree b => b + 1
   | .bufLen _ b => b + 1
   | .bufGet _ b _ => b + 1
@@ -791,7 +889,8 @@ theorem Stmt.touches_lt_bufBound {c : Stmt w} {b : BufId} (h : c.Touches b) :
     rcases h with h | h
     · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
     · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
-  | bufAlloc _ _ | bufFree _ | bufSet _ _ _ | bufPush _ _ | bufPop _ =>
+  | bufAlloc _ _ | bufAllocI _ _ | bufFree _ | bufSet _ _ _ | bufPush _ _
+  | bufPop _ =>
     subst h; exact Nat.lt_succ_self _
   | _ => exact h.elim
 
@@ -813,6 +912,11 @@ theorem Exec.sizes_le_caps {C : CostModel} {c : Stmt w} {s s' : State w} {t : �
   | seq _ _ ih₁ ih₂ => exact ih₂ (ih₁ hs)
   | imm | mov | un | bin | bufLen | bufGet => exact hs
   | @bufAlloc b n s =>
+    intro b'
+    by_cases hb : b' = b
+    · subst hb; simp
+    · simp only [bufs_allocBuf_ne _ _ hb, caps_allocBuf_ne _ _ hb]; exact hs b'
+  | @bufAllocI b n s =>
     intro b'
     by_cases hb : b' = b
     · subst hb; simp
@@ -950,6 +1054,7 @@ theorem Exec.liveMem_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     ring
   | imm | mov | un | bin | bufLen | bufGet => simp
   | bufAlloc => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
+  | bufAllocI => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
   | bufFree => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
   | bufSet | bufPush | bufPop => simp
   | ifNZ_true _ _ ih => exact ih fun b hb => hc b (Or.inl hb)
@@ -1086,9 +1191,14 @@ def run (C : CostModel) : ℕ → Stmt w → State w → Option (State w × ℕ 
     | .bin op d a b =>
         some (s.setReg d (op.eval (s.regs a) (s.regs b)), C.bin op, 0, 0)
     | .bufAlloc b n =>
-        some (s.allocBuf b (s.regs n).toNat, C.bufAlloc,
+        some (s.allocBuf b (s.regs n).toNat,
+          C.bufAlloc + (s.regs n).toNat * C.allocPerWord,
           ((s.regs n).toNat : ℤ) - (s.caps b : ℤ),
           max (((s.regs n).toNat : ℤ) - (s.caps b : ℤ)) 0)
+    | .bufAllocI b n =>
+        some (s.allocBuf b n, C.bufAlloc + n * C.allocPerWord,
+          (n : ℤ) - (s.caps b : ℤ),
+          max ((n : ℤ) - (s.caps b : ℤ)) 0)
     | .bufFree b => some (s.allocBuf b 0, C.bufFree, -(s.caps b : ℤ), 0)
     | .bufLen d b =>
         some (s.setReg d (BitVec.ofNat w (s.bufs b).size), C.bufLen, 0, 0)
@@ -1166,6 +1276,9 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
     | .bufAlloc b n =>
       simp only [run, Option.some.injEq] at h
       obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .bufAlloc
+    | .bufAllocI b n =>
+      simp only [run, Option.some.injEq] at h
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .bufAllocI
     | .bufFree b =>
       simp only [run, Option.some.injEq] at h
       obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .bufFree

@@ -11,8 +11,11 @@ derivation exists), the result satisfies `Q`, and
 * net live-memory change `d ≤ D` (signed: freeing gives memory back),
 * peak live-memory growth `p ≤ M`.
 
-Live memory is the sum of reserved capacities: only `bufAlloc` charges and only
-`bufFree` credits; push/pop move the fill level inside capacity already paid for.
+Live memory is the sum of reserved capacities: only the alloc instructions
+(`bufAlloc`/`bufAllocI`) charge and only `bufFree` credits; push/pop move the fill
+level inside capacity already paid for. Allocation time is charged per word
+(`C.bufAlloc + cap * C.allocPerWord`), so the alloc time rules carry a capacity
+bound; for the dynamic `bufAlloc` the caller must bound the requested capacity.
 Bounding the *pair* (net, peak) is what makes reuse compose: sequencing peaks as
 `max M₁ (D₁ + M₂)` means an alloc…free block (net 0, via `bufFree'`) contributes its
 peak once, not once per occurrence, and `whileNZ_measure` gives loops whose iteration
@@ -95,16 +98,27 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
     Triple C P (.bin op d a b) Q (C.bin op) 0 0 :=
   fun s hs => ⟨_, _, _, _, .bin, h s hs, le_refl _, le_refl _, le_refl _⟩
 
-/-- Reserve capacity. The caller supplies an upper bound `N` on the charged amount
-(`newCap - oldCap`); with no knowledge of the old capacity, `N = newCap` works, since
-capacities are nonnegative. -/
-protected theorem bufAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℤ}
-    (h : ∀ s, P s → (((s.regs n).toNat : ℤ) - (s.caps b : ℤ) ≤ N)
-      ∧ Q (s.allocBuf b (s.regs n).toNat)) :
-    Triple C P (.bufAlloc b n) Q C.bufAlloc N (max N 0) := by
+/-- Reserve capacity (dynamic). The caller supplies an upper bound `N` on the
+*requested capacity* (the register value); it bounds the memory charge
+(`newCap - oldCap ≤ newCap ≤ N`, capacities being nonnegative) **and** the
+data-dependent time charge `C.bufAlloc + newCap * C.allocPerWord ≤
+C.bufAlloc + N * C.allocPerWord`. -/
+protected theorem bufAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
+    (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ Q (s.allocBuf b (s.regs n).toNat)) :
+    Triple C P (.bufAlloc b n) Q (C.bufAlloc + N * C.allocPerWord) N N := by
   intro s hs
   obtain ⟨hN, hq⟩ := h s hs
-  exact ⟨_, _, _, _, .bufAlloc, hq, le_refl _, hN, by omega⟩
+  refine ⟨_, _, _, _, .bufAlloc, hq, ?_, by omega, by omega⟩
+  have := Nat.mul_le_mul_right C.allocPerWord hN
+  omega
+
+/-- Reserve capacity (immediate): the syntactic capacity `n` prices both time
+(exactly) and memory (as a bound, the old capacity being unknown but
+nonnegative). -/
+protected theorem bufAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
+    (h : ∀ s, P s → Q (s.allocBuf b n)) :
+    Triple C P (.bufAllocI b n) Q (C.bufAlloc + n * C.allocPerWord) n n :=
+  fun s hs => ⟨_, _, _, _, .bufAllocI, h s hs, le_refl _, by omega, by omega⟩
 
 /-- Free a buffer: never charges memory. -/
 protected theorem bufFree {P Q : State w → Prop} {b : BufId}
@@ -391,12 +405,20 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
     TimeTriple C P (.bin op d a b) Q (C.bin op) :=
   (Triple.bin h).time
 
-/-- Direct rather than projected from `Triple.bufAlloc`: a time bound needs no bound
-`N` on the charged capacity, so that obligation disappears. -/
-protected theorem bufAlloc {P Q : State w → Prop} {b : BufId} {n : Reg}
-    (h : ∀ s, P s → Q (s.allocBuf b (s.regs n).toNat)) :
-    TimeTriple C P (.bufAlloc b n) Q C.bufAlloc :=
-  fun s hs => ⟨_, _, _, _, .bufAlloc, h s hs, le_refl _⟩
+/-- Reserve capacity (dynamic). Unlike the other time rules the capacity bound `N`
+does **not** disappear: the time charge `C.bufAlloc + newCap * C.allocPerWord` is
+data-dependent, so bounding the requested capacity is exactly what a time bound
+needs. -/
+protected theorem bufAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
+    (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ Q (s.allocBuf b (s.regs n).toNat)) :
+    TimeTriple C P (.bufAlloc b n) Q (C.bufAlloc + N * C.allocPerWord) :=
+  (Triple.bufAlloc h).time
+
+/-- Reserve capacity (immediate): statically priced, no side obligation. -/
+protected theorem bufAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
+    (h : ∀ s, P s → Q (s.allocBuf b n)) :
+    TimeTriple C P (.bufAllocI b n) Q (C.bufAlloc + n * C.allocPerWord) :=
+  (Triple.bufAllocI h).time
 
 protected theorem bufFree {P Q : State w → Prop} {b : BufId}
     (h : ∀ s, P s → Q (s.allocBuf b 0)) : TimeTriple C P (.bufFree b) Q C.bufFree :=
@@ -552,12 +574,24 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
     SpaceTriple C P (.bin op d a b) Q 0 0 :=
   (Triple.bin h).space
 
-/-- Reserve capacity, charging at most `N` (see `Triple.bufAlloc`). -/
+/-- Reserve capacity (dynamic), charging at most `N`. Since no time bound is
+drawn, this rule keeps the finer *charge* bound (`newCap - oldCap ≤ N`, which may
+use knowledge of the old capacity and may even be negative) rather than
+`Triple.bufAlloc`'s bound on the requested capacity itself — direct, not
+projected. -/
 protected theorem bufAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℤ}
     (h : ∀ s, P s → (((s.regs n).toNat : ℤ) - (s.caps b : ℤ) ≤ N)
       ∧ Q (s.allocBuf b (s.regs n).toNat)) :
-    SpaceTriple C P (.bufAlloc b n) Q N (max N 0) :=
-  (Triple.bufAlloc h).space
+    SpaceTriple C P (.bufAlloc b n) Q N (max N 0) := by
+  intro s hs
+  obtain ⟨hN, hq⟩ := h s hs
+  exact ⟨_, _, _, _, .bufAlloc, hq, hN, by omega⟩
+
+/-- Reserve capacity (immediate), charging at most the syntactic capacity `n`. -/
+protected theorem bufAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
+    (h : ∀ s, P s → Q (s.allocBuf b n)) :
+    SpaceTriple C P (.bufAllocI b n) Q n n :=
+  (Triple.bufAllocI h).space
 
 protected theorem bufFree {P Q : State w → Prop} {b : BufId}
     (h : ∀ s, P s → Q (s.allocBuf b 0)) : SpaceTriple C P (.bufFree b) Q 0 0 :=

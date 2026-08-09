@@ -12,7 +12,7 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 
 | File | Contents |
 |---|---|
-| `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems and the partial static clock (`staticTime?`), well-formed states and absolute live memory (`State.WellFormed`, `State.liveMem`), reference interpreter (`run`) + soundness |
+| `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`, including the per-word allocation charge `allocPerWord`), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems and the partial static clock (`staticTime?`), **peak memory ≤ running time** (`Exec.peak_le_time`), well-formed states and absolute live memory (`State.WellFormed`, `State.liveMem`), reference interpreter (`run`) + soundness |
 | `Triple.lean` | Upper-bound Hoare triples (`Triple`), one rule per instruction, `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule `whileNZ_measure`, frame rules; decoupled time-only/space-only judgments (`TimeTriple`/`SpaceTriple`) with the same rule set, recombinable into a full `Triple` via determinism (`TimeTriple.and_space`) |
 | `Builder.lean` | Surface syntax: builder monad with fresh register/buffer allocation, expression compiler (`Exp`), structured `if_`/`while_`, typed buffer handles (`Buf`), product types (`PairR`, `PairBuf`) |
 | `Field.lean` | Generic prime-field arithmetic from the modulus alone (`Fp w p`): 3-instruction add/mul via native `umod` with proved `ZMod`-correctness specs, Fermat inverse generated from the bits of `p - 2` at generation time |
@@ -40,8 +40,10 @@ with `N` the environment size. It returns `some code` only when every
 generation-time check passes — `ir` is a structured `.ir` program (no `native`
 closure), `WitgenIR.compilable ir` (no `listGet`/`dataGet`/`hintGet`, well-sorted
 `localVar`s), `WitgenIR.envBound N ir` (every environment read below `N`), and
-`N ≤ 2^64`, `m < 2^64` (indices and the output length survive their 64-bit
-immediates) — and it computes the local-register count from the program itself
+`N ≤ 2^64`, `m < 2^64` (environment indices and per-output-element immediates
+survive their 64-bit encodings; the output buffer's capacity itself is a
+`bufAllocI` immediate — a bare `ℕ` — so it never wraps) — and it computes the
+local-register count from the program itself
 (`L := steps.length`), so no caller-supplied `L` can corrupt the register layout.
 The raw compiler `compileIR` is internal and unchecked; it exists as the object the
 proofs do induction over. All user-facing theorems are stated about `compile`.
@@ -129,14 +131,27 @@ state. `Exec C c s s' t d p` charges each instruction its table entry, so:
   instruction trace of straight-line code is input-independent), but it does not
   cover memory-access addresses, allocation sizes, memory profiles, or faults, and
   is not by itself a side-channel security statement — see "What is NOT proved".
+- One deliberate exception: **allocation is charged per word**. `bufAlloc`(`I`)
+  costs `C.bufAlloc + cap * C.allocPerWord` — a base cost plus at least one tick
+  per word of capacity acquired — so no instruction can acquire `n` words in
+  `o(n)` time. For `bufAllocI` the capacity is an *immediate* in the syntax, so
+  the charge is still a pure function of the instruction and static pricing is
+  untouched; the *dynamic* `bufAlloc` reads its capacity from a register, so its
+  time is data-dependent **by design** and it is excluded from `Stmt.Straight`
+  (like a loop). The payoff is the standing theorem `Exec.peak_le_time`: in any
+  model with `1 ≤ C.allocPerWord` (both shipped tables), every execution satisfies
+  `p ≤ t` — peak live memory is bounded by running time, so **one time certificate
+  bounds both resources**.
 - `Stmt.staticTime?` is the safe way to *quote* a static time: `some n` iff the
   code is straight-line with static time `n` (`staticTime?_eq_some`), in which case
   every execution takes exactly `n` (`Exec.staticTime?_time_eq`); `none` for
-  anything containing `ifNZ`/`whileNZ`. The raw `staticTime` returns 0 on loops and
-  is only meaningful under a `Stmt.Straight` proof — or, for branching but loop-free
-  code (`Stmt.LoopFree`), as a proved *upper bound*:
-  `Exec.time_le_staticTime_of_loopFree` shows the `ifNZ` arm's `branch + max` shape
-  bounds every execution.
+  anything containing `ifNZ`/`whileNZ` or a dynamic `bufAlloc`. The raw
+  `staticTime` returns 0 on loops, under-reports the dynamic `bufAlloc` (it quotes
+  only the base cost — the per-word charge depends on the runtime capacity), and
+  is only meaningful under a `Stmt.Straight` proof — or, for branching but
+  loop-free code (`Stmt.LoopFree`, which also excludes dynamic `bufAlloc`), as a
+  proved *upper bound*: `Exec.time_le_staticTime_of_loopFree` shows the `ifNZ`
+  arm's `branch + max` shape bounds every execution.
 - Bounds proved for a generic `C` instantiate to any concrete table: `CostModel.unit`
   (all 1) or `CostModel.cycles` (a rough modern-CPU latency table). This is where
   "roughly a cycle on a modern CPU" lives: the *shape* of the machine guarantees
@@ -144,10 +159,11 @@ state. `Exec C c s s' t d p` charges each instruction its table entry, so:
 
 Consequences for the instruction set:
 
-- Memory is *reserved*, not initialised: `bufAlloc b n` reserves capacity for `n`
-  words in O(1) — a `malloc` without `memset`. Reads are only allowed below the
+- Memory is *reserved*, not initialised: `bufAlloc`/`bufAllocI` reserve capacity
+  for `n` words — a `malloc` without `memset`. Reads are only allowed below the
   filled length, so uninitialised capacity is unobservable; initialisation is paid
-  for by the pushes/stores that perform it.
+  for by the pushes/stores that perform it. Acquisition itself is charged per word
+  (`allocPerWord`), never in one tick — that is what makes `p ≤ t` a theorem.
 - `bufPush` requires free capacity (a proof obligation, like the in-range obligation
   of `bufGet`) and is therefore **worst-case** unit time — no doubling, no
   amortisation anywhere in the machine. A growable vector is a *library* on top,
@@ -166,9 +182,9 @@ underlying `Exec` derivation also proves **memory safety** (out-of-range accesse
 no derivation — the `bufGet`/`bufSet` rules demand an in-range proof).
 
 Memory is *not* an allocation counter — memory gets reused. Live memory is the sum
-of reserved capacities: only `bufAlloc` charges (`newCap - oldCap`), only `bufFree`
-credits, and push/pop move the fill level inside capacity already paid for. Profiles
-compose like high-water marks:
+of reserved capacities: only `bufAlloc`/`bufAllocI` charge (`newCap - oldCap`), only
+`bufFree` credits, and push/pop move the fill level inside capacity already paid
+for. Profiles compose like high-water marks:
 
     seq:  net = d₁ + d₂        peak = max p₁ (d₁ + p₂)
 
@@ -177,7 +193,10 @@ contributes its peak once, not once per occurrence. The `ScratchLoop` example
 allocates a one-slot scratch buffer, runs `n` iterations that each push and pop a
 word inside it, and frees it: proved net 0 and peak **1 word, independent of `n`**
 (an allocation counter would report `n`). Invariants `0 ≤ p` and `d ≤ p` hold
-always, and code containing no `bufAlloc` has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`).
+always, code containing no allocation has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`),
+and — because acquiring capacity costs at least a tick per word — `p ≤ t` in any
+model with `1 ≤ allocPerWord` (`Exec.peak_le_time`): a time bound subsumes a
+peak-memory bound, one certificate for both resources.
 
 These indices are anchored to *absolute* live memory, not just to an arbitrary
 baseline. `State.WellFormed` (every buffer's fill within its reserved capacity,
@@ -226,7 +245,8 @@ Programs can be written against the raw constructors (assembly-flavoured, what p
 are stated over) or through `Builder.lean`: a monad with `freshReg`/`freshBuf`,
 compound expressions (`x + y * z` compiling through fresh temporaries), `while_`/`if_`,
 and subroutines as ordinary Lean functions. At the surface, buffers are the newtype
-`Buf w`, produced only by `Build.alloc` — in the core both `Reg` and `BufId` are
+`Buf w`, produced only by `Build.alloc` (dynamic capacity) / `Build.allocI`
+(immediate capacity, statically priced) — in the core both `Reg` and `BufId` are
 `ℕ` (numeral-friendly proof goals), so the wrapper is what stops a buffer handle
 being confused with a register or an index. Builder output is checked equal to the
 hand-written core syntax in the examples, so the sugar adds nothing to the trusted
@@ -265,7 +285,7 @@ and the table has a dozen entries, the trusted argument is a per-instruction ins
 | `shl`, `shr` | shift + compare/mask for the `≥ w ⇒ 0` convention (x86/ARM mask the amount) | 2–3 instr |
 | `bufGet`, `bufSet` | one load/store at `base + 8·i`; the in-range proof carried by the `Exec` rule means bounds checks can be elided | 1–2 instr |
 | `bufLen`, `bufPop` | load / decrement of the length field | 1 instr |
-| `bufAlloc` | `malloc(8n)` — reserve, don't initialise. O(1): no `memset`, and lazy page mapping attributes first-touch cost to the writes we already charge | O(1) |
+| `bufAlloc`, `bufAllocI` | `malloc(8n)` — reserve, don't initialise: no `memset`. The model charges `bufAlloc + n·allocPerWord` — deliberately **at least a tick per word**, an over-provision for the allocator's O(1) fast path that also absorbs lazy page-mapping / first-touch costs, and the price of the `p ≤ t` theorem | O(1) real, O(n) charged |
 | `bufFree` | `free` — no per-element work for a `u64` buffer | O(1) |
 | `bufPush` | length-check-free store at `base + 8·len` + length increment (capacity proved sufficient) — **worst-case** O(1), no doubling | 1–2 instr |
 | `ifNZ`, `whileNZ` guard | test + branch | 2 instr |
@@ -288,9 +308,10 @@ Supporting facts, all discharged by the machine's design rather than by proof:
   each buffer becomes its own `Vec<u64>`. No dynamic name ever needs resolving.
 - Words are exactly `u64`; no bignum arithmetic can hide inside an instruction (this
   is why the DSL exists instead of measuring Lean's GMP-backed `Nat`).
-- No instruction's semantics does work proportional to the state (`bufAlloc`
+- No instruction does hidden work the model fails to charge (`bufAlloc`
   reserves without initialising precisely so that no hidden `memset` exists;
-  freeing a `u64` buffer has no per-element work).
+  freeing a `u64` buffer has no per-element work; allocation's per-word charge
+  *over*-states the allocator's O(1) reservation, never under-states it).
 
 One honest qualification remains: `c` is uniform over the memory hierarchy — a
 `bufGet` costs the same whether it hits L1 or DRAM; the *count* of memory accesses is
@@ -337,11 +358,15 @@ The theorems stop at the abstract machine. Stated plainly:
 - **Time data-independence is not a side-channel proof.** `straight_time_eq` /
   `compile_time_data_independent` prove that the *abstract time counter* is the
   same on every input. They do not cover memory-access addresses (`bufGet b i`
-  costs one unit whatever the data-dependent index `i` is), allocation sizes
-  (`bufAlloc`'s cost is size-independent, but the requested size is
-  data-observable), memory profiles, or faults. A useful ingredient for a
-  constant-time implementation — the instruction trace of straight-line code is
-  input-independent — but not by itself a side-channel security statement.
+  costs one unit whatever the data-dependent index `i` is), memory profiles, or
+  faults. Allocation sizes are no longer a blind spot of the counter: allocation
+  is charged per word, so a data-dependent allocation size *shows up in the time*
+  — the dynamic `bufAlloc` is data-dependent by design and hence excluded from
+  the straight-line fragment, while `bufAllocI`'s size is syntactic. (The former
+  gap — a "constant-time" giant allocation invisible to the counter — is gone.)
+  Still, a useful ingredient for a constant-time implementation — the instruction
+  trace of straight-line code is input-independent — but not by itself a
+  side-channel security statement.
 
 ### Trusted base
 

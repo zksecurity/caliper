@@ -282,11 +282,13 @@ def InvG (b : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
 
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
-  C.bufAlloc + C.imm + (n + 1) * (C.bin .ult + C.branch)
+  C.bufAlloc + n * C.allocPerWord + C.imm + (n + 1) * (C.bin .ult + C.branch)
     + n * (C.bufPush + C.imm + C.bin .add)
 
 /-- `code b` fills `b` with `0..n-1`. Time is linear; memory is charged once, at the
-allocation: net and peak are both `n`. -/
+allocation: net and peak are both `n`. The capacity is *dynamic* (read from `r2`),
+so the allocation's per-word time charge is data-dependent and enters the bound as
+`n * C.allocPerWord` through the capacity bound of `Triple.bufAlloc`. -/
 theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code b)
       (fun s => s.bufs b = iotaTo w n)
@@ -327,7 +329,7 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     · simp [hcap]
   have h1 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.bufAlloc b 2)
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps b = n ∧ s.bufs b = #[])
-      C.bufAlloc n (max (n : ℤ) 0) := by
+      (C.bufAlloc + n * C.allocPerWord) n n := by
     apply Triple.bufAlloc
     intro s hs
     have hval : (s.regs 2).toNat = n := by
@@ -378,10 +380,11 @@ s = alloc(1); i = 0;
 while (i < n) { s.push(i); s.pop(); i += 1; }
 free(s);
 ```
-`n` is passed in `r2`. -/
+`n` is passed in `r2`. The one-word capacity is known at generation time, so the
+allocation uses the statically priced `bufAllocI` — no register setup, and the
+per-word charge is the syntactic constant `1 * C.allocPerWord`. -/
 def code (sb : BufId) : Stmt w :=
-  .imm 3 1 ;;
-  .bufAlloc sb 3 ;;
+  .bufAllocI sb 1 ;;
   .imm 0 0 ;;
   .whileNZ (.bin .ult 1 0 2) 1
     (.bufPush sb 0 ;;
@@ -401,19 +404,14 @@ def InvG (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
 
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
-  C.bufAlloc + C.bufFree + 2 * C.imm + (n + 1) * (C.bin .ult + C.branch)
+  C.bufAlloc + C.allocPerWord + C.bufFree + C.imm + (n + 1) * (C.bin .ult + C.branch)
     + n * (C.bufPush + C.bufPop + C.imm + C.bin .add)
 
-/-- Linear time — net memory 0 and **peak memory 1**, for any `n`. (`hw` rules out
-the degenerate word size `w = 0`, where the constant 1 is not representable.) -/
-theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w)
-    (hw : 1 < 2 ^ w) :
+/-- Linear time — net memory 0 and **peak memory 1**, for any `n`. -/
+theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code sb)
       (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
       (timeBound C n) 0 1 := by
-  have h1' : (BitVec.ofNat w 1).toNat = 1 := by
-    rw [BitVec.toNat_ofNat]
-    exact Nat.mod_eq_of_lt hw
   have hguard : ∀ k, Triple C (Inv (w := w) sb n k) (.bin .ult 1 0 2)
       (InvG (w := w) sb n k) (C.bin .ult) 0 0 := by
     intro k
@@ -446,21 +444,16 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w)
       omega
     · simp [hbuf]
     · simp [hcap]
-  have h0 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.imm 3 1)
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.regs 3 = BitVec.ofNat w 1)
-      C.imm 0 0 :=
-    Triple.imm fun s hs => by simp [hs]
   have h1 : Triple C
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.regs 3 = BitVec.ofNat w 1)
-      (.bufAlloc sb 3)
+      (fun s => s.regs 2 = BitVec.ofNat w n)
+      (.bufAllocI sb 1)
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
-      C.bufAlloc 1 (max (1 : ℤ) 0) := by
-    apply Triple.bufAlloc
-    rintro s ⟨hlim, h3⟩
-    have hval : (s.regs 3).toNat = 1 := by rw [h3]; exact h1'
-    refine ⟨by omega, ?_, ?_, ?_⟩
+      (C.bufAlloc + 1 * C.allocPerWord) 1 1 := by
+    apply Triple.bufAllocI
+    intro s hlim
+    refine ⟨?_, ?_, ?_⟩
     · simp [hlim]
-    · simp [hval]
+    · simp
     · simp
   have h2 : Triple C
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
@@ -479,7 +472,7 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w)
     apply Triple.bufFree' (K := 1)
     rintro s ⟨k', ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hzero⟩
     exact ⟨by omega, by simp, by simp⟩
-  refine ((h0.seq (h1.seq (h2.seq (hW.seq hF)))).conseq (fun _ h => h)
+  refine ((h1.seq (h2.seq (hW.seq hF))).conseq (fun _ h => h)
     (fun _ h => h) (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp))
 
 end ScratchLoop
@@ -773,7 +766,7 @@ def demoScratch : Option (ℕ × ℤ × ℤ) :=
 #guard_msgs in
 #eval demoSum
 
-/-- info: some (#[0#64, 1#64, 2#64, 3#64, 4#64], 29, 5, 5) -/
+/-- info: some (#[0#64, 1#64, 2#64, 3#64, 4#64], 34, 5, 5) -/
 #guard_msgs in
 #eval demoIota
 
