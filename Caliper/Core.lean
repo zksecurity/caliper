@@ -568,6 +568,14 @@ instance instDecidableTouches : ∀ (c : Stmt w) (b : BufId), Decidable (c.Touch
     have := instDecidableTouches bd b
     inferInstanceAs (Decidable (_ ∨ _))
 
+/-! Build performance: pre-realize the `Stmt.Writes`/`Stmt.Touches` unfolding
+lemmas here at the definition site (realizations made inside a retained theorem
+ship in the `.olean`), so importing modules that `simp only [Stmt.Touches]` do
+not each re-prove them. -/
+set_option linter.unusedSimpArgs false in
+private theorem Writes_Touches_eq_lemmas_realized : True := by
+  simp -failIfUnchanged only [Stmt.Writes, Stmt.Touches]
+
 @[simp] theorem Writes_skip (r : Reg) : (Stmt.skip (w := w)).Writes r ↔ False := Iff.rfl
 @[simp] theorem Writes_seq (c₁ c₂ : Stmt w) (r : Reg) :
     (c₁ ;; c₂).Writes r ↔ c₁.Writes r ∨ c₂.Writes r := Iff.rfl
@@ -1251,7 +1259,7 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
     run C f c s = some (s', t, d, p) → Exec C c s s' t d p := by
   intro f
   induction f with
-  | zero => intro c s s' t d p h; simp [run] at h
+  | zero => intro c s s' t d p h; cases h
   | succ f ih =>
     intro c s s' t d p h
     match c with
@@ -1261,12 +1269,16 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
     | .seq c₁ c₂ =>
       simp only [run] at h
       cases h₁ : run C f c₁ s with
-      | none => simp [h₁] at h
+      | none =>
+        simp only [h₁, Option.bind_eq_bind, Option.bind_none] at h
+        cases h
       | some r₁ =>
         obtain ⟨s₁, t₁, d₁, p₁⟩ := r₁
         simp only [h₁, Option.bind_eq_bind, Option.bind_some] at h
         cases h₂ : run C f c₂ s₁ with
-        | none => simp [h₂] at h
+        | none =>
+          simp only [h₂, Option.bind_none] at h
+          cases h
         | some r₂ =>
           obtain ⟨s₂, t₂, d₂, p₂⟩ := r₂
           simp only [h₂, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
@@ -1302,21 +1314,21 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
       · simp only [Option.some.injEq] at h
         obtain ⟨rfl, rfl, rfl, rfl⟩ := h
         exact .bufGet ‹_›
-      · exact absurd h (by simp)
+      · cases h
     | .bufSet b i src =>
       simp only [run] at h
       split at h
       · simp only [Option.some.injEq] at h
         obtain ⟨rfl, rfl, rfl, rfl⟩ := h
         exact .bufSet ‹_›
-      · exact absurd h (by simp)
+      · cases h
     | .bufPush b src =>
       simp only [run] at h
       split at h
       · simp only [Option.some.injEq] at h
         obtain ⟨rfl, rfl, rfl, rfl⟩ := h
         exact .bufPush ‹_›
-      · exact absurd h (by simp)
+      · cases h
     | .bufPop b =>
       simp only [run, Option.some.injEq] at h
       obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .bufPop
@@ -1325,7 +1337,9 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
       by_cases hc : s.regs c = 0
       · rw [if_pos hc] at h
         cases h₁ : run C f els s with
-        | none => simp [h₁] at h
+        | none =>
+          simp only [h₁, Option.bind_eq_bind, Option.bind_none] at h
+          cases h
         | some r₁ =>
           obtain ⟨s₁, t₁, d₁, p₁⟩ := r₁
           simp only [h₁, Option.bind_eq_bind, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
@@ -1333,7 +1347,9 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
           exact .ifNZ_false hc (ih _ h₁)
       · rw [if_neg hc] at h
         cases h₁ : run C f thn s with
-        | none => simp [h₁] at h
+        | none =>
+          simp only [h₁, Option.bind_eq_bind, Option.bind_none] at h
+          cases h
         | some r₁ =>
           obtain ⟨s₁, t₁, d₁, p₁⟩ := r₁
           simp only [h₁, Option.bind_eq_bind, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
@@ -1342,7 +1358,9 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
     | .whileNZ g cc b =>
       simp only [run] at h
       cases hg : run C f g s with
-      | none => simp [hg] at h
+      | none =>
+        simp only [hg, Option.bind_eq_bind, Option.bind_none] at h
+        cases h
       | some rg =>
         obtain ⟨s₁, tg, dg, pg⟩ := rg
         simp only [hg, Option.bind_eq_bind, Option.bind_some] at h
@@ -1353,12 +1371,16 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
           exact .while_done (ih _ hg) hz
         · rw [if_neg hz] at h
           cases hb : run C f b s₁ with
-          | none => simp [hb] at h
+          | none =>
+            simp only [hb, Option.bind_none] at h
+            cases h
           | some rb =>
             obtain ⟨s₂, tb, db, pb⟩ := rb
             simp only [hb, Option.bind_some] at h
             cases hl : run C f (.whileNZ g cc b) s₂ with
-            | none => simp [hl] at h
+            | none =>
+              simp only [hl, Option.bind_none] at h
+              cases h
             | some rl =>
               obtain ⟨s₃, tl, dl, pl⟩ := rl
               simp only [hl, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
