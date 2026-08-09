@@ -131,18 +131,18 @@ def compileExp : Exp w → Build w Reg
   | .lit v => do
     let d ← freshReg
     emit (.imm d v)
-    pure d
+    return d
   | .un op e => do
     let a ← compileExp e
     let d ← freshReg
     emit (.un op d a)
-    pure d
+    return d
   | .bin op x y => do
     let a ← compileExp x
     let b ← compileExp y
     let d ← freshReg
     emit (.bin op d a b)
-    pure d
+    return d
 
 /-- `assign d e` — `d ← e`, compiling operands as needed. -/
 def assign (d : Reg) (e : Exp w) : Build w Unit := do
@@ -163,7 +163,7 @@ def assign (d : Reg) (e : Exp w) : Build w Unit := do
 def var (e : Exp w) : Build w Reg := do
   let d ← freshReg
   assign d e
-  pure d
+  return d
 
 end Build
 
@@ -195,7 +195,7 @@ def alloc (n : Exp w) : Build w (Buf w) := do
   let rn ← compileExp n
   let b ← freshBuf
   emit (.bufAlloc b rn)
-  pure ⟨b⟩
+  return ⟨b⟩
 
 /-- Allocate a fresh buffer with the *immediate* capacity `n`, emitting `bufAllocI`:
 one instruction, no capacity register, and the time charge
@@ -214,7 +214,7 @@ that builder-produced programs keep `bufLen` exact. -/
 def allocI (n : ℕ) (_h : n < 2 ^ w := by norm_num) : Build w (Buf w) := do
   let b ← freshBuf
   emit (.bufAllocI b n)
-  pure ⟨b⟩
+  return ⟨b⟩
 
 /-- Release a buffer's capacity. -/
 def free (b : Buf w) : Build w Unit :=
@@ -225,7 +225,7 @@ def get (b : Buf w) (i : Exp w) : Build w Reg := do
   let ri ← compileExp i
   let d ← freshReg
   emit (.bufGet d b.id ri)
-  pure d
+  return d
 
 /-- Write `b[i] ← e`. -/
 def set (b : Buf w) (i e : Exp w) : Build w Unit := do
@@ -242,7 +242,7 @@ def push (b : Buf w) (e : Exp w) : Build w Unit := do
 def len (b : Buf w) : Build w Reg := do
   let d ← freshReg
   emit (.bufLen d b.id)
-  pure d
+  return d
 
 end Build
 
@@ -267,7 +267,7 @@ structure PairR (w : ℕ) where
 def Build.mkPairR : Build w (PairR w) := do
   let a ← Build.freshReg
   let b ← Build.freshReg
-  pure ⟨a, b⟩
+  return ⟨a, b⟩
 
 /-- An array of pairs: one buffer, stride 2, fields interleaved. -/
 structure PairBuf (w : ℕ) where
@@ -277,7 +277,7 @@ structure PairBuf (w : ℕ) where
 charged now — pushes are then memory-free). -/
 def Build.mkPairBuf (nPairs : Exp w) : Build w (PairBuf w) := do
   let b ← Build.alloc (2 * nPairs)
-  pure ⟨b⟩
+  return ⟨b⟩
 
 namespace PairBuf
 

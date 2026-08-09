@@ -728,7 +728,7 @@ def sumB (xs : Buf w) : Build w Reg := do
     let tmp ← get xs i
     acc <~ (acc : Exp w) + tmp
     i <~ (i : Exp w) + 1
-  pure acc
+  return acc
 
 /-- info: true -/
 #guard_msgs in
@@ -809,7 +809,7 @@ def fieldDemo : Option (Word 64 × Word 64 × ℕ) :=
     let x : Fp 64 babybear := ⟨← Build.var 5⟩
     let xi ← Fp.inv x
     let chk ← Fp.mul xi x
-    pure (xi.val, chk.val)
+    return (xi.val, chk.val)
   (run .unit 10000 prog (State.init 64)).map fun (s, t, _, _) =>
     (s.regs rs.1, s.regs rs.2, t)
 
