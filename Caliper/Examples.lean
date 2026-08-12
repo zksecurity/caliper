@@ -1064,11 +1064,11 @@ def demoScratch : Option (ℕ × ℤ × ℤ) :=
 #guard_msgs in
 #eval demoSum
 
-/-- info: some (#[0#64, 1#64, 2#64, 3#64, 4#64], 34, 5, 5) -/
+/-- info: some (#[0#64, 1#64, 2#64, 3#64, 4#64], 33, 5, 5) -/
 #guard_msgs in
 #eval demoIota
 
-/-- info: some (606, 0, 1) -/
+/-- info: some (604, 0, 1) -/
 #guard_msgs in
 #eval demoScratch
 

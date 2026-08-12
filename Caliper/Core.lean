@@ -35,11 +35,13 @@ constant-time argument, not by itself a side-channel guarantee; see
 Two consequences for the instruction set:
 
 * Memory is *reserved*, not initialised: `memAlloc`/`memAllocI` reserve capacity for
-  `n` words — a `malloc` without `memset`. Reads are only allowed below the
+  `n` words — an allocation without `memset`. Reads are only allowed below the
   *filled* length (`memLoad` requires `i < size`), so uninitialised capacity is never
   observable, and initialisation is paid for by the `memPush`/`memStore` instructions
   that perform it. Allocation is *not* one tick: it is charged
-  `C.memAlloc + n * C.allocPerWord` — a base cost plus at least one time unit per
+  `C.memAlloc + n * C.allocPerWord` — a base (0 in both shipped tables: static
+  buffer names admit an arena/bump allocator, so no `malloc` fast path is priced)
+  plus at least one time unit per
   word of capacity acquired — so no instruction can acquire `n` words of memory in
   `o(n)` time, and peak memory is bounded by running time (`Exec.peak_le_time`).
   For `memAllocI` the capacity `n` is an *immediate* in the syntax, so this charge
@@ -176,7 +178,12 @@ inductive Stmt (w : ℕ) where
   theorem still holds. Keep immediate capacities `< 2 ^ w`; the builder surface
   `Mem.allocI` enforces exactly this bound. -/
   | memAllocI (b : BufId) (n : ℕ)
-  /-- `free b`: release `b`'s capacity entirely. -/
+  /-- `free b`: release `b`'s capacity entirely. Releasing is free — always
+  (`C.memFree = 0` in both shipped tables): the buffer's whole lifecycle was
+  paid at acquisition, whose charge prices creation *and* eventual destruction
+  (see `CostModel.memFree`). A `memFree` of a buffer that was never acquired
+  is statically detectable — buffer names are static, part of the syntax — so
+  a backend can elide it, the `free(NULL)` no-op. -/
   | memFree (b : BufId)
   /-- `d ← |b|` (the filled length, not the capacity). The length is loaded as the
   word `BitVec.ofNat w size`, so it is **exact only while the size is `< 2 ^ w`**:
@@ -197,8 +204,8 @@ inductive Stmt (w : ℕ) where
   buffers are naming conventions over the same resource — words of live memory —
   and acquiring a word costs a step here as everywhere: the time charge is
   `C.regAlloc + C.allocPerWord` (base + one word — the `memAllocI` shape at
-  capacity 1; the base is 0 in both shipped tables since no heap object is
-  created, so the charge is exactly one tick). Accounting is idempotent, like
+  capacity 1; like `memAlloc`'s base, the base is 0 in both shipped tables, so
+  the charge is exactly one tick). Accounting is idempotent, like
   `memAlloc`'s `newCap - oldCap`: re-allocating an already-allocated register
   charges no additional word (`d = 0`), though the instruction's time is still
   paid. Does **not** write the register's value. -/
@@ -230,15 +237,36 @@ structure CostModel where
   mov : ℕ := 1
   un : UnOp → ℕ := fun _ => 1
   bin : BinOp → ℕ := fun _ => 1
-  /-- Base cost of a capacity reservation without initialisation — the `malloc`
-  call itself. The full charge of an allocation is
-  `memAlloc + capacity * allocPerWord`. -/
-  memAlloc : ℕ := 1
+  /-- *Base* cost of a capacity reservation, beyond the universal per-word
+  charge: the full charge of an allocation is
+  `memAlloc + capacity * allocPerWord`. **0 by design** in both shipped tables,
+  exactly like the `regAlloc` base: buffer names are static and capacities
+  explicit in the syntax, so a backend can lay buffers out in an arena/bump
+  allocator — object creation is a pointer bump, amortized into the per-word
+  charge, and no general-purpose `malloc` is required. The acquisition charge
+  `capacity * allocPerWord` prices the buffer's whole lifecycle, creation *and*
+  eventual destruction (see `memFree`). The only zero-time allocation is the
+  zero-capacity one — which acquires nothing and is exactly `memFree`'s effect,
+  a release, free by principle. `CostModel.Admissible` exempts this base (the
+  `allocPerWord` field keeps the per-word charge ≥ 1). -/
+  memAlloc : ℕ := 0
   /-- Per-word cost of acquiring capacity. Any model with `1 ≤ allocPerWord`
   makes peak memory bounded by running time (`Exec.peak_le_time`): no program can
   hold more live words than it has spent time steps. -/
   allocPerWord : ℕ := 1
-  memFree : ℕ := 1
+  /-- Cost of releasing a buffer's capacity: **0 by design** in both shipped
+  tables — release is free for both storage classes (`regFree` is the register
+  analogue). The realizability story is lifecycle amortization: every `memFree`
+  pairs with a unique earlier acquisition of the same buffer, whose charge
+  (capacity · `allocPerWord`, plus the `memAlloc` base — 0 in the shipped
+  tables) prices creation *and* eventual destruction. That lifecycle split is
+  the only accounting stable across real
+  allocators — a freelist push, deferred coalescing, or an `munmap` teardown
+  are each bounded by the size-linear work already paid at acquisition. A
+  `memFree` with no matching acquisition is statically detectable (buffer
+  names are static) and elidable by a backend, like `free(NULL)`.
+  `CostModel.Admissible` exempts it. -/
+  memFree : ℕ := 0
   memLen : ℕ := 1
   memLoad : ℕ := 1
   memStore : ℕ := 1
@@ -246,23 +274,26 @@ structure CostModel where
   memPop : ℕ := 1
   /-- *Base* cost of acquiring a register, beyond the universal per-word charge:
   the full charge of `regAlloc` is `C.regAlloc + C.allocPerWord` — exactly the
-  `memAllocI` shape at capacity 1, minus the heap object. The base defaults to
-  0: acquiring a register creates no runtime object (no malloc), so under both
-  shipped tables acquiring a register costs exactly one tick — the one word of
-  live memory it reserves, priced by the same `allocPerWord` entry that prices
-  buffer words. Because the per-word charge is included, `Exec.peak_le_time`
-  covers the register file with no additional hypothesis. -/
+  `memAllocI` shape at capacity 1. The base defaults to 0, like `memAlloc`'s:
+  acquiring a register creates no runtime object, so under both shipped tables
+  acquiring a register costs exactly one tick — the one word of live memory it
+  reserves, priced by the same `allocPerWord` entry that prices buffer words.
+  Because the per-word charge is included, `Exec.peak_le_time` covers the
+  register file with no additional hypothesis. -/
   regAlloc : ℕ := 0
   /-- Cost of releasing a register: **0 by design** in both shipped tables —
   holding a word is free and releasing it is free; a register release compiles to
-  nothing (a statically-addressed scalar has no runtime object). This is the one
-  deliberately-free instruction; `CostModel.Admissible` exempts it. -/
+  nothing (a statically-addressed scalar has no runtime object). Like `memFree`,
+  a deliberately-free release instruction; `CostModel.Admissible` exempts it. -/
   regFree : ℕ := 0
   /-- Cost of testing a condition register and taking the branch. -/
   branch : ℕ := 1
 
-/-- Uniform model: every instruction costs 1 — except `regFree`, which is 0 by
-design (releasing live memory is free; see the `regFree` field). -/
+/-- Uniform model: every priced entry is 1, so acquiring capacity costs exactly
+one tick per word (`allocPerWord`) with no base — the alloc bases
+`memAlloc`/`regAlloc` are 0 by design, and so are the releases
+`memFree`/`regFree` (releasing live memory is free — always; see those
+fields). -/
 def CostModel.unit : CostModel := {}
 
 /-- A coarse "cycles on a modern out-of-order core" model. Included to show that
@@ -272,34 +303,42 @@ def CostModel.cycles : CostModel where
     | .mul | .mulhi => 3
     | .udiv | .umod => 30
     | _ => 1
-  memAlloc := 50  -- malloc fast path
+  memAlloc := 0   -- no malloc: static buffer names admit an arena/bump allocator,
+                  -- so creation is a pointer bump amortized into the per-word charge
   -- one cycle per acquired word: a cache-line-amortised first touch of the new
   -- capacity. Deliberately kept ≥ 1 so `Exec.peak_le_time` applies to this table.
   allocPerWord := 1
-  memFree := 30
+  memFree := 0    -- release is free; the lifecycle was priced per word at acquisition
   memLoad := 4     -- L1 hit
   memStore := 4
   memPush := 5
-  regAlloc := 0   -- no heap object: the full charge is the 1-tick per-word entry
+  regAlloc := 0   -- like memAlloc's base: the full charge is the 1-tick per-word entry
   regFree := 0    -- release compiles to nothing
   branch := 2     -- mispredict-amortised
 
 /-- **Admissibility**: every cost-table entry pricing an instruction is at least
 one time unit — no instruction runs for free, and no word of live memory is
-acquired for free. Two *deliberate* exemptions, both instances of the free-is-free
-principle (release costs are covered by acquisition; holding is free):
-`regFree` (0 in both shipped tables — a register release compiles to nothing)
-gets no `≥ 1` field, and the `regAlloc` *base* (0 in both shipped tables) gets
-none either, because the full charge of a `regAlloc` instruction is
-`regAlloc + allocPerWord` and the `allocPerWord` field below already keeps that
-`≥ 1` — an admissible model still never executes a `regAlloc` in zero time.
+acquired for free. Four *deliberate* exemptions, all instances of the
+free-is-free principle (release costs are covered by acquisition; holding is
+free). The two release instructions are exempt on principle: `regFree` and
+`memFree` (both 0 in both shipped tables) get no `≥ 1` fields — a register
+release compiles to nothing, and a buffer release's work was priced into the
+acquisition charge that created the buffer (lifecycle amortization; see the
+`CostModel.memFree` docstring). And the two alloc *bases* `regAlloc` and
+`memAlloc` (both 0 in both shipped tables) get none either, because the full
+acquisition charges — `regAlloc + allocPerWord` and
+`memAlloc + capacity * allocPerWord` — are already kept at ≥ 1 per acquired
+word by the `allocPerWord` field below. An admissible model therefore still
+never acquires live memory in zero time; the only zero-time allocation is the
+zero-capacity `memAlloc`/`memAllocI`, which acquires nothing — its effect is
+exactly `memFree`'s, a release, free by principle.
 
 Why this predicate exists: every cost theorem is generic in `C`, and a degenerate
 table with a zero entry makes cost claims vacuous — a model that prices real work
 at zero can certify any program under any budget, and an execution's peak memory
 can exceed its running time. Admissibility is the one-line hypothesis that rules
-this out: under an admissible model every executed instruction contributes at
-least one tick to `t`, and the per-word allocation charge keeps
+this out: under an admissible model every executed non-release instruction
+contributes at least one tick to `t`, and the per-word allocation charge keeps
 `Exec.peak_le_time` applicable (its `1 ≤ C.allocPerWord` hypothesis is exactly
 the `allocPerWord` field of this structure — the field accessor *is* the lemma).
 Both shipped headline tables are proved admissible (`CostModel.unit.admissible`,
@@ -310,9 +349,7 @@ structure CostModel.Admissible (C : CostModel) : Prop where
   mov : 1 ≤ C.mov
   un : ∀ op, 1 ≤ C.un op
   bin : ∀ op, 1 ≤ C.bin op
-  memAlloc : 1 ≤ C.memAlloc
   allocPerWord : 1 ≤ C.allocPerWord
-  memFree : 1 ≤ C.memFree
   memLen : 1 ≤ C.memLen
   memLoad : 1 ≤ C.memLoad
   memStore : 1 ≤ C.memStore
@@ -320,13 +357,13 @@ structure CostModel.Admissible (C : CostModel) : Prop where
   memPop : 1 ≤ C.memPop
   branch : 1 ≤ C.branch
 
-/-- The uniform table is admissible: every entry is literally 1. -/
+/-- The uniform table is admissible: every priced entry is literally 1. -/
 theorem CostModel.unit.admissible : CostModel.unit.Admissible := by
   constructor <;> first
     | decide
     | exact fun op => by cases op <;> decide
 
-/-- The calibrated cycles table is admissible: every entry is ≥ 1. -/
+/-- The calibrated cycles table is admissible: every priced entry is ≥ 1. -/
 theorem CostModel.cycles.admissible : CostModel.cycles.Admissible := by
   constructor <;> first
     | decide
@@ -480,7 +517,8 @@ inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℤ 
         (C.memAlloc + n * C.allocPerWord)
         ((n : ℤ) - (s.caps b : ℤ))
         (max ((n : ℤ) - (s.caps b : ℤ)) 0)
-  /-- Free: credits the whole capacity. -/
+  /-- Free: credits the whole capacity, at time `C.memFree` — 0 in both shipped
+  tables (release was priced at acquisition). -/
   | memFree {b s} :
       Exec C (.memFree b) s (s.allocBuf b 0) C.memFree (-(s.caps b : ℤ)) 0
   | memLen {d b s} :
