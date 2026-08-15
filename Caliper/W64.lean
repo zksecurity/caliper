@@ -1,11 +1,10 @@
-import Clean.Caliper.Triple
-import Clean.Caliper.Builder
-import Clean.Caliper.Field
+import Caliper.Triple
+import Caliper.Builder
 
 /-!
 # Caliper at word size 64
 
-The Caliper core (`Clean/Caliper/Core.lean` and friends) is generic over the word
+The Caliper core (`Caliper/Core.lean` and friends) is generic over the word
 size `w`, but for all practical use — in particular Clean's witgen backend — the word
 size is 64. This file is the surface programs and specs should be written against:
 a thin layer of **reducible abbreviations** (`abbrev`) fixing `w := 64`, so that
@@ -72,11 +71,6 @@ abbrev Buf := Caliper.Buf 64
 
 /-- Run a builder to completion, returning its result and the generated program. -/
 abbrev build {α : Type} (m : Build α) : α × Stmt := Caliper.Build.build m
-
-/-! ## Field arithmetic -/
-
-/-- A canonical element of `ZMod p` in a 64-bit register. -/
-abbrev Fp (p : ℕ) := Caliper.Fp 64 p
 
 /-! ## Demo: `w` never appears
 

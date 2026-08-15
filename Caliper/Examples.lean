@@ -1,7 +1,6 @@
-import Clean.Caliper.Triple
-import Clean.Caliper.Builder
-import Clean.Caliper.Field
-import Clean.Caliper.Render
+import Caliper.Triple
+import Caliper.Builder
+import Caliper.Render
 
 /-!
 # Worked examples
@@ -1095,30 +1094,5 @@ def pairDemo : Option (Word 64 × ℤ × ℤ) :=
 /-- info: some (50#64, 22, 22) -/
 #guard_msgs in
 #eval pairDemo
-
-/-! ### Generic field arithmetic, from the modulus alone
-
-`Fp w p` (see `Field.lean`) needs nothing but `p`. Here it is instantiated at
-BabyBear: the program computes `5⁻¹` via the generated Fermat ladder (whose exponent
-bits Lean computed at generation time) and multiplies back. Expect `5⁻¹ * 5 = 1`.
-Time is 133: the former 128 ALU steps plus one tick for each of the 5 registers
-acquired (`x`, the ladder's `t`/`acc`, the final `mul`'s `t`/`d`); the two scratch
-`regFree`s emitted by `Build.scope` inside `Fp.inv`/`Fp.mul` are free, and thanks
-to them the register peak is 4 with net 3. -/
-
-def babybear : ℕ := 2 ^ 31 - 2 ^ 27 + 1
-
-def fieldDemo : Option (Word 64 × Word 64 × ℕ) :=
-  let (rs, prog) := Build.build (w := 64) do
-    let x : Fp 64 babybear := ⟨← Build.var 5⟩
-    let xi ← Fp.inv x
-    let chk ← Fp.mul xi x
-    return (xi.val, chk.val)
-  (run .unit 10000 prog (State.init 64)).map fun (s, t, _, _) =>
-    (s.regs rs.1, s.regs rs.2, t)
-
-/-- info: some (1610612737#64, 1#64, 133) -/
-#guard_msgs in
-#eval fieldDemo
 
 end Caliper.Examples

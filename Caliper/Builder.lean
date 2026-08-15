@@ -1,4 +1,4 @@
-import Clean.Caliper.Core
+import Caliper.Core
 
 /-!
 # Surface syntax: the program builder
@@ -19,7 +19,7 @@ This file is the ergonomic layer for *writing* programs: a builder monad with
 
 Everything here is *generation-time only*: `build` runs the monad and returns a plain
 `Stmt`, and that `Stmt` is what specs and cost theorems are about. The builder adds
-nothing to the trusted surface — `Clean/Caliper/Examples.lean` checks by `rfl` that
+nothing to the trusted surface — `Caliper/Examples.lean` checks by `rfl` that
 builder output coincides with hand-written core syntax.
 
 Data structures follow the same pattern: a "struct" is a Lean-level record of
@@ -114,7 +114,8 @@ keeps live is what the `RegCarrier` instance of the result type says. -/
 /-- Types whose values name the registers they keep live — what a scoped block's
 *result* consists of, so `Build.scope` knows which registers must survive the
 block. Instances exist for `Reg`, `Unit`, `Buf` (a buffer handle pins no
-registers), `PairR`, products, `Option`, and `Fp` (`Field.lean`). -/
+registers), `PairR`, products, and `Option`; downstream libraries add their own
+(e.g. a field-element wrapper keeps its value register). -/
 class RegCarrier (α : Type) where
   /-- The registers the value keeps live (they escape any enclosing scope). -/
   regsOf : α → List Reg

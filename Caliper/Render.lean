@@ -1,4 +1,4 @@
-import Clean.Caliper.Core
+import Caliper.Core
 
 /-!
 # Canonical pretty-printer

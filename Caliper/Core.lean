@@ -5,7 +5,7 @@ import Mathlib.Tactic
 
 This is the core of a small imperative language whose **every instruction runs in
 constant time**, intended as a compilation target for Clean's witness-generation IR
-(`Clean/Circuit/WitnessIR.lean`). Programs in this language carry machine-checked
+(`Clean/Circuit/WitnessIR.lean` in the Clean project). Programs in this language carry machine-checked
 *upper bounds* on running time and memory.
 
 ## Why not a RAM machine?
