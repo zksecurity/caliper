@@ -195,12 +195,13 @@ def code : Stmt w :=
      .mov 1 3)
 
 open Build in
-/-- The same program through the builder surface: naming the two input
-registers, then structured `while` with an expression guard. The `#eval`
+/-- The same program through the builder surface: declaring the two inputs
+(`Build.input` — the first registers declared, r0 and r1, which the caller
+preloads), then structured `while` with an expression guard. The `#eval`
 below pins that the sugar compiles to exactly the hand-written core code. -/
 def gcdB : Build w Unit := do
-  let a ← Build.freshReg
-  let b ← Build.freshReg
+  let a ← Build.input
+  let b ← Build.input
   Build.while_ (Build.var (.un .isNonZero (b : Exp w))) do
     let t ← Build.var ((a : Exp w) % (b : Exp w))
     a <~ ((b : Reg) : Exp w)
@@ -314,7 +315,7 @@ def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
 /- The canonical rendering. -/
 /--
 info: loop {
-  isNonZero r2, r1
+  snez r2, r1
   bifz r2
   umod r3, r0, r1
   mov   r0, r1

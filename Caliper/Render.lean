@@ -8,7 +8,7 @@ instruction per line, memory operations under the `mem.` qualifier, destination
 first, buffers as `b<i>`, registers as `r<i>`, two-space indentation for block
 bodies.
 
-Control flow renders structurally: `ifNZ r<c> { … } else { … }`, and `whileNZ`
+Control flow renders structurally: `ifnz r<c> { … } else { … }`, and `whileNZ`
 as `loop { <guard> bifz r<c> <body> }` — `bifz` is break-if-zero on the guard's
 verdict register, mirroring the `Exec` rules exactly (guard, test, body, repeat).
 `skip` renders as `skip`: compiled code can contain genuine no-ops (e.g. from
@@ -22,12 +22,14 @@ namespace Caliper
 
 variable {w : ℕ}
 
-/-- Assembly mnemonic of a unary operation. -/
+/-- Assembly mnemonic of a unary operation. The zero tests render as `seqz`/
+`snez` — the RISC-V pseudo-mnemonics for exactly these operations (set-if-
+equal-to-zero, set-if-not-equal-to-zero). -/
 def UnOp.mnemonic : UnOp → String
   | .not => "not"
   | .neg => "neg"
-  | .isZero => "isZero"
-  | .isNonZero => "isNonZero"
+  | .isZero => "seqz"
+  | .isNonZero => "snez"
 
 /-- Assembly mnemonic of a binary operation. -/
 def BinOp.mnemonic : BinOp → String
@@ -58,7 +60,7 @@ def Stmt.render : Stmt w → List String
   | .memPush b src => [s!"{pad "mem.push" 10}b{b}, r{src}"]
   | .memPop b => [s!"{pad "mem.pop" 10}b{b}"]
   | .ifNZ c thn els =>
-      s!"ifNZ r{c} \{" :: thn.render.map ("  " ++ ·) ++
+      s!"ifnz r{c} \{" :: thn.render.map ("  " ++ ·) ++
       "} else {" :: els.render.map ("  " ++ ·) ++ ["}"]
   | .whileNZ g c body =>
       "loop {" :: g.render.map ("  " ++ ·) ++
@@ -97,12 +99,12 @@ loop {
   imm   r3, 1
   add  r0, r0, r3
 }
-ifNZ r1 {
+ifnz r1 {
   mem.load  r4, b0[r1]
   mem.store b0[r1], r4
   mem.pop   b0
 } else {
-  isZero r4, r1
+  seqz r4, r1
   mem.len   r5, b0
   mem.alloc b1, r5
   mov   r6, r4

@@ -9,7 +9,9 @@ This file is the ergonomic layer for *writing* programs: a builder monad with
 * automatic allocation of registers and buffer names (`freshReg`, `freshBuf`) —
   pure name counters emitting no code; register lifetimes are recovered
   statically by the liveness analysis (`Stmt.regPeak₀`, `Liveness.lean`), so a
-  register costs nothing to *name* and its footprint is inferred, not declared,
+  register costs nothing to *name* and its footprint is inferred, not declared
+  (`input` is `freshReg` under the name that marks a preloaded program input:
+  declared first, so k `input`s land in registers 0..k-1),
 * an expression language `Exp` that compiles compound arithmetic to three-address
   code through fresh temporaries,
 * structured control flow (`if_`, `while_`) whose guards are builder actions, so
@@ -55,6 +57,13 @@ inferred statically by the liveness analysis (`Stmt.regPeak₀`, `Liveness.lean`
 rather than declared by instructions. -/
 def freshReg : Build w Reg :=
   fun s => (s.nextReg, { s with nextReg := s.nextReg + 1 })
+
+/-- Declare the next register as a program input: identical mechanics to
+`freshReg` (the next fresh name, no code emitted), but the name states the
+intent — inputs are, by convention, the first registers a program declares,
+so a program's k `input`s land in registers 0..k-1 and callers/harnesses
+preload exactly those. -/
+def input : Build w Reg := freshReg
 
 def freshBuf : Build w BufId :=
   fun s => (s.nextBuf, { s with nextBuf := s.nextBuf + 1 })
