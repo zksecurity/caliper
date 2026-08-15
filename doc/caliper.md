@@ -254,6 +254,29 @@ algebra and vice versa — the `Drain` example has a trip-count-independent spac
 even though no uniform time bound exists for it. Since the machine is deterministic,
 separately proved judgments recombine into a full `Triple` (`TimeTriple.and_space`).
 
+#### Static register liveness (transition note)
+
+`Liveness.lean` adds a purely syntactic, backward liveness analysis over the
+register file: `Stmt.liveBefore c after` over-approximates the registers whose
+values may still be read (structural recursion, no fixpoint — `whileNZ` widens
+by the loop's whole use set), and `Stmt.regPeak c after` bounds the number of
+registers *simultaneously live* at any program point; `Stmt.regPeak₀` is the
+whole-program peak with nothing live at exit. That inferred peak is the frame
+size a lowering needs for the `reg.*`-free register file — the same number the
+instruction-driven accounting above (`regAlloc`/`regFree`, `State.regsAlloc`,
+the register summand of `State.liveMem`) obtains by trusting explicit
+allocation brackets, except read off the program's data-flow instead (and
+sometimes sharper: on `ScopedSumSq.code` the bracket accounting certifies peak
+3 where liveness infers 2). The headline theorem
+`Stmt.regPeak_le_card_liveBefore_add_writesTotal` bounds the peak by live-ins
+plus register-writing instructions, whence for straight-line code
+`Stmt.Straight.regPeak₀_le`: peak register pressure ≤ live-ins + unit-model
+static time — the liveness-side analogue of `Exec.peak_le_time`. The analysis
+treats `regAlloc`/`regFree` as no-ops; **it is slated to replace the
+instruction-driven register accounting entirely** (dropping those two
+instructions and the `regsAlloc` state dimension), at which point this
+section's register story will be restated in terms of inferred lifetimes.
+
 ### Executable
 
 `run C fuel c s` is a fuel-based reference interpreter; `run_sound` proves anything it

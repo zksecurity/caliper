@@ -4,3 +4,4 @@ import Caliper.Builder
 import Caliper.Render
 import Caliper.W64
 import Caliper.Examples
+import Caliper.Liveness
