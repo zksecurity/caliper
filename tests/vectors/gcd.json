@@ -1,0 +1,13 @@
+{
+  "name": "gcd",
+  "code_base": 4096,
+  "code_hex": ["0x006033b3", "0x00038a63", "0x0262f433", "0x00030293", "0x00040313", "0xfedff06f", "0x00100073"],
+  "arena_base": 1048576,
+  "arena_end": 1048576,
+  "initial_regs": [[5, 252], [6, 105]],
+  "initial_mem": [],
+  "expected_regs": [[5, 21], [6, 0], [7, 0], [8, 0]],
+  "expected_bufs": [],
+  "caliper_steps": 17,
+  "result_reg": 5
+}

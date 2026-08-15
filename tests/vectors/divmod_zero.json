@@ -1,0 +1,13 @@
+{
+  "name": "divmod_zero",
+  "code_base": 4096,
+  "code_hex": ["0x0262d0b3", "0x00603133", "0x00008393", "0x40200133", "0x0023f3b3", "0x0262f433", "0x026384b3", "0x008484b3", "0x0054c0b3", "0x0010b513", "0x0262b5b3", "0x00100073"],
+  "arena_base": 1048576,
+  "arena_end": 1048576,
+  "initial_regs": [[5, 5], [6, 0]],
+  "initial_mem": [],
+  "expected_regs": [[5, 5], [6, 0], [7, 0], [8, 5], [9, 5], [10, 1], [11, 0]],
+  "expected_bufs": [],
+  "caliper_steps": 6,
+  "result_reg": 10
+}

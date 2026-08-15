@@ -1,0 +1,13 @@
+{
+  "name": "bittricks_ispow2",
+  "code_base": 4096,
+  "code_hex": ["0x00100313", "0x406283b3", "0x0072f433", "0x00143493", "0x00503533", "0x00a4f533", "0x00100073"],
+  "arena_base": 1048576,
+  "arena_end": 1048576,
+  "initial_regs": [[5, 64]],
+  "initial_mem": [],
+  "expected_regs": [[5, 64], [6, 1], [7, 63], [8, 0], [9, 1], [10, 1]],
+  "expected_bufs": [],
+  "caliper_steps": 6,
+  "result_reg": 10
+}

@@ -1,0 +1,13 @@
+{
+  "name": "scoped_sumsq",
+  "code_base": 4096,
+  "code_hex": ["0x00300293", "0x02528333", "0x00400393", "0x02738433", "0x008304b3", "0x00100073"],
+  "arena_base": 1048576,
+  "arena_end": 1048576,
+  "initial_regs": [],
+  "initial_mem": [],
+  "expected_regs": [[5, 3], [6, 9], [7, 4], [8, 16], [9, 25]],
+  "expected_bufs": [],
+  "caliper_steps": 5,
+  "result_reg": 9
+}

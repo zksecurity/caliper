@@ -1,0 +1,13 @@
+{
+  "name": "bittricks_min_rev",
+  "code_base": 4096,
+  "code_hex": ["0x005330b3", "0x0010c393", "0x40700433", "0x0062c4b3", "0x0084f4b3", "0x00934533", "0x00100073"],
+  "arena_base": 1048576,
+  "arena_end": 1048576,
+  "initial_regs": [[5, 37], [6, 1000]],
+  "initial_mem": [],
+  "expected_regs": [[5, 37], [6, 1000], [7, 1], [8, 18446744073709551615], [9, 973], [10, 37]],
+  "expected_bufs": [],
+  "caliper_steps": 5,
+  "result_reg": 10
+}

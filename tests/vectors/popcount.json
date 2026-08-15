@@ -1,0 +1,13 @@
+{
+  "name": "popcount",
+  "code_base": 4096,
+  "code_hex": ["0x00000313", "0x005033b3", "0x02038463", "0x00100413", "0x0082f4b3", "0x00930333", "0x0082d0b3", "0x04043113", "0x00008293", "0x40200133", "0x0022f2b3", "0xfd9ff06f", "0x00100073"],
+  "arena_base": 1048576,
+  "arena_end": 1048576,
+  "initial_regs": [[5, 3735928559]],
+  "initial_mem": [],
+  "expected_regs": [[5, 0], [6, 24], [7, 0], [8, 1], [9, 1]],
+  "expected_bufs": [],
+  "caliper_steps": 195,
+  "result_reg": 6
+}
