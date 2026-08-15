@@ -1,0 +1,6 @@
+[project]
+name = "caliper-tests"
+version = "0.1.0"
+description = "Differential Unicorn harness for the Caliper RV64 test lowering"
+requires-python = ">=3.10"
+dependencies = ["unicorn>=2"]
