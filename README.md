@@ -50,6 +50,76 @@ lake exe cache get   # fetch Mathlib build artifacts
 lake build
 ```
 
+## Test corpus
+
+`Caliper/Corpus/` is a set of complete example programs — memcpy, memset,
+buffer reverse, a stack-drain sum, dot product, Euclid's gcd, binary
+exponentiation, popcount, div/mod recomposition, branch-free bit tricks,
+insertion sort, and a builder-written 3×3 matrix multiply — that together
+exercise **every instruction class** of the machine. Each program is pinned
+against the reference interpreter (`#guard_msgs` on concrete inputs) and the
+static register-liveness analysis (`Stmt.regPeak₀`); straight-line programs
+also pin their exact `staticTime?`. Three carry proved bounds as worked
+library examples: `Memcpy` (a `Triple` through the dynamic-allocation rule:
+linear time, memory = payload), `DotProduct` (linear time, zero memory), and
+`Gcd` (functional `Nat.gcd` spec with a *value*-measure loop and a
+linear-in-`b` time bound, the space side recovered for free from
+alloc-freeness).
+
+## Differential RV64 tests
+
+The `CaliperTest` lake target (deliberately **not** imported by `Caliper` —
+user builds never touch it, and nothing in it is proved) contains an RV64IM
+encoder and an unverified lowering `Stmt 64 → Array UInt32`: registers map
+directly (`rN ↦ x(5+N)`), buffers live in a fixed arena with a length slot
+before each data region, and Caliper's semantic edges (`udiv` by zero,
+shifts ≥ 64, no-op `memPop`) are bridged by explicit fixup sequences. An
+exporter runs the **reference interpreter** over the corpus and emits JSON
+vectors with the expected registers/buffers; a Python harness executes the
+lowered code on the [Unicorn](https://www.unicorn-engine.org/) emulator and
+checks that reality agrees, counting executed instructions.
+
+Run it locally (uv-managed only — no pip):
+
+```
+lake build CaliperTest
+lake env lean --run CaliperTest/Export.lean   # writes tests/vectors/*.json
+cd tests && uv sync && uv run python run_unicorn.py
+```
+
+CI runs the same steps on every push. The measured lowering constant
+`c` = RV64 instructions / Caliper unit steps, per program (local run,
+Unicorn 2.1.4):
+
+| program | caliper | rv64 | c |
+| --- | ---: | ---: | ---: |
+| binexp | 34 | 57 | 1.68 |
+| bittricks_ispow2 | 6 | 6 | 1.00 |
+| bittricks_min | 5 | 6 | 1.20 |
+| bittricks_min_rev | 5 | 6 | 1.20 |
+| bittricks_pack | 6 | 15 | 2.50 |
+| divmod | 6 | 11 | 1.83 |
+| divmod_zero | 6 | 11 | 1.83 |
+| dot_product | 29 | 58 | 2.00 |
+| gcd | 17 | 20 | 1.18 |
+| insertion_sort | 167 | 363 | 2.17 |
+| insertion_sort_rev | 224 | 501 | 2.24 |
+| iota | 33 | 71 | 2.15 |
+| matmul3 | 544 | 856 | 1.57 |
+| memcpy | 25 | 63 | 2.52 |
+| memset | 24 | 46 | 1.92 |
+| popcount | 195 | 355 | 1.82 |
+| reverse | 28 | 64 | 2.29 |
+| scoped_sumsq | 5 | 5 | 1.00 |
+| scratch_loop | 604 | 1909 | 3.16 |
+| stack_sum | 28 | 69 | 2.46 |
+| sum_buf | 23 | 40 | 1.74 |
+
+Every Caliper instruction lowers to O(1) RV64 instructions, and the worst
+observed program-level constant is ~3.2 (`scratch_loop`, whose loop body is
+dominated by `memPush`/`memPop` — each a length-slot read-modify-write in
+this naive lowering).
+
 ## Provenance
 
 Extracted from [rot256/clean](https://github.com/rot256/clean) with full git
