@@ -15,14 +15,13 @@ live after `c`:
   registers at any program point inside `c`.
 
 `Stmt.regPeak₀ c := c.regPeak ∅` is the headline number: the peak register
-pressure of a whole program (nothing live at exit). It is the *inferred*
-counterpart of the instruction-driven register accounting (`regAlloc`/`regFree`,
-`State.regsAlloc`, the register summand of `State.liveMem`): instead of trusting
-explicit allocation instructions, the analysis reads the lifetimes off the
-data-flow of the program itself. `regAlloc`/`regFree` are treated as no-ops here
-(see `Stmt.readsSet`); the plan is for this analysis to *replace* the
-instruction-driven accounting, at which point those instructions disappear from
-the machine altogether.
+pressure of a whole program (nothing live at exit). It **is** the register
+metric of the machine: register lifetimes are static information (there is no
+dynamic register indexing), so the register file's footprint is computed from
+the code rather than metered at runtime — the dynamic `Exec` profile `(d, p)`
+covers buffers only. `SpaceBound` below is the canonical *combined* statement:
+total memory = buffer peak + `regPeak₀`, so no buffers-only number can be
+quoted as "the memory" without the register term.
 
 Everything is computable (`Finset ℕ`), structural (no fixpoints — the `whileNZ`
 case widens conservatively instead of iterating; see `Stmt.liveBefore`), and
@@ -35,7 +34,12 @@ of the register-writing leaves executed so far. For straight-line code the write
 count is at most the unit-model static time
 (`Stmt.Straight.writesTotal_le_staticTime_unit`), giving
 `Stmt.Straight.regPeak₀_le`: peak register pressure is bounded by live-ins plus
-running time — the liveness-side analogue of `Exec.peak_le_time`.
+running time — the liveness-side analogue of `Exec.peak_le_time`. The two
+combine into the total-footprint bound
+`Exec.straight_total_footprint_le`: buffer peak **plus** register peak is at
+most live-ins plus the (unit-model) running time, because the instructions that
+cover the buffer words (per-word allocation charges) and those that cover the
+register slots (register-writing leaves) are disjoint.
 -/
 
 namespace Caliper
@@ -47,12 +51,7 @@ variable {w : ℕ}
 /-- The registers an instruction *reads*. On compound statements this unions the
 whole subtree (which is what the `whileNZ` widening needs — see `Stmt.usesSet`);
 the backward dataflow (`Stmt.liveBefore`) only ever consults it at leaves and
-drives the composition through its own recursion.
-
-`regAlloc`/`regFree` read **no** registers: they are the legacy accounting
-instructions this analysis is built to replace — they change a register's
-*allocation status*, never touch its value, and carry no data-flow, so for
-liveness they are no-ops. -/
+drives the composition through its own recursion. -/
 def Stmt.readsSet : Stmt w → Finset ℕ
   | .skip => ∅
   | .seq c₁ c₂ => c₁.readsSet ∪ c₂.readsSet
@@ -68,15 +67,12 @@ def Stmt.readsSet : Stmt w → Finset ℕ
   | .memStore _ i src => {i, src}
   | .memPush _ src => {src}
   | .memPop _ => ∅
-  | .regAlloc _ => ∅
-  | .regFree _ => ∅
   | .ifNZ c t e => insert c (t.readsSet ∪ e.readsSet)
   | .whileNZ g c b => insert c (g.readsSet ∪ b.readsSet)
 
-/-- The registers an instruction *writes* (assigns a value to). Like
-`Stmt.readsSet`, compound statements union the subtree, but the dataflow only
-consults leaves. `regAlloc`/`regFree` write no register *value* (exactly the
-`Stmt.Writes` distinction), so they kill nothing. -/
+/-- The registers an instruction *writes* (assigns a value to — exactly the
+`Stmt.Writes` relation, as a computable set). Like `Stmt.readsSet`, compound
+statements union the subtree, but the dataflow only consults leaves. -/
 def Stmt.writesSet : Stmt w → Finset ℕ
   | .skip => ∅
   | .seq c₁ c₂ => c₁.writesSet ∪ c₂.writesSet
@@ -92,8 +88,6 @@ def Stmt.writesSet : Stmt w → Finset ℕ
   | .memStore _ _ _ => ∅
   | .memPush _ _ => ∅
   | .memPop _ => ∅
-  | .regAlloc _ => ∅
-  | .regFree _ => ∅
   | .ifNZ _ t e => t.writesSet ∪ e.writesSet
   | .whileNZ g _ b => g.writesSet ∪ b.writesSet
 
@@ -273,9 +267,9 @@ theorem Stmt.regPeak_mono (c : Stmt w) :
 
 /-- The number of *register-writing* leaves (`imm`/`mov`/`un`/`bin`/`memLen`/
 `memLoad` — exactly the leaves with nonempty `writesSet`), counted through all
-branches and loop bodies. Not an instruction count: memory-only and accounting
-instructions do not write a register and are not counted, which is what lets the
-straight-line corollary survive 0-cost instructions like `memAllocI _ 0`. -/
+branches and loop bodies. Not an instruction count: memory-only instructions do
+not write a register and are not counted, which is what lets the straight-line
+corollary survive 0-cost instructions like `memAllocI _ 0`. -/
 def Stmt.writesTotal : Stmt w → ℕ
   | .seq c₁ c₂ => c₁.writesTotal + c₂.writesTotal
   | .imm .. => 1
@@ -407,14 +401,116 @@ theorem Stmt.Straight.regPeak₀_le {c : Stmt w} (h : c.Straight) :
   (c.regPeak_le_card_liveBefore_add_writesTotal ∅).trans
     (Nat.add_le_add_left h.writesTotal_le_staticTime_unit _)
 
+/-! ## The canonical combined footprint: buffers + registers
+
+The machine's total memory is **two summands**: the dynamic buffer profile
+(the `(d, p)` indices of `Exec`/`SpaceTriple`, metering reserved capacities)
+plus the static register peak (`Stmt.regPeak₀`, read off the code). Registers
+are memory — they are counted *statically* because register liveness is static
+information, not because they are free. `SpaceBound` packages the sum as the
+one number a user-facing space claim should quote, so a buffers-only figure
+can never masquerade as "the memory". -/
+
+/-- **The canonical total-memory bound.** `SpaceBound C P c Q M` says: from any
+state satisfying `P`, `c` terminates in a state satisfying `Q`, and its total
+peak footprint — dynamic buffer peak **plus** the statically inferred register
+peak `c.regPeak₀` — is at most `M`. The buffer side is an ordinary
+`SpaceTriple`; the register side is a compile-time constant of the code. -/
+def SpaceBound (C : CostModel) (P : State w → Prop) (c : Stmt w)
+    (Q : State w → Prop) (M : ℤ) : Prop :=
+  ∃ D Mbuf : ℤ, SpaceTriple C P c Q D Mbuf ∧ Mbuf + (c.regPeak₀ : ℤ) ≤ M
+
+/-- Intro rule for `SpaceBound`: a buffer-side `SpaceTriple` plus the register
+peak, summed. -/
+theorem SpaceTriple.spaceBound {C : CostModel} {P Q : State w → Prop}
+    {c : Stmt w} {D Mbuf M : ℤ} (h : SpaceTriple C P c Q D Mbuf)
+    (hM : Mbuf + (c.regPeak₀ : ℤ) ≤ M) : SpaceBound C P c Q M :=
+  ⟨D, Mbuf, h, hM⟩
+
+/-! ### Time ≥ total memory, on the straight fragment
+
+The buffer peak is covered by the per-word allocation charges and the register
+peak (beyond live-ins) by the register-writing leaves — and those two
+instruction sets are **disjoint** (an allocation writes no register), so the
+two space summands fit inside a *single* running time, not two copies of it. -/
+
+/-- Total words of buffer capacity a statement can acquire, summed over every
+`memAllocI` immediate (the dynamic `memAlloc` is excluded from `Stmt.Straight`,
+where this bound is used). On straight code it bounds the peak of every
+execution (`Exec.straight_peak_le_allocTotal`). -/
+def Stmt.allocTotal : Stmt w → ℕ
+  | .seq c₁ c₂ => c₁.allocTotal + c₂.allocTotal
+  | .memAllocI _ n => n
+  | .ifNZ _ t e => t.allocTotal + e.allocTotal
+  | .whileNZ g _ b => g.allocTotal + b.allocTotal
+  | _ => 0
+
+/-- On straight-line code the buffer peak never exceeds the total immediate
+allocation capacity — a purely syntactic bound, in any cost model. -/
+theorem Exec.straight_peak_le_allocTotal {C : CostModel} {c : Stmt w}
+    {s s' : State w} {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p)
+    (hs : c.Straight) : p ≤ (c.allocTotal : ℤ) := by
+  induction h with
+  | seq h₁ h₂ ih₁ ih₂ =>
+    have hn := h₁.net_le_peak
+    have h₁' := ih₁ hs.1
+    have h₂' := ih₂ hs.2
+    simp only [Stmt.allocTotal]
+    push_cast
+    omega
+  | memAlloc | ifNZ_true | ifNZ_false | while_done | while_step => exact hs.elim
+  | memAllocI => simp only [Stmt.allocTotal]; omega
+  | _ => omega
+
+/-- Straight-line accounting is disjoint: the allocation words and the
+register-writing leaves are covered by *different* instructions, so their
+charges add up inside the unit-model static time. -/
+theorem Stmt.Straight.allocTotal_add_writesTotal_le_staticTime_unit {c : Stmt w}
+    (h : c.Straight) :
+    c.allocTotal + c.writesTotal ≤ c.staticTime CostModel.unit := by
+  induction c with
+  | seq c₁ c₂ ih₁ ih₂ =>
+    have := ih₁ h.1
+    have := ih₂ h.2
+    simp only [Stmt.allocTotal, Stmt.writesTotal, Stmt.staticTime]
+    omega
+  | memAlloc | ifNZ | whileNZ => exact h.elim
+  | _ => simp [Stmt.allocTotal, Stmt.writesTotal, Stmt.staticTime, CostModel.unit]
+
+/-- **Straight-line code: total footprint ≤ live-ins + running time.** Buffer
+peak `p` plus the inferred register peak `regPeak₀` is bounded by the live-in
+count plus the *single* unit-model running time `t`: the buffer words are
+covered by the per-word allocation charges
+(`Exec.straight_peak_le_allocTotal`), the registers beyond the live-ins by
+their first-write instructions
+(`Stmt.regPeak_le_card_liveBefore_add_writesTotal`), and the two instruction
+sets are disjoint
+(`Stmt.Straight.allocTotal_add_writesTotal_le_staticTime_unit`) — so the sum
+fits in `t`, not `2t`. The combined-resource sharpening of `Exec.peak_le_time`
++ `Stmt.Straight.regPeak₀_le`. -/
+theorem Exec.straight_total_footprint_le {c : Stmt w} {s s' : State w} {t : ℕ}
+    {d p : ℤ} (hexec : Exec CostModel.unit c s s' t d p) (h : c.Straight) :
+    p + (c.regPeak₀ : ℤ) ≤ ((c.liveBefore ∅).card + t : ℤ) := by
+  have h1 := hexec.straight_peak_le_allocTotal h
+  have h2 := c.regPeak_le_card_liveBefore_add_writesTotal ∅
+  have h3 := h.allocTotal_add_writesTotal_le_staticTime_unit
+  have h4 := hexec.straight_time_eq h
+  simp only [Stmt.regPeak₀] at *
+  omega
+
 /-! ## Demos
 
-Inferred peaks for the existing example programs. These programs (except
-`SumBuf.code`) still *contain* `regAlloc`/`regFree` instructions in this run —
-the analysis ignores them, so each pin shows the statically inferred peak next
-to the instruction-driven accounting number quoted in `Examples.lean`. -/
+Inferred register peaks for the example programs, and their canonical combined
+(`SpaceBound`) statements. Since the machine's register instructions are gone,
+these numbers **are** the register footprint — quoted alongside the buffers-only
+interpreter pins of `Examples.lean`. (Historical note: before this run the
+machine metered registers dynamically through explicit `regAlloc`/`regFree`
+instructions; the analysis, which then ran alongside that accounting, was
+already at least as sharp — on `ScopedSumSq` it inferred 2 where the
+instruction brackets certified 3 — and it has now replaced the instruction
+accounting as *the* register metric.) -/
 
-/- `SumBuf.code 0` (no `regAlloc` at all — the registerless original): inferred
+/- `SumBuf.code 0` — also exactly the builder's output for `sumB`: inferred
 peak 6. The conservative loop widening keeps all six registers live across the
 guard/branch point (`r3`'s verdict is materialized while `r0-r2, r4, r5` stay
 in `U`), matching the 6 registers the program names. -/
@@ -433,22 +529,12 @@ infer `∅`. Err on the side of inclusion.) -/
 #guard_msgs in
 #eval ((Examples.SumBuf.code (w := 64) 0).liveBefore ∅).sort (· ≤ ·)
 
-/- `sumBCore` — the builder's output for `sumB`, i.e. `SumBuf.code 0` *with*
-explicit `regAlloc` instructions: same inferred peak 6, because the accounting
-instructions are liveness no-ops. The instruction-driven accounting also says
-peak 6 (all six registers acquired, none freed), so the two agree here. -/
-
-/-- info: 6 -/
-#guard_msgs in
-#eval (Examples.sumBCore (w := 64)).regPeak₀
-
-/- `ScopedSumSq.code`: the instruction-driven accounting certifies peak **3**
-(`ScopedSumSq.space_spec`, and the interpreter pin `(25, 10, 3, 3)`). The
-liveness analysis infers peak **2** — strictly sharper: at the point the
-accounting counts `{r1, r2, r3}` (stage-1 result, stage-2 scratch, stage-2
-result), `r2` is dead the moment `mul r3, r2, r2` consumes it, so at most two
-*values* ever need slots simultaneously. This gap is the point of Run 2:
-inferred lifetimes beat bracket-shaped `regAlloc`/`regFree` accounting. -/
+/- `ScopedSumSq.code` (`3² + 4²`, five registers named): inferred peak **2** —
+each stage's scratch is dead the moment its `mul` consumes it, so at most two
+*values* ever need slots simultaneously. Sharper than any bracket-shaped
+accounting could honestly certify (an alloc/free bracket around each
+name-lifetime would have said 3, counting stage-1 result + stage-2 scratch +
+stage-2 result as coexisting names). -/
 
 /-- info: 2 -/
 #guard_msgs in
@@ -463,5 +549,59 @@ def tempDies : Stmt 64 :=
 /-- info: 2 -/
 #guard_msgs in
 #eval tempDies.regPeak₀
+
+/-! ### Combined (`SpaceBound`) statements for the headline examples
+
+Each pairs the buffer-side `SpaceTriple` proved in `Examples.lean` with the
+inferred register peak — the canonical total a space claim should quote. -/
+
+/-- `ScopedSumSq`: buffer peak 0 + register peak 2 = **total 2**. -/
+theorem ScopedSumSq.total_space {C : CostModel} :
+    SpaceBound C (fun _ => True) Examples.ScopedSumSq.code (fun _ => True) 2 :=
+  Examples.ScopedSumSq.space_spec.spaceBound (by decide)
+
+/-- `SumBuf` (on buffer 0): buffer peak 0 + register peak 6 = **total 6**,
+alongside its linear time bound. -/
+theorem SumBuf.total_space {C : CostModel} (arr : Array (Word 64))
+    (hsz : arr.size < 2 ^ 64) :
+    SpaceBound C (fun s => s.bufs 0 = arr) (Examples.SumBuf.code 0)
+      (fun s => s.regs 0 = Examples.SumBuf.sumTo arr arr.size) 6 :=
+  (Examples.SumBuf.spec 0 arr hsz).space.spaceBound (by decide)
+
+/-- `ScratchLoop` (on buffer 0): buffer peak 1 + register peak 4 = **total 5**,
+independent of the trip count — memory reuse in the buffer summand, static
+inference in the register summand. -/
+theorem ScratchLoop.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
+    SpaceBound C (fun s => s.regs 2 = BitVec.ofNat 64 n)
+      (Examples.ScratchLoop.code 0)
+      (fun s => s.bufs 0 = #[] ∧ s.caps 0 = 0) 5 :=
+  (Examples.ScratchLoop.spec 0 n hn).space.spaceBound (by decide)
+
+/-- `Iota` (on buffer 0): buffer peak `n` + register peak 4 = **total n + 4** —
+the one genuinely linear-space example keeps its linear total. -/
+theorem Iota.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
+    SpaceBound C (fun s => s.regs 2 = BitVec.ofNat 64 n)
+      (Examples.Iota.code 0)
+      (fun s => s.bufs 0 = Examples.Iota.iotaTo 64 n) ((n : ℤ) + 4) :=
+  (Examples.Iota.spec 0 n hn).space.spaceBound
+    (by have : (Examples.Iota.code (w := 64) 0).regPeak₀ = 4 := by decide
+        omega)
+
+/- `nestedB` (`3² + 3²`, 3 names): inferred peak **1** — each value dies at the
+instruction producing its successor. Combined with its buffers-only profile
+(0, 0): total 1. -/
+
+/-- info: 1 -/
+#guard_msgs in
+#eval (Build.build Examples.nestedB).2.regPeak₀
+
+/- `pairProg` (the array-of-pairs demo, 18 register names): inferred peak
+**3**. Combined with its buffer peak 4 (`pairDemo` pin in `Examples.lean`):
+**total 7** — where the old instruction-driven accounting, which never released
+a temporary, reported 22 (4 buffer words + all 18 names). -/
+
+/-- info: 3 -/
+#guard_msgs in
+#eval Examples.pairProg.2.regPeak₀
 
 end Caliper
