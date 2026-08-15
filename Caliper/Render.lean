@@ -4,8 +4,7 @@ import Caliper.Core
 # Canonical pretty-printer
 
 `Stmt.render` prints a statement in Caliper's canonical assembly dialect: one
-instruction per line, memory operations under the `mem.` qualifier and
-register-file operations under `reg.` (`reg.alloc`/`reg.free`), destination
+instruction per line, memory operations under the `mem.` qualifier, destination
 first, buffers as `b<i>`, registers as `r<i>`, two-space indentation for block
 bodies.
 
@@ -58,8 +57,6 @@ def Stmt.render : Stmt w → List String
   | .memStore b i src => [s!"{pad "mem.store" 10}b{b}[r{i}], r{src}"]
   | .memPush b src => [s!"{pad "mem.push" 10}b{b}, r{src}"]
   | .memPop b => [s!"{pad "mem.pop" 10}b{b}"]
-  | .regAlloc r => [s!"{pad "reg.alloc" 10}r{r}"]
-  | .regFree r => [s!"{pad "reg.free" 10}r{r}"]
   | .ifNZ c thn els =>
       s!"ifNZ r{c} \{" :: thn.render.map ("  " ++ ·) ++
       "} else {" :: els.render.map ("  " ++ ·) ++ ["}"]
@@ -79,7 +76,6 @@ One statement exercising every class of the dialect: immediates, ALU ops,
 every `mem.` instruction, a conditional and a loop. -/
 
 private def renderDemo : Stmt 64 :=
-  .regAlloc 2 ;;
   .imm 2 5 ;;
   .memAllocI 0 3 ;;
   .whileNZ (.bin .ult 1 0 2) 1
@@ -89,12 +85,10 @@ private def renderDemo : Stmt 64 :=
   .ifNZ 1
     (.memLoad 4 0 1 ;; .memStore 0 1 4 ;; .memPop 0)
     (.un .isZero 4 1 ;; .memLen 5 0 ;; .memAlloc 1 5 ;; .mov 6 4 ;; .skip) ;;
-  .memFree 0 ;;
-  .regFree 2
+  .memFree 0
 
 /--
-info: reg.alloc r2
-imm   r2, 5
+info: imm   r2, 5
 mem.alloci b0, 3
 loop {
   ult  r1, r0, r2
@@ -115,7 +109,6 @@ ifNZ r1 {
   skip
 }
 mem.free  b0
-reg.free  r2
 -/
 #guard_msgs in
 #eval IO.println renderDemo.renderString

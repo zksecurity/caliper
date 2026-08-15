@@ -174,51 +174,6 @@ protected theorem memPop {P Q : State w → Prop} {b : BufId}
     Triple C P (.memPop b) Q C.memPop 0 0 :=
   fun s hs => ⟨_, _, _, _, .memPop, h s hs, le_refl _, le_refl _, le_refl _⟩
 
-/-- Acquire a register: time exactly `C.regAlloc + C.allocPerWord` (base + the one
-word — one tick in both shipped tables), memory at most the one word (the
-idempotent charge `newAlloc - oldAlloc` is `≤ 1`, and `0` if `r` was already
-allocated — mirroring `memAllocI`'s "old capacity unknown but nonnegative"). -/
-protected theorem regAlloc {P Q : State w → Prop} {r : Reg}
-    (h : ∀ s, P s → Q (s.setRegAlloc r true)) :
-    Triple C P (.regAlloc r) Q (C.regAlloc + C.allocPerWord) 1 1 := by
-  intro s hs
-  refine ⟨_, _, _, _, .regAlloc, h s hs, le_refl _, ?_, ?_⟩ <;> omega
-
-/-- Acquire a register known to be *already* allocated: the idempotent charge
-vanishes — net 0, peak 0 — while the time is still exactly
-`C.regAlloc + C.allocPerWord` (acquisition is priced whether or not it is new).
-The re-allocation mirror of `regFree'`/`memFree'`: it is what lets loops whose
-per-iteration `regAlloc`s hit already-allocated registers (the builder-loop
-pattern — guard and body re-emit their acquisitions every iteration) take
-`whileNZ_measure` with iteration net `≤ 0`, i.e. a memory bound independent of
-the trip count, instead of charging one word per iteration. -/
-protected theorem regAlloc' {P Q : State w → Prop} {r : Reg}
-    (h : ∀ s, P s → s.regsAlloc r = true ∧ Q (s.setRegAlloc r true)) :
-    Triple C P (.regAlloc r) Q (C.regAlloc + C.allocPerWord) 0 0 := by
-  intro s hs
-  obtain ⟨ha, hq⟩ := h s hs
-  refine ⟨_, _, _, _, .regAlloc, hq, le_refl _, ?_, ?_⟩ <;> simp [ha]
-
-/-- Release a register: never charges memory, time `C.regFree` (0 in both shipped
-tables — releasing is free). -/
-protected theorem regFree {P Q : State w → Prop} {r : Reg}
-    (h : ∀ s, P s → Q (s.setRegAlloc r false)) :
-    Triple C P (.regFree r) Q C.regFree 0 0 := by
-  intro s hs
-  refine ⟨_, _, _, _, .regFree, h s hs, le_refl _, ?_, le_refl _⟩
-  omega
-
-/-- Release a register known to be allocated: credits the word back (`-1`). This
-is the rule that makes a `regAlloc … regFree` block's net vanish — the register
-mirror of `memFree'`. -/
-protected theorem regFree' {P Q : State w → Prop} {r : Reg}
-    (h : ∀ s, P s → s.regsAlloc r = true ∧ Q (s.setRegAlloc r false)) :
-    Triple C P (.regFree r) Q C.regFree (-1) 0 := by
-  intro s hs
-  obtain ⟨ha, hq⟩ := h s hs
-  refine ⟨_, _, _, _, .regFree, hq, le_refl _, ?_, le_refl _⟩
-  simp [ha]
-
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T : ℕ}
     {D M : ℤ}
     (ht : Triple C (fun s => P s ∧ s.regs r ≠ 0) thn Q T D M)
@@ -321,14 +276,6 @@ theorem frame_buf {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ} {b
     {arr : Array (Word w)} (h : Triple C P c Q T D M) (ht : ¬ c.Touches b) :
     Triple C (fun s => P s ∧ s.bufs b = arr) c (fun s => Q s ∧ s.bufs b = arr) T D M :=
   h.frame_post fun _ _ _ _ _ hexec hb => (hexec.frame_buf ht).trans hb
-
-/-- Specialization: a register the statement never reg-allocs/frees keeps its
-allocation status. -/
-theorem frame_regAlloc {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
-    {r : Reg} {v : Bool} (h : Triple C P c Q T D M) (ht : ¬ c.RegAllocTouches r) :
-    Triple C (fun s => P s ∧ s.regsAlloc r = v) c
-      (fun s => Q s ∧ s.regsAlloc r = v) T D M :=
-  h.frame_post fun _ _ _ _ _ hexec hr => (hexec.frame_regAlloc ht).trans hr
 
 end Triple
 
@@ -505,20 +452,6 @@ protected theorem memPop {P Q : State w → Prop} {b : BufId}
     TimeTriple C P (.memPop b) Q C.memPop :=
   (Triple.memPop h).time
 
-/-- Acquire a register: statically priced at `C.regAlloc + C.allocPerWord` —
-whether or not `r` was already allocated, so there is no primed time rule (like
-`regFree'`/`memFree'`, the primed `regAlloc'` refines only the memory bounds). -/
-protected theorem regAlloc {P Q : State w → Prop} {r : Reg}
-    (h : ∀ s, P s → Q (s.setRegAlloc r true)) :
-    TimeTriple C P (.regAlloc r) Q (C.regAlloc + C.allocPerWord) :=
-  (Triple.regAlloc h).time
-
-/-- Release a register: time `C.regFree` (0 in both shipped tables). -/
-protected theorem regFree {P Q : State w → Prop} {r : Reg}
-    (h : ∀ s, P s → Q (s.setRegAlloc r false)) :
-    TimeTriple C P (.regFree r) Q C.regFree :=
-  (Triple.regFree h).time
-
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T : ℕ}
     (ht : TimeTriple C (fun s => P s ∧ s.regs r ≠ 0) thn Q T)
     (he : TimeTriple C (fun s => P s ∧ s.regs r = 0) els Q T) :
@@ -586,13 +519,6 @@ theorem frame_buf {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {b : BufId}
     {arr : Array (Word w)} (h : TimeTriple C P c Q T) (ht : ¬ c.Touches b) :
     TimeTriple C (fun s => P s ∧ s.bufs b = arr) c (fun s => Q s ∧ s.bufs b = arr) T :=
   h.frame_post fun _ _ _ _ _ hexec hb => (hexec.frame_buf ht).trans hb
-
-/-- A register the statement never reg-allocs/frees keeps its allocation status. -/
-theorem frame_regAlloc {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {r : Reg}
-    {v : Bool} (h : TimeTriple C P c Q T) (ht : ¬ c.RegAllocTouches r) :
-    TimeTriple C (fun s => P s ∧ s.regsAlloc r = v) c
-      (fun s => Q s ∧ s.regsAlloc r = v) T :=
-  h.frame_post fun _ _ _ _ _ hexec hr => (hexec.frame_regAlloc ht).trans hr
 
 end TimeTriple
 
@@ -705,31 +631,6 @@ protected theorem memPop {P Q : State w → Prop} {b : BufId}
     SpaceTriple C P (.memPop b) Q 0 0 :=
   (Triple.memPop h).space
 
-/-- Acquire a register: charges at most the one word. -/
-protected theorem regAlloc {P Q : State w → Prop} {r : Reg}
-    (h : ∀ s, P s → Q (s.setRegAlloc r true)) :
-    SpaceTriple C P (.regAlloc r) Q 1 1 :=
-  (Triple.regAlloc h).space
-
-/-- Acquire a register known to be already allocated: the idempotent charge
-vanishes — net 0, peak 0 (`Triple.regAlloc'`). -/
-protected theorem regAlloc' {P Q : State w → Prop} {r : Reg}
-    (h : ∀ s, P s → s.regsAlloc r = true ∧ Q (s.setRegAlloc r true)) :
-    SpaceTriple C P (.regAlloc r) Q 0 0 :=
-  (Triple.regAlloc' h).space
-
-/-- Release a register: never charges memory. -/
-protected theorem regFree {P Q : State w → Prop} {r : Reg}
-    (h : ∀ s, P s → Q (s.setRegAlloc r false)) :
-    SpaceTriple C P (.regFree r) Q 0 0 :=
-  (Triple.regFree h).space
-
-/-- Release a register known to be allocated: credits `-1`. -/
-protected theorem regFree' {P Q : State w → Prop} {r : Reg}
-    (h : ∀ s, P s → s.regsAlloc r = true ∧ Q (s.setRegAlloc r false)) :
-    SpaceTriple C P (.regFree r) Q (-1) 0 :=
-  (Triple.regFree' h).space
-
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {D M : ℤ}
     (ht : SpaceTriple C (fun s => P s ∧ s.regs r ≠ 0) thn Q D M)
     (he : SpaceTriple C (fun s => P s ∧ s.regs r = 0) els Q D M) :
@@ -808,13 +709,6 @@ theorem frame_buf {P Q : State w → Prop} {c : Stmt w} {D M : ℤ} {b : BufId}
     SpaceTriple C (fun s => P s ∧ s.bufs b = arr) c (fun s => Q s ∧ s.bufs b = arr)
       D M :=
   h.frame_post fun _ _ _ _ _ hexec hb => (hexec.frame_buf ht).trans hb
-
-/-- A register the statement never reg-allocs/frees keeps its allocation status. -/
-theorem frame_regAlloc {P Q : State w → Prop} {c : Stmt w} {D M : ℤ} {r : Reg}
-    {v : Bool} (h : SpaceTriple C P c Q D M) (ht : ¬ c.RegAllocTouches r) :
-    SpaceTriple C (fun s => P s ∧ s.regsAlloc r = v) c
-      (fun s => Q s ∧ s.regsAlloc r = v) D M :=
-  h.frame_post fun _ _ _ _ _ hexec hr => (hexec.frame_regAlloc ht).trans hr
 
 end SpaceTriple
 

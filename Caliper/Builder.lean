@@ -7,9 +7,9 @@ import Caliper.Core
 This file is the ergonomic layer for *writing* programs: a builder monad with
 
 * automatic allocation of registers and buffer names (`freshReg`, `freshBuf`) —
-  `freshReg` *emits* `regAlloc`, so builder programs pay for every register they
-  acquire, and `Build.scope` (with the `RegCarrier` class) releases a block's
-  temporaries when it ends,
+  pure name counters emitting no code; register lifetimes are recovered
+  statically by the liveness analysis (`Stmt.regPeak₀`, `Liveness.lean`), so a
+  register costs nothing to *name* and its footprint is inferred, not declared,
 * an expression language `Exp` that compiles compound arithmetic to three-address
   code through fresh temporaries,
 * structured control flow (`if_`, `while_`) whose guards are builder actions, so
@@ -36,11 +36,6 @@ variable {w : ℕ}
 structure BuildState (w : ℕ) where
   nextReg : ℕ := 0
   nextBuf : ℕ := 0
-  /-- Registers already released by a (necessarily inner) `Build.scope`.
-  `freshReg` never reuses names — `nextReg` only grows — so a freed name is never
-  re-allocated and this set is monotone; an enclosing scope consults it so a
-  register an inner scope already freed does not get a second `regFree`. -/
-  freedRegs : List Reg := []
   /-- Emitted code, in **reverse** order (prepending keeps generation linear;
   `capture`/`build` reverse once at the end). -/
   code : List (Stmt w) := []
@@ -54,13 +49,12 @@ instance : Monad (Build w) where
   pure a := fun s => (a, s)
   bind m f := fun s => let (a, s') := m s; f a s'
 
-/-- Allocate a fresh register name **and emit `regAlloc` for it**: builder-produced
-programs pay for every register they acquire — one word of live memory, one tick
-(see `Stmt.regAlloc`). Pair with `Build.scope` to release temporaries when a block
-ends. -/
+/-- Allocate a fresh register name — a pure counter bump, emitting no code.
+Naming a register is free; its cost to the register file is its *live range*,
+inferred statically by the liveness analysis (`Stmt.regPeak₀`, `Liveness.lean`)
+rather than declared by instructions. -/
 def freshReg : Build w Reg :=
-  fun s => (s.nextReg,
-    { s with nextReg := s.nextReg + 1, code := .regAlloc s.nextReg :: s.code })
+  fun s => (s.nextReg, { s with nextReg := s.nextReg + 1 })
 
 def freshBuf : Build w BufId :=
   fun s => (s.nextBuf, { s with nextBuf := s.nextBuf + 1 })
@@ -100,57 +94,6 @@ def while_ (guard : Build w Reg) (body : Build w Unit) : Build w Unit := do
   let (r, gc) ← capture guard
   let (_, bc) ← capture body
   emit (.whileNZ gc r bc)
-
-end Build
-
-/-! ## Register scoping
-
-`Build.freshReg` emits `regAlloc`, so every builder temporary holds a word of live
-memory from the moment it is named. `Build.scope` is the structured way to give
-those words back: it runs a block and emits `regFree` for every register the block
-allocated, **except** the ones its result consists of. Which registers a result
-keeps live is what the `RegCarrier` instance of the result type says. -/
-
-/-- Types whose values name the registers they keep live — what a scoped block's
-*result* consists of, so `Build.scope` knows which registers must survive the
-block. Instances exist for `Reg`, `Unit`, `Buf` (a buffer handle pins no
-registers), `PairR`, products, and `Option`; downstream libraries add their own
-(e.g. a field-element wrapper keeps its value register). -/
-class RegCarrier (α : Type) where
-  /-- The registers the value keeps live (they escape any enclosing scope). -/
-  regsOf : α → List Reg
-
-export RegCarrier (regsOf)
-
-instance : RegCarrier Reg := ⟨fun r => [r]⟩
-instance : RegCarrier Unit := ⟨fun _ => []⟩
-instance {α β : Type} [RegCarrier α] [RegCarrier β] : RegCarrier (α × β) :=
-  ⟨fun p => regsOf p.1 ++ regsOf p.2⟩
-instance {α : Type} [RegCarrier α] : RegCarrier (Option α) :=
-  ⟨fun | none => [] | some a => regsOf a⟩
-
-namespace Build
-
-/-- Run `m` and release its register temporaries: every register allocated inside
-`m` (tracked by the `nextReg` counter delta — fresh names are handed out in
-order) gets a `regFree`, except those in `regsOf` of the result and those a
-nested inner scope already freed (recorded in `freedRegs` — without the check an
-outer scope would re-free its whole counter delta, emitting duplicate `regFree`s
-for inner-scope temporaries). The registers freed here are recorded in turn.
-Frees are emitted in **reverse allocation order** (stack-like). Freed names are
-never reused — fresh-name monotonicity — which is fine: the liveness *count* is
-what the memory profile meters, and a lowering can interval-color disciplined
-(bracket-nested) lifetimes onto physical slots, so peak live count = slots
-needed. -/
-def scope {α : Type} [RegCarrier α] (m : Build w α) : Build w α := fun s =>
-  let (a, s') := m s
-  let keep := RegCarrier.regsOf a
-  let toFree :=
-    (List.range' s.nextReg (s'.nextReg - s.nextReg)).filter
-      (fun r => !keep.contains r && !s'.freedRegs.contains r)
-  (a, { s' with
-    code := (toFree.map .regFree) ++ s'.code
-    freedRegs := toFree ++ s'.freedRegs })
 
 end Build
 
@@ -252,9 +195,6 @@ structure Buf (w : ℕ) where
   id : BufId
 deriving Repr
 
-/-- A buffer handle keeps no registers live (its name is syntax, not a register). -/
-instance : RegCarrier (Buf w) := ⟨fun _ => []⟩
-
 namespace Mem
 
 /-- Allocate a fresh buffer with capacity `n` (an expression, evaluated at runtime).
@@ -342,9 +282,6 @@ alias, and framing across them is the usual decidable `Touches` check. -/
 structure PairR (w : ℕ) where
   fst : Reg
   snd : Reg
-
-/-- A register pair keeps both its registers live. -/
-instance : RegCarrier (PairR w) := ⟨fun p => [p.fst, p.snd]⟩
 
 /-- Allocate a fresh local pair. -/
 def Build.mkPairR : Build w (PairR w) := do

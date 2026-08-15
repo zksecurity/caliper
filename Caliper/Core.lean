@@ -60,12 +60,13 @@ Two consequences for the instruction set:
 `Exec C c s s' t d p` says: from `s`, statement `c` terminates in `s'`, having spent
 `t` time units, with **net** live-memory change `d` (in words, signed) and **peak**
 live-memory growth `p` above the starting level. Live memory is the sum of reserved
-capacities plus the count of allocated registers — there is one resource, words of
-live memory, and registers and buffers are naming conventions over it (see
-`doc/caliper.md`): `memAlloc` charges `n - oldCap`, `regAlloc` charges one word
-(idempotently), `memFree`/`regFree` credit back, and `memPush`/`memPop` move the
-fill level inside already-charged capacity, so they are memory-neutral. Profiles
-compose like resource high-water marks:
+buffer capacities: `memAlloc` charges `n - oldCap`, `memFree` credits back, and
+`memPush`/`memPop` move the fill level inside already-charged capacity, so they are
+memory-neutral. The register file is *not* part of the dynamic profile: register
+lifetimes are static information, so the register footprint is the statically
+inferred peak live-register count `Stmt.regPeak₀` (`Liveness.lean`), quoted
+alongside the dynamic buffer profile. Profiles compose like resource high-water
+marks:
 
     seq:  net = d₁ + d₂        peak = max p₁ (d₁ + p₂)
 
@@ -200,22 +201,6 @@ inductive Stmt (w : ℕ) where
   | memPush (b : BufId) (src : Reg)
   /-- `b.pop`; a no-op on an empty buffer. Keeps the capacity, so memory-neutral. -/
   | memPop (b : BufId)
-  /-- `reg.alloc r`: acquire register `r` as one word of live memory. Registers and
-  buffers are naming conventions over the same resource — words of live memory —
-  and acquiring a word costs a step here as everywhere: the time charge is
-  `C.regAlloc + C.allocPerWord` (base + one word — the `memAllocI` shape at
-  capacity 1; like `memAlloc`'s base, the base is 0 in both shipped tables, so
-  the charge is exactly one tick). Accounting is idempotent, like
-  `memAlloc`'s `newCap - oldCap`: re-allocating an already-allocated register
-  charges no additional word (`d = 0`), though the instruction's time is still
-  paid. Does **not** write the register's value. -/
-  | regAlloc (r : Reg)
-  /-- `reg.free r`: release register `r`'s word of live memory. Releasing is free —
-  always (`C.regFree = 0` in both shipped tables): a statically-addressed scalar
-  name needs no runtime object, so its release compiles to nothing. Credits the
-  word back if `r` was allocated; a no-op credit otherwise. Does not write the
-  register's value. -/
-  | regFree (r : Reg)
   | ifNZ (c : Reg) (thn els : Stmt w)
   /-- `guard; while (c ≠ 0) { body; guard }`. The guard is a *statement* because
   computing a loop condition costs real instructions; making it an expression would
@@ -239,24 +224,23 @@ structure CostModel where
   bin : BinOp → ℕ := fun _ => 1
   /-- *Base* cost of a capacity reservation, beyond the universal per-word
   charge: the full charge of an allocation is
-  `memAlloc + capacity * allocPerWord`. **0 by design** in both shipped tables,
-  exactly like the `regAlloc` base: buffer names are static and capacities
-  explicit in the syntax, so a backend can lay buffers out in an arena/bump
-  allocator — object creation is a pointer bump, amortized into the per-word
-  charge, and no general-purpose `malloc` is required. The acquisition charge
-  `capacity * allocPerWord` prices the buffer's whole lifecycle, creation *and*
-  eventual destruction (see `memFree`). The only zero-time allocation is the
-  zero-capacity one — which acquires nothing and is exactly `memFree`'s effect,
-  a release, free by principle. `CostModel.Admissible` exempts this base (the
-  `allocPerWord` field keeps the per-word charge ≥ 1). -/
+  `memAlloc + capacity * allocPerWord`. **0 by design** in both shipped tables:
+  buffer names are static and capacities explicit in the syntax, so a backend
+  can lay buffers out in an arena/bump allocator — object creation is a pointer
+  bump, amortized into the per-word charge, and no general-purpose `malloc` is
+  required. The acquisition charge `capacity * allocPerWord` prices the buffer's
+  whole lifecycle, creation *and* eventual destruction (see `memFree`). The only
+  zero-time allocation is the zero-capacity one — which acquires nothing and is
+  exactly `memFree`'s effect, a release, free by principle.
+  `CostModel.Admissible` exempts this base (the `allocPerWord` field keeps the
+  per-word charge ≥ 1). -/
   memAlloc : ℕ := 0
   /-- Per-word cost of acquiring capacity. Any model with `1 ≤ allocPerWord`
   makes peak memory bounded by running time (`Exec.peak_le_time`): no program can
   hold more live words than it has spent time steps. -/
   allocPerWord : ℕ := 1
   /-- Cost of releasing a buffer's capacity: **0 by design** in both shipped
-  tables — release is free for both storage classes (`regFree` is the register
-  analogue). The realizability story is lifecycle amortization: every `memFree`
+  tables. The realizability story is lifecycle amortization: every `memFree`
   pairs with a unique earlier acquisition of the same buffer, whose charge
   (capacity · `allocPerWord`, plus the `memAlloc` base — 0 in the shipped
   tables) prices creation *and* eventual destruction. That lifecycle split is
@@ -272,28 +256,13 @@ structure CostModel where
   memStore : ℕ := 1
   memPush : ℕ := 1
   memPop : ℕ := 1
-  /-- *Base* cost of acquiring a register, beyond the universal per-word charge:
-  the full charge of `regAlloc` is `C.regAlloc + C.allocPerWord` — exactly the
-  `memAllocI` shape at capacity 1. The base defaults to 0, like `memAlloc`'s:
-  acquiring a register creates no runtime object, so under both shipped tables
-  acquiring a register costs exactly one tick — the one word of live memory it
-  reserves, priced by the same `allocPerWord` entry that prices buffer words.
-  Because the per-word charge is included, `Exec.peak_le_time` covers the
-  register file with no additional hypothesis. -/
-  regAlloc : ℕ := 0
-  /-- Cost of releasing a register: **0 by design** in both shipped tables —
-  holding a word is free and releasing it is free; a register release compiles to
-  nothing (a statically-addressed scalar has no runtime object). Like `memFree`,
-  a deliberately-free release instruction; `CostModel.Admissible` exempts it. -/
-  regFree : ℕ := 0
   /-- Cost of testing a condition register and taking the branch. -/
   branch : ℕ := 1
 
 /-- Uniform model: every priced entry is 1, so acquiring capacity costs exactly
-one tick per word (`allocPerWord`) with no base — the alloc bases
-`memAlloc`/`regAlloc` are 0 by design, and so are the releases
-`memFree`/`regFree` (releasing live memory is free — always; see those
-fields). -/
+one tick per word (`allocPerWord`) with no base — the alloc base `memAlloc` is
+0 by design, and so is the release `memFree` (releasing live memory is free —
+always; see those fields). -/
 def CostModel.unit : CostModel := {}
 
 /-- A coarse "cycles on a modern out-of-order core" model. Included to show that
@@ -312,22 +281,18 @@ def CostModel.cycles : CostModel where
   memLoad := 4     -- L1 hit
   memStore := 4
   memPush := 5
-  regAlloc := 0   -- like memAlloc's base: the full charge is the 1-tick per-word entry
-  regFree := 0    -- release compiles to nothing
   branch := 2     -- mispredict-amortised
 
 /-- **Admissibility**: every cost-table entry pricing an instruction is at least
 one time unit — no instruction runs for free, and no word of live memory is
-acquired for free. Four *deliberate* exemptions, all instances of the
+acquired for free. Two *deliberate* exemptions, both instances of the
 free-is-free principle (release costs are covered by acquisition; holding is
-free). The two release instructions are exempt on principle: `regFree` and
-`memFree` (both 0 in both shipped tables) get no `≥ 1` fields — a register
-release compiles to nothing, and a buffer release's work was priced into the
-acquisition charge that created the buffer (lifecycle amortization; see the
-`CostModel.memFree` docstring). And the two alloc *bases* `regAlloc` and
-`memAlloc` (both 0 in both shipped tables) get none either, because the full
-acquisition charges — `regAlloc + allocPerWord` and
-`memAlloc + capacity * allocPerWord` — are already kept at ≥ 1 per acquired
+free). The release instruction `memFree` (0 in both shipped tables) gets no
+`≥ 1` field — a buffer release's work was priced into the acquisition charge
+that created the buffer (lifecycle amortization; see the `CostModel.memFree`
+docstring). And the alloc *base* `memAlloc` (0 in both shipped tables) gets
+none either, because the full acquisition charge
+`memAlloc + capacity * allocPerWord` is already kept at ≥ 1 per acquired
 word by the `allocPerWord` field below. An admissible model therefore still
 never acquires live memory in zero time; the only zero-time allocation is the
 zero-capacity `memAlloc`/`memAllocI`, which acquires nothing — its effect is
@@ -378,23 +343,14 @@ does not walk a closure chain per element. -/
 structure State (w : ℕ) where
   regs : Reg → Word w
   bufs : BufId → Array (Word w)
-  /-- Reserved capacity in words; live memory is the sum of capacities **plus the
-  count of allocated registers** (`regsAlloc`). -/
+  /-- Reserved capacity in words; live memory is the sum of capacities. -/
   caps : BufId → ℕ
-  /-- Which registers are currently *allocated* — holding a word of live memory.
-  Registers and buffers are naming conventions over the same resource; this field
-  is the register-side analogue of `caps`. Defaulted so that pre-existing record
-  literals (which mention only `regs`/`bufs`/`caps`) still elaborate, with no
-  register allocated. -/
-  regsAlloc : Reg → Bool := fun _ => false
 
-/-- The initial state: all registers zero and unallocated, all buffers empty and
-unallocated. -/
+/-- The initial state: all registers zero, all buffers empty and unallocated. -/
 def State.init (w : ℕ) : State w where
   regs _ := 0
   bufs _ := #[]
   caps _ := 0
-  regsAlloc _ := false
 
 def State.setReg (s : State w) (d : Reg) (v : Word w) : State w :=
   { s with regs := fun r => if r = d then v else s.regs r }
@@ -408,12 +364,6 @@ def State.setBuf (s : State w) (b : BufId) (a : Array (Word w)) : State w :=
 def State.allocBuf (s : State w) (b : BufId) (n : ℕ) : State w :=
   { s with bufs := fun b' => if b' = b then #[] else s.bufs b',
            caps := fun b' => if b' = b then n else s.caps b' }
-
-/-- Mark register `r` allocated (`v = true`) or released (`v = false`). Value,
-buffers and capacities are untouched — allocation status is a separate dimension
-of the state. -/
-def State.setRegAlloc (s : State w) (r : Reg) (v : Bool) : State w :=
-  { s with regsAlloc := fun q => if q = r then v else s.regsAlloc q }
 
 @[simp] theorem regs_setReg_self (s : State w) (d : Reg) (v : Word w) :
     (s.setReg d v).regs d = v := by simp [State.setReg]
@@ -455,33 +405,6 @@ the side condition is a decidable statement about two `ℕ`s. -/
 
 @[simp] theorem caps_allocBuf_ne (s : State w) {b b' : BufId} (n : ℕ)
     (h : b' ≠ b) : (s.allocBuf b n).caps b' = s.caps b' := by simp [State.allocBuf, h]
-
-@[simp] theorem regsAlloc_setReg (s : State w) (d : Reg) (v : Word w) :
-    (s.setReg d v).regsAlloc = s.regsAlloc := rfl
-
-@[simp] theorem regsAlloc_setBuf (s : State w) (b : BufId) (a : Array (Word w)) :
-    (s.setBuf b a).regsAlloc = s.regsAlloc := rfl
-
-@[simp] theorem regsAlloc_allocBuf (s : State w) (b : BufId) (n : ℕ) :
-    (s.allocBuf b n).regsAlloc = s.regsAlloc := rfl
-
-@[simp] theorem regsAlloc_setRegAlloc_self (s : State w) (r : Reg) (v : Bool) :
-    (s.setRegAlloc r v).regsAlloc r = v := by simp [State.setRegAlloc]
-
-/-- The register-side separation lemma: marking `r` leaves `q`'s allocation status
-alone, with a decidable side condition on names. -/
-@[simp] theorem regsAlloc_setRegAlloc_ne (s : State w) {r q : Reg} (v : Bool)
-    (h : q ≠ r) : (s.setRegAlloc r v).regsAlloc q = s.regsAlloc q := by
-  simp [State.setRegAlloc, h]
-
-@[simp] theorem regs_setRegAlloc (s : State w) (r : Reg) (v : Bool) :
-    (s.setRegAlloc r v).regs = s.regs := rfl
-
-@[simp] theorem bufs_setRegAlloc (s : State w) (r : Reg) (v : Bool) :
-    (s.setRegAlloc r v).bufs = s.bufs := rfl
-
-@[simp] theorem caps_setRegAlloc (s : State w) (r : Reg) (v : Bool) :
-    (s.setRegAlloc r v).caps = s.caps := rfl
 
 /-! ## Semantics
 
@@ -536,22 +459,6 @@ inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℤ 
   /-- Pop keeps the capacity: memory-neutral. -/
   | memPop {b s} :
       Exec C (.memPop b) s (s.setBuf b (s.bufs b).pop) C.memPop 0 0
-  /-- Acquire register `r`: one word of live memory, charged like a one-word
-  allocation — time `C.regAlloc + C.allocPerWord` (base + one word, the
-  `memAllocI` shape at capacity 1; the base is 0 in both shipped tables, so the
-  charge is one tick, via the same per-word entry that prices buffer words —
-  which is what keeps `Exec.peak_le_time` unconditional). Accounting is
-  idempotent (`memAlloc`-style `new - old`): the net is `1` for a fresh register
-  and `0` if `r` was already allocated — the time is paid either way. -/
-  | regAlloc {r s} :
-      Exec C (.regAlloc r) s (s.setRegAlloc r true) (C.regAlloc + C.allocPerWord)
-        (1 - (if s.regsAlloc r then 1 else 0))
-        (max (1 - (if s.regsAlloc r then 1 else 0)) 0)
-  /-- Release register `r`: credits the word back if it was allocated (a no-op
-  credit otherwise). Free of charge in both shipped tables (`C.regFree = 0`). -/
-  | regFree {r s} :
-      Exec C (.regFree r) s (s.setRegAlloc r false) C.regFree
-        (-(if s.regsAlloc r then 1 else 0)) 0
   | ifNZ_true {c thn els s s' t d p} (h : s.regs c ≠ 0) :
       Exec C thn s s' t d p → Exec C (.ifNZ c thn els) s s' (C.branch + t) d p
   | ifNZ_false {c thn els s s' t d p} (h : s.regs c = 0) :
@@ -629,7 +536,6 @@ theorem Exec.net_and_peak_le_time {C : CostModel} {c : Stmt w} {s s' : State w}
   | @memAllocI b n s =>
     have := Nat.le_mul_of_pos_right n (show 0 < C.allocPerWord by omega)
     constructor <;> push_cast <;> omega
-  | regAlloc | regFree => constructor <;> push_cast <;> omega
   | seq _ _ ih₁ ih₂ => obtain ⟨h₁, h₂⟩ := ih₁; obtain ⟨h₃, h₄⟩ := ih₂
                        constructor <;> push_cast <;> omega
   | ifNZ_true _ _ ih | ifNZ_false _ _ ih =>
@@ -645,10 +551,9 @@ theorem Exec.net_and_peak_le_time {C : CostModel} {c : Stmt w} {s s' : State w}
 least one time unit per word of acquired live memory (`1 ≤ C.allocPerWord` — true
 of both `CostModel.unit` and `CostModel.cycles`), no execution's live-memory peak
 can exceed its running time: a time bound is automatically a space bound, and a
-single certificate covers both resources. This now covers the register file too,
-with the *same* single hypothesis and unconditionally over all programs:
-`regAlloc` charges its word through the same `allocPerWord` entry, and the free
-`regFree` only ever *decreases* live memory. -/
+single certificate covers both resources. The register-side counterpart —
+statically inferred peak register pressure bounded by static time — is
+`Stmt.Straight.regPeak₀_le` (`Liveness.lean`). -/
 theorem Exec.peak_le_time {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (h : Exec C c s s' t d p) (hC : 1 ≤ C.allocPerWord) : p ≤ (t : ℤ) :=
   (h.net_and_peak_le_time hC).2
@@ -677,10 +582,7 @@ These are the ergonomic replacement for separation logic. Both are computed
 syntactically, hence decidable, hence dischargeable by `simp`/`decide` on the concrete
 code the builder produces. -/
 
-/-- `c.Writes r`: `c` may assign register `r`'s *value*. `regAlloc`/`regFree` do
-not write values — they change only the allocation status, whose own footprint is
-`Stmt.RegAllocTouches` below — so `Exec.frame_reg` carries register values across
-them for free. -/
+/-- `c.Writes r`: `c` may assign register `r`'s *value*. -/
 def Stmt.Writes : Stmt w → Reg → Prop
   | .skip, _ => False
   | .seq c₁ c₂, r => c₁.Writes r ∨ c₂.Writes r
@@ -696,8 +598,6 @@ def Stmt.Writes : Stmt w → Reg → Prop
   | .memStore .., _ => False
   | .memPush .., _ => False
   | .memPop _, _ => False
-  | .regAlloc _, _ => False
-  | .regFree _, _ => False
   | .ifNZ _ t e, r => t.Writes r ∨ e.Writes r
   | .whileNZ g _ b, r => g.Writes r ∨ b.Writes r
 
@@ -713,18 +613,6 @@ def Stmt.Touches : Stmt w → BufId → Prop
   | .memPop b', b => b = b'
   | .ifNZ _ t e, b => t.Touches b ∨ e.Touches b
   | .whileNZ g _ bd, b => g.Touches b ∨ bd.Touches b
-  | _, _ => False
-
-/-- `c.RegAllocTouches r`: `c` may change register `r`'s *allocation status* — the
-register-side analogue of `Stmt.Touches`, keyed on the only two instructions that
-touch it (`regAlloc`/`regFree`). Syntactic, decidable, dischargeable by
-`simp`/`decide`; the matching frame rule is `Exec.frame_regAlloc`. -/
-def Stmt.RegAllocTouches : Stmt w → Reg → Prop
-  | .seq c₁ c₂, r => c₁.RegAllocTouches r ∨ c₂.RegAllocTouches r
-  | .regAlloc q, r => r = q
-  | .regFree q, r => r = q
-  | .ifNZ _ t e, r => t.RegAllocTouches r ∨ e.RegAllocTouches r
-  | .whileNZ g _ b, r => g.RegAllocTouches r ∨ b.RegAllocTouches r
   | _, _ => False
 
 instance instDecidableWrites : ∀ (c : Stmt w) (r : Reg), Decidable (c.Writes r)
@@ -745,8 +633,6 @@ instance instDecidableWrites : ∀ (c : Stmt w) (r : Reg), Decidable (c.Writes r
   | .memStore .., _ => inferInstanceAs (Decidable False)
   | .memPush .., _ => inferInstanceAs (Decidable False)
   | .memPop _, _ => inferInstanceAs (Decidable False)
-  | .regAlloc _, _ => inferInstanceAs (Decidable False)
-  | .regFree _, _ => inferInstanceAs (Decidable False)
   | .ifNZ _ t e, r =>
     have := instDecidableWrites t r
     have := instDecidableWrites e r
@@ -774,8 +660,6 @@ instance instDecidableTouches : ∀ (c : Stmt w) (b : BufId), Decidable (c.Touch
   | .memStore b' _ _, b => inferInstanceAs (Decidable (b = b'))
   | .memPush b' _, b => inferInstanceAs (Decidable (b = b'))
   | .memPop b', b => inferInstanceAs (Decidable (b = b'))
-  | .regAlloc _, _ => inferInstanceAs (Decidable False)
-  | .regFree _, _ => inferInstanceAs (Decidable False)
   | .ifNZ _ t e, b =>
     have := instDecidableTouches t b
     have := instDecidableTouches e b
@@ -785,43 +669,13 @@ instance instDecidableTouches : ∀ (c : Stmt w) (b : BufId), Decidable (c.Touch
     have := instDecidableTouches bd b
     inferInstanceAs (Decidable (_ ∨ _))
 
-instance instDecidableRegAllocTouches :
-    ∀ (c : Stmt w) (r : Reg), Decidable (c.RegAllocTouches r)
-  | .skip, _ => inferInstanceAs (Decidable False)
-  | .seq c₁ c₂, r =>
-    have := instDecidableRegAllocTouches c₁ r
-    have := instDecidableRegAllocTouches c₂ r
-    inferInstanceAs (Decidable (_ ∨ _))
-  | .imm .., _ => inferInstanceAs (Decidable False)
-  | .mov .., _ => inferInstanceAs (Decidable False)
-  | .un .., _ => inferInstanceAs (Decidable False)
-  | .bin .., _ => inferInstanceAs (Decidable False)
-  | .memAlloc .., _ => inferInstanceAs (Decidable False)
-  | .memAllocI .., _ => inferInstanceAs (Decidable False)
-  | .memFree _, _ => inferInstanceAs (Decidable False)
-  | .memLen .., _ => inferInstanceAs (Decidable False)
-  | .memLoad .., _ => inferInstanceAs (Decidable False)
-  | .memStore .., _ => inferInstanceAs (Decidable False)
-  | .memPush .., _ => inferInstanceAs (Decidable False)
-  | .memPop _, _ => inferInstanceAs (Decidable False)
-  | .regAlloc q, r => inferInstanceAs (Decidable (r = q))
-  | .regFree q, r => inferInstanceAs (Decidable (r = q))
-  | .ifNZ _ t e, r =>
-    have := instDecidableRegAllocTouches t r
-    have := instDecidableRegAllocTouches e r
-    inferInstanceAs (Decidable (_ ∨ _))
-  | .whileNZ g _ b, r =>
-    have := instDecidableRegAllocTouches g r
-    have := instDecidableRegAllocTouches b r
-    inferInstanceAs (Decidable (_ ∨ _))
-
-/-! Build performance: pre-realize the `Stmt.Writes`/`Stmt.Touches`/
-`Stmt.RegAllocTouches` unfolding lemmas here at the definition site (realizations
-made inside a retained theorem ship in the `.olean`), so importing modules that
-`simp only [Stmt.Touches]` do not each re-prove them. -/
+/-! Build performance: pre-realize the `Stmt.Writes`/`Stmt.Touches` unfolding
+lemmas here at the definition site (realizations made inside a retained theorem
+ship in the `.olean`), so importing modules that `simp only [Stmt.Touches]` do
+not each re-prove them. -/
 set_option linter.unusedSimpArgs false in
 private theorem Writes_Touches_eq_lemmas_realized : True := by
-  simp -failIfUnchanged only [Stmt.Writes, Stmt.Touches, Stmt.RegAllocTouches]
+  simp -failIfUnchanged only [Stmt.Writes, Stmt.Touches]
 
 @[simp] theorem Writes_skip (r : Reg) : (Stmt.skip (w := w)).Writes r ↔ False := Iff.rfl
 @[simp] theorem Writes_seq (c₁ c₂ : Stmt w) (r : Reg) :
@@ -829,11 +683,6 @@ private theorem Writes_Touches_eq_lemmas_realized : True := by
 @[simp] theorem Touches_skip (b : BufId) : (Stmt.skip (w := w)).Touches b ↔ False := Iff.rfl
 @[simp] theorem Touches_seq (c₁ c₂ : Stmt w) (b : BufId) :
     (c₁ ;; c₂).Touches b ↔ c₁.Touches b ∨ c₂.Touches b := Iff.rfl
-@[simp] theorem RegAllocTouches_skip (r : Reg) :
-    (Stmt.skip (w := w)).RegAllocTouches r ↔ False := Iff.rfl
-@[simp] theorem RegAllocTouches_seq (c₁ c₂ : Stmt w) (r : Reg) :
-    (c₁ ;; c₂).RegAllocTouches r ↔ c₁.RegAllocTouches r ∨ c₂.RegAllocTouches r :=
-  Iff.rfl
 
 /-- Register frame rule. -/
 theorem Exec.frame_reg {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
@@ -846,8 +695,7 @@ theorem Exec.frame_reg {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     rw [ih₂ hr.2, ih₁ hr.1]
   | imm | mov | un | bin | memLen | memLoad =>
     exact regs_setReg_ne _ _ hr
-  | memAlloc | memAllocI | memFree | memStore | memPush | memPop
-  | regAlloc | regFree => rfl
+  | memAlloc | memAllocI | memFree | memStore | memPush | memPop => rfl
   | ifNZ_true _ _ ih => exact ih fun hh => hr (Or.inl hh)
   | ifNZ_false _ _ ih => exact ih fun hh => hr (Or.inr hh)
   | while_done _ _ ihg => exact ihg fun hh => hr (Or.inl hh)
@@ -864,7 +712,7 @@ theorem Exec.frame_buf {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
   | seq _ _ ih₁ ih₂ =>
     simp only [Touches_seq, not_or] at hb
     rw [ih₂ hb.2, ih₁ hb.1]
-  | imm | mov | un | bin | memLen | memLoad | regAlloc | regFree => rfl
+  | imm | mov | un | bin | memLen | memLoad => rfl
   | memStore | memPush | memPop => exact bufs_setBuf_ne _ _ hb
   | memAlloc | memAllocI | memFree => exact bufs_allocBuf_ne _ _ hb
   | ifNZ_true _ _ ih => exact ih fun hh => hb (Or.inl hh)
@@ -883,34 +731,13 @@ theorem Exec.frame_cap {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     simp only [Touches_seq, not_or] at hb
     rw [ih₂ hb.2, ih₁ hb.1]
   | imm | mov | un | bin | memLen | memLoad => rfl
-  | memStore | memPush | memPop | regAlloc | regFree => rfl
+  | memStore | memPush | memPop => rfl
   | memAlloc | memAllocI | memFree => exact caps_allocBuf_ne _ _ hb
   | ifNZ_true _ _ ih => exact ih fun hh => hb (Or.inl hh)
   | ifNZ_false _ _ ih => exact ih fun hh => hb (Or.inr hh)
   | while_done _ _ ihg => exact ihg fun hh => hb (Or.inl hh)
   | while_step _ _ _ _ ihg ihb ihl =>
     rw [ihl hb, ihb fun hh => hb (Or.inr hh), ihg fun hh => hb (Or.inl hh)]
-
-/-- Register-allocation frame rule: an instruction other than `regAlloc`/`regFree`
-on `r` preserves `r`'s allocation status — the register-side analogue of
-`Exec.frame_cap`, with the same decidable-side-condition shape. -/
-theorem Exec.frame_regAlloc {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} {r : Reg}
-    (h : Exec C c s s' t d p) (hr : ¬ c.RegAllocTouches r) :
-    s'.regsAlloc r = s.regsAlloc r := by
-  induction h with
-  | skip => rfl
-  | seq _ _ ih₁ ih₂ =>
-    simp only [RegAllocTouches_seq, not_or] at hr
-    rw [ih₂ hr.2, ih₁ hr.1]
-  | imm | mov | un | bin | memLen | memLoad => rfl
-  | memAlloc | memAllocI | memFree | memStore | memPush | memPop => rfl
-  | regAlloc | regFree => exact regsAlloc_setRegAlloc_ne _ _ hr
-  | ifNZ_true _ _ ih => exact ih fun hh => hr (Or.inl hh)
-  | ifNZ_false _ _ ih => exact ih fun hh => hr (Or.inr hh)
-  | while_done _ _ ihg => exact ihg fun hh => hr (Or.inl hh)
-  | while_step _ _ _ _ ihg ihb ihl =>
-    rw [ihl hr, ihb fun hh => hr (Or.inr hh), ihg fun hh => hr (Or.inl hh)]
 
 /-! ### Unit time, precisely
 
@@ -975,22 +802,19 @@ def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .memStore .. => C.memStore
   | .memPush .. => C.memPush
   | .memPop _ => C.memPop
-  | .regAlloc _ => C.regAlloc + C.allocPerWord
-  | .regFree _ => C.regFree
   | .ifNZ _ t e => C.branch + max (t.staticTime C) (e.staticTime C)
   | .whileNZ .. => 0
 
-/-- `c` acquires no live memory — no `memAlloc`/`memAllocI` and no `regAlloc` —
-anywhere, including under branches and loops. `regFree` (like `memFree`) is
-allowed: it only ever *decreases* live memory, which is exactly what
-`Exec.allocFree_space`'s `d ≤ 0 ∧ p ≤ 0` conclusion certifies. -/
+/-- `c` acquires no live memory — no `memAlloc`/`memAllocI` — anywhere,
+including under branches and loops. `memFree` is allowed: it only ever
+*decreases* live memory, which is exactly what `Exec.allocFree_space`'s
+`d ≤ 0 ∧ p ≤ 0` conclusion certifies. -/
 def Stmt.AllocFree : Stmt w → Prop
   | .seq c₁ c₂ => c₁.AllocFree ∧ c₂.AllocFree
   | .ifNZ _ t e => t.AllocFree ∧ e.AllocFree
   | .whileNZ g _ b => g.AllocFree ∧ b.AllocFree
   | .memAlloc .. => False
   | .memAllocI .. => False
-  | .regAlloc _ => False
   | _ => True
 
 /-- **Branch-free code runs in constant time.** The running time is a function of the
@@ -1018,9 +842,9 @@ theorem Exec.time_le_staticTime_of_loopFree {C : CostModel} {c : Stmt w}
   | memAlloc | while_done | while_step => exact hl.elim
   | _ => exact le_rfl
 
-/-- Memory only ever enters through `memAlloc`/`memAllocI`/`regAlloc`: alloc-free
-code — straight-line or not — has non-positive net and zero peak growth
-(`regFree`/`memFree` may make the net strictly negative: freeing is allowed). -/
+/-- Memory only ever enters through `memAlloc`/`memAllocI`: alloc-free code —
+straight-line or not — has non-positive net and zero peak growth (`memFree`
+may make the net strictly negative: freeing is allowed). -/
 theorem Exec.allocFree_space {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (h : Exec C c s s' t d p) (ha : c.AllocFree) :
     d ≤ 0 ∧ p ≤ 0 := by
@@ -1029,8 +853,7 @@ theorem Exec.allocFree_space {C : CostModel} {c : Stmt w} {s s' : State w} {t : 
     obtain ⟨h1, h2⟩ := ih₁ ha.1
     obtain ⟨h3, h4⟩ := ih₂ ha.2
     omega
-  | memAlloc | memAllocI | regAlloc => exact ha.elim
-  | regFree => constructor <;> omega
+  | memAlloc | memAllocI => exact ha.elim
   | ifNZ_true _ _ ih => obtain ⟨h1, h2⟩ := ih ha.1; omega
   | ifNZ_false _ _ ih => obtain ⟨h1, h2⟩ := ih ha.2; omega
   | while_done _ _ ihg => obtain ⟨h1, h2⟩ := ihg ha.1; omega
@@ -1122,8 +945,8 @@ the metric never charged ("hidden storage"). No such state is reachable from an 
 start, and this section proves it: `State.WellFormed` — fill within reserved capacity,
 finitely many reservations — holds for `State.init` (`State.init_wellFormed`) and is
 preserved by every execution (`Exec.wellFormed_preserved`). Over such states the
-*absolute* footprint `State.liveMem` is well defined (`liveMem_eq_of_supportBound`)
-and the profile is pinned to it exactly:
+*absolute* footprint `State.liveMem` (the sum of reserved buffer capacities) is well
+defined (`liveMem_eq_of_supportBound`) and the profile is pinned to it exactly:
 
 * the net change is exact: `liveMem s' = liveMem s + d` (`Exec.liveMem_eq`);
 * the final state is within the peak (`Exec.liveMem_le_peak`), and so is **every
@@ -1137,16 +960,15 @@ So for executions from well-formed states — in particular anything reachable f
 level, not merely growth relative to an arbitrary baseline. -/
 
 /-- `B` is a *support bound* for `s`: every buffer at or above `B` has no reserved
-capacity, and every register at or above `B` is unallocated. The absolute
-footprint of such a state is `s.liveMem B`, and the choice of bound does not
-matter (`liveMem_eq_of_supportBound`). -/
+capacity. The absolute footprint of such a state is `s.liveMem B`, and the choice
+of bound does not matter (`liveMem_eq_of_supportBound`). -/
 def State.SupportBound (s : State w) (B : ℕ) : Prop :=
-  (∀ b, B ≤ b → s.caps b = 0) ∧ ∀ r, B ≤ r → s.regsAlloc r = false
+  ∀ b, B ≤ b → s.caps b = 0
 
 /-- A support bound stays one at any larger bound. -/
 theorem State.SupportBound.mono {s : State w} {B B' : ℕ} (hs : s.SupportBound B)
     (hB : B ≤ B') : s.SupportBound B' :=
-  ⟨fun b hb => hs.1 b (hB.trans hb), fun r hr => hs.2 r (hB.trans hr)⟩
+  fun b hb => hs b (hB.trans hb)
 
 /-- The states the memory accounting is *about*: the filled prefix of every buffer
 fits inside its reserved capacity (no data the metric never charged), and only
@@ -1156,21 +978,19 @@ in every state reachable from an honest start. -/
 structure State.WellFormed (s : State w) : Prop where
   /-- Storage never exceeds what was reserved (and charged). -/
   size_le_cap : ∀ b, (s.bufs b).size ≤ s.caps b
-  /-- Finite support: beyond some bound, no capacity is reserved and no register
-  is allocated. -/
+  /-- Finite support: beyond some bound, no capacity is reserved. -/
   finite : ∃ B, s.SupportBound B
 
-/-- The initial state is well-formed: nothing stored, nothing reserved, no
-register allocated. -/
+/-- The initial state is well-formed: nothing stored, nothing reserved. -/
 theorem State.init_wellFormed : (State.init w).WellFormed where
   size_le_cap _ := Nat.le_refl 0
-  finite := ⟨0, fun _ _ => rfl, fun _ _ => rfl⟩
+  finite := ⟨0, fun _ _ => rfl⟩
 
 /-- A strict upper bound on every buffer name occurring in `c`. Buffer names are
 syntax, so this is a static quantity; in particular `c` cannot touch a buffer at or
 above `c.memBound` (`Stmt.touches_lt_memBound`). -/
 def Stmt.memBound : Stmt w → ℕ
-  | .skip | .imm .. | .mov .. | .un .. | .bin .. | .regAlloc _ | .regFree _ => 0
+  | .skip | .imm .. | .mov .. | .un .. | .bin .. => 0
   | .seq c₁ c₂ => max c₁.memBound c₂.memBound
   | .memAlloc b _ => b + 1
   | .memAllocI b _ => b + 1
@@ -1209,41 +1029,6 @@ theorem Stmt.touches_lt_of_memBound_le {c : Stmt w} {B : ℕ} (hB : c.memBound �
     ∀ b, c.Touches b → b < B :=
   fun _ ht => lt_of_lt_of_le (touches_lt_memBound ht) hB
 
-/-- A strict upper bound on every register whose *allocation status* `c` can
-change — the `RegAllocTouches` analogue of `Stmt.memBound`. Register names are
-syntax, so this too is a static quantity. -/
-def Stmt.regAllocBound : Stmt w → ℕ
-  | .seq c₁ c₂ => max c₁.regAllocBound c₂.regAllocBound
-  | .regAlloc r => r + 1
-  | .regFree r => r + 1
-  | .ifNZ _ thn els => max thn.regAllocBound els.regAllocBound
-  | .whileNZ g _ body => max g.regAllocBound body.regAllocBound
-  | _ => 0
-
-theorem Stmt.regAllocTouches_lt_regAllocBound {c : Stmt w} {r : Reg}
-    (h : c.RegAllocTouches r) : r < c.regAllocBound := by
-  induction c with
-  | seq _ _ ih₁ ih₂ =>
-    rcases h with h | h
-    · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
-    · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
-  | ifNZ _ _ _ ih₁ ih₂ =>
-    rcases h with h | h
-    · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
-    · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
-  | whileNZ _ _ _ ih₁ ih₂ =>
-    rcases h with h | h
-    · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
-    · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
-  | regAlloc _ | regFree _ => subst h; exact Nat.lt_succ_self _
-  | _ => exact h.elim
-
-/-- Convert the syntactic register bound into the touch-bound hypothesis the
-`liveMem` theorems take. -/
-theorem Stmt.regAllocTouches_lt_of_regAllocBound_le {c : Stmt w} {B : ℕ}
-    (hB : c.regAllocBound ≤ B) : ∀ r, c.RegAllocTouches r → r < B :=
-  fun _ ht => lt_of_lt_of_le (regAllocTouches_lt_regAllocBound ht) hB
-
 /-- Preservation of the storage-within-capacity invariant — the induction core of
 `Exec.wellFormed_preserved`. `memPush` demands free capacity (its `size < cap`
 hypothesis is exactly what keeps the invariant alive), `memAlloc`/`memFree` install an
@@ -1254,7 +1039,7 @@ theorem Exec.sizes_le_caps {C : CostModel} {c : Stmt w} {s s' : State w} {t : �
   induction h with
   | skip => exact hs
   | seq _ _ ih₁ ih₂ => exact ih₂ (ih₁ hs)
-  | imm | mov | un | bin | memLen | memLoad | regAlloc | regFree => exact hs
+  | imm | mov | un | bin | memLen | memLoad => exact hs
   | @memAlloc b n s =>
     intro b'
     by_cases hb : b' = b
@@ -1294,19 +1079,14 @@ theorem Exec.sizes_le_caps {C : CostModel} {c : Stmt w} {s s' : State w} {t : �
   | while_step _ _ _ _ ihg ihb ihl => exact ihl (ihb (ihg hs))
 
 /-- A support bound survives execution: capacities only change at buffers named in
-`c`, and allocation statuses only at registers reg-alloc'd/freed in `c` — all of
-which lie below the bound. -/
+`c` — all of which lie below the bound. -/
 theorem Exec.supportBound_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
     {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
-    (hc : ∀ b, c.Touches b → b < B) (hr : ∀ r, c.RegAllocTouches r → r < B)
+    (hc : ∀ b, c.Touches b → b < B)
     (hs : s.SupportBound B) : s'.SupportBound B := by
-  constructor
-  · intro b hb
-    rw [h.frame_cap fun ht => Nat.lt_irrefl b (Nat.lt_of_lt_of_le (hc b ht) hb)]
-    exact hs.1 b hb
-  · intro r hrB
-    rw [h.frame_regAlloc fun ht => Nat.lt_irrefl r (Nat.lt_of_lt_of_le (hr r ht) hrB)]
-    exact hs.2 r hrB
+  intro b hb
+  rw [h.frame_cap fun ht => Nat.lt_irrefl b (Nat.lt_of_lt_of_le (hc b ht) hb)]
+  exact hs b hb
 
 /-- **Preservation of well-formedness.** With `State.init_wellFormed`: every state
 reachable from the initial state is well-formed, so the memory profile of an execution
@@ -1318,35 +1098,30 @@ theorem Exec.wellFormed_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
   size_le_cap := h.sizes_le_caps hwf.size_le_cap
   finite := by
     obtain ⟨B, hB⟩ := hwf.finite
-    exact ⟨max B (max c.memBound c.regAllocBound),
+    exact ⟨max B c.memBound,
       h.supportBound_preserved
-        (Stmt.touches_lt_of_memBound_le
-          ((Nat.le_max_left _ _).trans (Nat.le_max_right _ _)))
-        (Stmt.regAllocTouches_lt_of_regAllocBound_le
-          ((Nat.le_max_right _ _).trans (Nat.le_max_right _ _)))
+        (Stmt.touches_lt_of_memBound_le (Nat.le_max_right _ _))
         (hB.mono (Nat.le_max_left _ _))⟩
 
-/-- Absolute live memory below `B`: the words reserved by buffers `0, …, B - 1`
-**plus the allocated registers among `0, …, B - 1`** — the two naming conventions
-over the one resource, counted together. For `B` a support bound this is the
-state's entire footprint, independent of the choice of `B`
-(`liveMem_eq_of_supportBound`). Defined by recursion on `B` (rather than a
-`Finset` sum) so that the update lemmas prove by `induction`/`omega`. -/
+/-- Absolute live memory below `B`: the words reserved by buffers `0, …, B - 1`.
+For `B` a support bound this is the state's entire footprint, independent of the
+choice of `B` (`liveMem_eq_of_supportBound`). Defined by recursion on `B` (rather
+than a `Finset` sum) so that the update lemmas prove by `induction`/`omega`. -/
 def State.liveMem (s : State w) : ℕ → ℕ
   | 0 => 0
-  | B + 1 => s.liveMem B + s.caps B + (if s.regsAlloc B then 1 else 0)
+  | B + 1 => s.liveMem B + s.caps B
 
 @[simp] theorem liveMem_setReg (s : State w) (r : Reg) (v : Word w) (B : ℕ) :
     (s.setReg r v).liveMem B = s.liveMem B := by
   induction B with
   | zero => rfl
-  | succ B ih => simp only [State.liveMem, ih, caps_setReg, regsAlloc_setReg]; rfl
+  | succ B ih => simp only [State.liveMem, ih, caps_setReg]
 
 @[simp] theorem liveMem_setBuf (s : State w) (b : BufId) (a : Array (Word w)) (B : ℕ) :
     (s.setBuf b a).liveMem B = s.liveMem B := by
   induction B with
   | zero => rfl
-  | succ B ih => simp only [State.liveMem, ih, caps_setBuf, regsAlloc_setBuf]; rfl
+  | succ B ih => simp only [State.liveMem, ih, caps_setBuf]
 
 theorem liveMem_allocBuf_of_le (s : State w) {b : BufId} (n : ℕ) {B : ℕ}
     (hB : B ≤ b) : (s.allocBuf b n).liveMem B = s.liveMem B := by
@@ -1354,8 +1129,7 @@ theorem liveMem_allocBuf_of_le (s : State w) {b : BufId} (n : ℕ) {B : ℕ}
   | zero => rfl
   | succ B ih =>
     simp only [State.liveMem, ih (Nat.le_of_succ_le hB),
-      caps_allocBuf_ne _ _ (Nat.ne_of_lt (Nat.lt_of_succ_le hB)), regsAlloc_allocBuf]
-    rfl
+      caps_allocBuf_ne _ _ (Nat.ne_of_lt (Nat.lt_of_succ_le hB))]
 
 /-- Reserving capacity `n` on buffer `b` moves the footprint by exactly the amount
 `Exec.memAlloc` charges. -/
@@ -1366,44 +1140,13 @@ theorem liveMem_allocBuf (s : State w) {b : BufId} (n : ℕ) {B : ℕ} (hb : b <
   | succ B ih =>
     rcases Nat.lt_or_ge b B with hbB | hbB
     · have := ih hbB
-      simp only [State.liveMem, caps_allocBuf_ne _ _ (Nat.ne_of_gt hbB),
-        regsAlloc_allocBuf]
+      simp only [State.liveMem, caps_allocBuf_ne _ _ (Nat.ne_of_gt hbB)]
       push_cast
       omega
     · have heq : b = B := Nat.le_antisymm (Nat.lt_succ_iff.mp hb) hbB
       subst heq
-      simp only [State.liveMem, caps_allocBuf_self, regsAlloc_allocBuf,
+      simp only [State.liveMem, caps_allocBuf_self,
         liveMem_allocBuf_of_le _ _ (Nat.le_refl b)]
-      push_cast
-      omega
-
-theorem liveMem_setRegAlloc_of_le (s : State w) {r : Reg} (v : Bool) {B : ℕ}
-    (hB : B ≤ r) : (s.setRegAlloc r v).liveMem B = s.liveMem B := by
-  induction B with
-  | zero => rfl
-  | succ B ih =>
-    simp only [State.liveMem, ih (Nat.le_of_succ_le hB), caps_setRegAlloc,
-      regsAlloc_setRegAlloc_ne _ _ (Nat.ne_of_lt (Nat.lt_of_succ_le hB))]
-
-/-- Marking register `r`'s allocation status moves the footprint by exactly the
-amount the `regAlloc`/`regFree` rules charge — the register-side analogue of
-`liveMem_allocBuf`. -/
-theorem liveMem_setRegAlloc (s : State w) {r : Reg} (v : Bool) {B : ℕ} (hr : r < B) :
-    ((s.setRegAlloc r v).liveMem B : ℤ)
-      = s.liveMem B + (if v then 1 else 0) - (if s.regsAlloc r then 1 else 0) := by
-  induction B with
-  | zero => exact absurd hr (Nat.not_lt_zero r)
-  | succ B ih =>
-    rcases Nat.lt_or_ge r B with hrB | hrB
-    · have := ih hrB
-      simp only [State.liveMem, caps_setRegAlloc,
-        regsAlloc_setRegAlloc_ne _ _ (Nat.ne_of_gt hrB)]
-      push_cast
-      omega
-    · have heq : r = B := Nat.le_antisymm (Nat.lt_succ_iff.mp hr) hrB
-      subst heq
-      simp only [State.liveMem, caps_setRegAlloc, regsAlloc_setRegAlloc_self,
-        liveMem_setRegAlloc_of_le _ _ (Nat.le_refl r)]
       push_cast
       omega
 
@@ -1427,8 +1170,7 @@ theorem liveMem_eq_of_supportBound {s : State w} {B B' : ℕ} (hs : s.SupportBou
   induction B', hB using Nat.le_induction with
   | base => rfl
   | succ B' hB ih =>
-    simp only [State.liveMem, ih, hs.1 B' hB, hs.2 B' hB, if_neg Bool.false_ne_true,
-      Nat.add_zero]
+    simp only [State.liveMem, ih, hs B' hB, Nat.add_zero]
 
 /-- **The net index is exact.** Over any bound `B` covering the buffers `c` names,
 the absolute footprint moves by exactly `d` — the net component of the profile is the
@@ -1436,38 +1178,32 @@ true change in live memory, not just a bound on it. (A `Triple` still only certi
 `d ≤ D`; the exactness is between `d` and the state.) -/
 theorem Exec.liveMem_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
-    (hc : ∀ b, c.Touches b → b < B) (hr : ∀ r, c.RegAllocTouches r → r < B) :
+    (hc : ∀ b, c.Touches b → b < B) :
     (s'.liveMem B : ℤ) = s.liveMem B + d := by
   induction h with
   | skip => omega
   | seq _ _ ih₁ ih₂ =>
-    rw [ih₂ (fun b hb => hc b (Or.inr hb)) (fun r hrr => hr r (Or.inr hrr)),
-      ih₁ (fun b hb => hc b (Or.inl hb)) (fun r hrr => hr r (Or.inl hrr))]
+    rw [ih₂ (fun b hb => hc b (Or.inr hb)), ih₁ (fun b hb => hc b (Or.inl hb))]
     ring
   | imm | mov | un | bin | memLen | memLoad => simp
   | memAlloc => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
   | memAllocI => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
   | memFree => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
   | memStore | memPush | memPop => simp
-  | regAlloc => rw [liveMem_setRegAlloc _ _ (hr _ rfl)]; simp; ring
-  | regFree => rw [liveMem_setRegAlloc _ _ (hr _ rfl)]; simp; omega
-  | ifNZ_true _ _ ih =>
-    exact ih (fun b hb => hc b (Or.inl hb)) (fun r hrr => hr r (Or.inl hrr))
-  | ifNZ_false _ _ ih =>
-    exact ih (fun b hb => hc b (Or.inr hb)) (fun r hrr => hr r (Or.inr hrr))
-  | while_done _ _ ihg =>
-    exact ihg (fun b hb => hc b (Or.inl hb)) (fun r hrr => hr r (Or.inl hrr))
+  | ifNZ_true _ _ ih => exact ih fun b hb => hc b (Or.inl hb)
+  | ifNZ_false _ _ ih => exact ih fun b hb => hc b (Or.inr hb)
+  | while_done _ _ ihg => exact ihg fun b hb => hc b (Or.inl hb)
   | while_step _ _ _ _ ihg ihb ihl =>
-    rw [ihl hc hr, ihb (fun b hb => hc b (Or.inr hb)) (fun r hrr => hr r (Or.inr hrr)),
-      ihg (fun b hb => hc b (Or.inl hb)) (fun r hrr => hr r (Or.inl hrr))]
+    rw [ihl hc, ihb (fun b hb => hc b (Or.inr hb)),
+      ihg (fun b hb => hc b (Or.inl hb))]
     ring
 
 /-- The final footprint stays within the peak: `liveMem s' ≤ liveMem s + p`. -/
 theorem Exec.liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
-    (hc : ∀ b, c.Touches b → b < B) (hr : ∀ r, c.RegAllocTouches r → r < B) :
+    (hc : ∀ b, c.Touches b → b < B) :
     (s'.liveMem B : ℤ) ≤ s.liveMem B + p := by
-  have h₁ := h.liveMem_eq hc hr
+  have h₁ := h.liveMem_eq hc
   have h₂ := h.net_le_peak
   omega
 
@@ -1502,39 +1238,35 @@ is the high-water mark of the whole execution, not just a statement about its
 endpoints. -/
 theorem Exec.reaches_liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' m : State w}
     {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p) (hm : Reaches C c s m)
-    (hc : ∀ b, c.Touches b → b < B) (hr : ∀ r, c.RegAllocTouches r → r < B) :
+    (hc : ∀ b, c.Touches b → b < B) :
     (m.liveMem B : ℤ) ≤ s.liveMem B + p := by
   induction hm generalizing s' t d p with
   | start => have := h.peak_nonneg; omega
   | seq_left _ ih =>
     cases h with
     | seq h₁ _ =>
-      have h1 := ih h₁ (fun b hb => hc b (Or.inl hb)) (fun r hrr => hr r (Or.inl hrr))
+      have h1 := ih h₁ fun b hb => hc b (Or.inl hb)
       omega
   | seq_right hex _ ih =>
     cases h with
     | seq h₁ h₂ =>
       obtain ⟨rfl, rfl, rfl, rfl⟩ := Exec.deterministic h₁ hex
-      have h1 := ih h₂ (fun b hb => hc b (Or.inr hb)) (fun r hrr => hr r (Or.inr hrr))
-      have h2 := Exec.liveMem_eq h₁ (fun b hb => hc b (Or.inl hb))
-        (fun r hrr => hr r (Or.inl hrr))
+      have h1 := ih h₂ fun b hb => hc b (Or.inr hb)
+      have h2 := Exec.liveMem_eq h₁ fun b hb => hc b (Or.inl hb)
       omega
   | ifNZ_true hnz _ ih =>
     cases h with
-    | ifNZ_true _ hthn =>
-      exact ih hthn (fun b hb => hc b (Or.inl hb)) (fun r hrr => hr r (Or.inl hrr))
+    | ifNZ_true _ hthn => exact ih hthn fun b hb => hc b (Or.inl hb)
     | ifNZ_false hz _ => exact absurd hz hnz
   | ifNZ_false hz _ ih =>
     cases h with
     | ifNZ_true hnz _ => exact absurd hz hnz
-    | ifNZ_false _ hels =>
-      exact ih hels (fun b hb => hc b (Or.inr hb)) (fun r hrr => hr r (Or.inr hrr))
+    | ifNZ_false _ hels => exact ih hels fun b hb => hc b (Or.inr hb)
   | while_guard _ ih =>
     cases h with
-    | while_done hg _ =>
-      exact ih hg (fun b hb => hc b (Or.inl hb)) (fun r hrr => hr r (Or.inl hrr))
+    | while_done hg _ => exact ih hg fun b hb => hc b (Or.inl hb)
     | while_step hg _ _ _ =>
-      have h1 := ih hg (fun b hb => hc b (Or.inl hb)) (fun r hrr => hr r (Or.inl hrr))
+      have h1 := ih hg fun b hb => hc b (Or.inl hb)
       omega
   | while_body hexg hnz _ ih =>
     cases h with
@@ -1543,10 +1275,8 @@ theorem Exec.reaches_liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' m : Stat
       exact absurd hz hnz
     | while_step hg _ hb _ =>
       obtain ⟨rfl, rfl, rfl, rfl⟩ := Exec.deterministic hg hexg
-      have h1 := ih hb (fun b hb' => hc b (Or.inr hb'))
-        (fun r hrr => hr r (Or.inr hrr))
-      have h2 := Exec.liveMem_eq hg (fun b hb' => hc b (Or.inl hb'))
-        (fun r hrr => hr r (Or.inl hrr))
+      have h1 := ih hb fun b hb' => hc b (Or.inr hb')
+      have h2 := Exec.liveMem_eq hg fun b hb' => hc b (Or.inl hb')
       omega
   | while_loop hexg hnz hexb _ ih =>
     cases h with
@@ -1556,11 +1286,9 @@ theorem Exec.reaches_liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' m : Stat
     | while_step hg _ hb hl =>
       obtain ⟨rfl, rfl, rfl, rfl⟩ := Exec.deterministic hg hexg
       obtain ⟨rfl, rfl, rfl, rfl⟩ := Exec.deterministic hb hexb
-      have h1 := ih hl hc hr
-      have h2 := Exec.liveMem_eq hg (fun b hb' => hc b (Or.inl hb'))
-        (fun r hrr => hr r (Or.inl hrr))
-      have h3 := Exec.liveMem_eq hb (fun b hb' => hc b (Or.inr hb'))
-        (fun r hrr => hr r (Or.inr hrr))
+      have h1 := ih hl hc
+      have h2 := Exec.liveMem_eq hg fun b hb' => hc b (Or.inl hb')
+      have h3 := Exec.liveMem_eq hb fun b hb' => hc b (Or.inr hb')
       omega
 
 /-- **No phantom credit.** From *any* state, `memFree b` credits exactly the reserved
@@ -1575,33 +1303,6 @@ theorem Exec.memFree_credit_le {C : CostModel} {b : BufId} {s s' : State w} {t :
   cases h
   have := caps_le_liveMem s hb
   omega
-
-/-- An allocated register is part of the footprint — the register-side analogue of
-`caps_le_liveMem`, feeding `Exec.regFree_credit_le`. -/
-theorem one_le_liveMem_of_regsAlloc (s : State w) {r B : ℕ} (hr : r < B)
-    (ha : s.regsAlloc r = true) : 1 ≤ s.liveMem B := by
-  induction B with
-  | zero => exact absurd hr (Nat.not_lt_zero r)
-  | succ B ih =>
-    rcases Nat.lt_or_ge r B with hrB | hrB
-    · exact Nat.le_trans (ih hrB) (by simp only [State.liveMem]; omega)
-    · have heq : r = B := Nat.le_antisymm (Nat.lt_succ_iff.mp hr) hrB
-      subst heq
-      simp [State.liveMem, ha]
-
-/-- **No phantom register credit** — the register-side analogue of
-`Exec.memFree_credit_le`: `regFree r` credits at most the one word `r` genuinely
-holds in the current footprint (and nothing at all if `r` is unallocated). -/
-theorem Exec.regFree_credit_le {C : CostModel} {r : Reg} {s s' : State w} {t : ℕ}
-    {d p : ℤ} {B : ℕ} (h : Exec C (.regFree r) s s' t d p) (hr : r < B) :
-    -d ≤ (s.liveMem B : ℤ) := by
-  cases h
-  by_cases ha : s.regsAlloc r = true
-  · have h1 := one_le_liveMem_of_regsAlloc s hr ha
-    simp only [ha, if_pos]
-    omega
-  · simp only [if_neg ha]
-    omega
 
 /-! ## Reference interpreter
 
@@ -1650,13 +1351,6 @@ def run (C : CostModel) : ℕ → Stmt w → State w → Option (State w × ℕ 
           some (s.setBuf b ((s.bufs b).push (s.regs src)), C.memPush, 0, 0)
         else none
     | .memPop b => some (s.setBuf b (s.bufs b).pop, C.memPop, 0, 0)
-    | .regAlloc r =>
-        some (s.setRegAlloc r true, C.regAlloc + C.allocPerWord,
-          1 - (if s.regsAlloc r then 1 else 0),
-          max (1 - (if s.regsAlloc r then 1 else 0)) 0)
-    | .regFree r =>
-        some (s.setRegAlloc r false, C.regFree,
-          -(if s.regsAlloc r then 1 else 0), 0)
     | .ifNZ c thn els =>
         if s.regs c = 0 then do
           let (s', t, d, p) ← run C f els s
@@ -1754,12 +1448,6 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
     | .memPop b =>
       simp only [run, Option.some.injEq] at h
       obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .memPop
-    | .regAlloc r =>
-      simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .regAlloc
-    | .regFree r =>
-      simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .regFree
     | .ifNZ c thn els =>
       simp only [run] at h
       by_cases hc : s.regs c = 0
