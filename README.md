@@ -9,14 +9,19 @@ charges each instruction a table entry from a `CostModel`. On top of that sit:
 
 - **Certified time and memory.** Upper-bound Hoare triples (`Triple`,
   `TimeTriple`, `SpaceTriple`) with one rule per instruction, frame rules with
-  decidable side conditions, and a measure-indexed loop rule. Memory is a
-  (net, peak) profile over one resource — words of live memory, registers and
-  buffer capacities alike — with the standing theorem that peak memory is
-  bounded by running time (`Exec.peak_le_time`).
-- **A builder surface.** A monad with fresh register/buffer allocation, scoping
-  that releases block temporaries, compound expressions, structured
-  control flow, and typed buffer handles — checked equal to hand-written core
-  syntax, so the sugar adds nothing to the trusted surface.
+  decidable side conditions, and a measure-indexed loop rule. Total memory is
+  two summands quoted as one canonical number (`SpaceBound`): a dynamic
+  (net, peak) profile over buffer capacities, plus the statically inferred
+  peak register pressure (`Stmt.regPeak₀` — register liveness is static
+  information, so the register file is counted by analysis, not by runtime
+  instructions). Peak buffer memory is bounded by running time
+  (`Exec.peak_le_time`), register pressure by live-ins plus static time
+  (`Stmt.Straight.regPeak₀_le`), and on straight code the two fit in a single
+  running time (`Exec.straight_total_footprint_le`).
+- **A builder surface.** A monad with fresh register/buffer naming, compound
+  expressions, structured control flow, and typed buffer handles — checked
+  equal to hand-written core syntax, so the sugar adds nothing to the trusted
+  surface.
 - **A lowering story.** Every instruction is implementable in O(1) machine
   instructions on a 64-bit CPU (the intended concrete target being RISC-V), so
   a certified unit cost `t` means at most `c · t` cycles. The lowering happens
