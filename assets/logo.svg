@@ -1,37 +1,57 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0.5 47 13.6" width="376" height="108.8" role="img" aria-label="Caliper">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="5 15 210 78" width="840" height="312" role="img" aria-label="Caliper">
   <title>Caliper</title>
-  <g fill="none" stroke="#f97316" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter">
-    <path d="M 4.5 1 H 0.5 V 7 H 4.5"></path>
-    <path d="M 7.5 7 V 1 H 11.5 V 7"></path>
-    <path d="M 7.5 4 H 11.5"></path>
-    <path d="M 14.5 1 V 7 H 18.5"></path>
-    <path d="M 21.5 1 H 25.5"></path>
-    <path d="M 23.5 1 V 7"></path>
-    <path d="M 21.5 7 H 25.5"></path>
-    <path d="M 28.5 7 V 1 H 32.5 V 4 H 28.5"></path>
-    <path d="M 39.5 1 H 35.5 V 7 H 39.5"></path>
-    <path d="M 35.5 4 H 38.5"></path>
-    <path d="M 42.5 7 V 1 H 46.5 V 4 H 42.5"></path>
-    <path d="M 44.0 4 L 46.5 7"></path>
+  <g>
+    <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter">
+    <path d="M 16 42 L 11 18 H 8 V 50 L 14 88 H 26 V 50"></path>
+    <path d="M 8 42 H 26"></path>
+    <path d="M 8 50 H 26"></path>
+    <path d="M 72 42 H 212 V 50 H 72"></path>
+    <path d="M 26 42 V 18 H 23 L 18 42"></path>
+    <path d="M 26 56 V 88 H 38 L 44 56"></path>
+    <path d="M 26 36 H 72 V 56 H 26 Z"></path>
+    <path d="M 60.4 40.4 a 3.6 3.6 0 1 0 7.2 0 a 3.6 3.6 0 1 0 -7.2 0 Z"></path>
+    <path d="M 61.4 40.4 h 5.2" stroke-width="1.2"></path>
+    <path d="M 50 56 h 16 a 2 2 0 0 1 2 2 v 4 a 2 2 0 0 1 -2 2 h -16 a 2 2 0 0 1 -2 -2 v -4 a 2 2 0 0 1 2 -2 Z"></path>
+    <path d="M 55 58 v 4" stroke-width="1.2"></path>
+    <path d="M 60 58 v 4" stroke-width="1.2"></path>
+    </g>
+    <g fill="currentColor">
+    <rect x="78" y="42" width="1" height="5.5"></rect>
+    <rect x="84" y="42" width="1" height="3"></rect>
+    <rect x="90" y="42" width="1" height="3"></rect>
+    <rect x="96" y="42" width="1" height="3"></rect>
+    <rect x="102" y="42" width="1" height="3"></rect>
+    <rect x="108" y="42" width="1" height="5.5"></rect>
+    <rect x="114" y="42" width="1" height="3"></rect>
+    <rect x="120" y="42" width="1" height="3"></rect>
+    <rect x="126" y="42" width="1" height="3"></rect>
+    <rect x="132" y="42" width="1" height="3"></rect>
+    <rect x="138" y="42" width="1" height="5.5"></rect>
+    <rect x="144" y="42" width="1" height="3"></rect>
+    <rect x="150" y="42" width="1" height="3"></rect>
+    <rect x="156" y="42" width="1" height="3"></rect>
+    <rect x="162" y="42" width="1" height="3"></rect>
+    <rect x="168" y="42" width="1" height="5.5"></rect>
+    <rect x="174" y="42" width="1" height="3"></rect>
+    <rect x="180" y="42" width="1" height="3"></rect>
+    <rect x="186" y="42" width="1" height="3"></rect>
+    <rect x="192" y="42" width="1" height="3"></rect>
+    <rect x="198" y="42" width="1" height="5.5"></rect>
+    <rect x="204" y="42" width="1" height="3"></rect>
+    </g>
   </g>
-  <g fill="#111827">
-    <rect x="0" y="9.5" width="47" height="1"></rect>
-    <rect x="0.00" y="10.5" width="1" height="3.6" stroke="none"></rect>
-    <rect x="2.88" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="5.75" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="8.63" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="11.50" y="10.5" width="1" height="3.6" stroke="none"></rect>
-    <rect x="14.38" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="17.25" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="20.13" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="23.00" y="10.5" width="1" height="3.6" stroke="none"></rect>
-    <rect x="25.88" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="28.75" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="31.63" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="34.50" y="10.5" width="1" height="3.6" stroke="none"></rect>
-    <rect x="37.38" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="40.25" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="43.13" y="10.5" width="1" height="2" stroke="none"></rect>
-    <rect x="46.00" y="10.5" width="1" height="3.6" stroke="none"></rect>
+  <g transform="translate(77.587 58.174) scale(2.8261)" fill="none" stroke="currentColor" stroke-width="0.7077" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M 4.5 1 H 0.5 V 10.553846153846154 H 4.5"></path>
+      <path d="M 7.5 10.9077 V 1 H 11.5 V 10.9077"></path>
+      <path d="M 7.5 5.776923076923077 H 11.5"></path>
+      <path d="M 14.5 0.6462 V 10.553846153846154 H 18.5"></path>
+      <path d="M 21.5 1 H 25.5"></path>
+      <path d="M 23.5 1 V 10.553846153846154"></path>
+      <path d="M 21.5 10.553846153846154 H 25.5"></path>
+      <path d="M 28.5 10.9077 V 1 H 32.5 V 5.776923076923077 H 28.5"></path>
+      <path d="M 39.5 1 H 35.5 V 10.553846153846154 H 39.5"></path>
+      <path d="M 35.5 5.776923076923077 H 38.5"></path>
+      <path d="M 42.5 10.9077 V 1 H 46.5 V 5.776923076923077 H 42.5"></path>
+      <path d="M 44.0 5.776923076923077 L 46.6852 10.9077"></path>
   </g>
 </svg>
