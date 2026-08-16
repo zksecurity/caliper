@@ -2,48 +2,64 @@
   <img src="assets/logo.svg" alt="Caliper" width="300">
 </p>
 
-Caliper is a deep-embedded imperative language in Lean 4 whose every instruction
-runs in constant time: a unit-cost abstract machine with machine-checked upper
-bounds on running time and live memory.
+Caliper is a Lean4 DSL for measuring *precise* running time and memory usage.
 
-Programs are `Stmt` syntax trees with a big-step cost semantics (`Exec`) that
-charges each instruction a table entry from a `CostModel`. On top of that sit:
+It arose from zkSecurity's need to model *concrete* complexities of algorithms,
+for instance, the concrete cost of witness generation, extractors, cryptographic attacks and more.
+By concrete, we mean that, we can reason about e.g. attacks taking $2^{50}$ steps,
+in the presence of a concrete group of size $2^{250}$. It is intended to:
 
-- *Certified Time and Memory.* Upper-bound Hoare triples (`Triple`, `TimeTriple`,
-  `SpaceTriple`) with one rule per instruction, frame rules with decidable side
-  conditions, and a measure-indexed loop rule. Total memory is two summands quoted
-  as one number (`SpaceBound`): a dynamic (net, peak) profile over buffer
-  capacities, plus the statically inferred peak register pressure
-  (`Stmt.regPeak₀`), since register liveness is static information. Peak buffer
-  memory is bounded by running time (`Exec.peak_le_time`), register pressure by
-  live-ins plus static time (`Stmt.Straight.regPeak₀_le`), and on straight code the
-  two fit in a single running time (`Exec.straight_total_footprint_le`).
-- *A Builder Surface.* A monad with fresh register/buffer naming, compound
-  expressions, structured control flow, and typed buffer handles, checked equal to
-  hand-written core syntax, so the sugar adds nothing to the trusted surface.
-- *A Lowering Story.* Every instruction is implementable in O(1) machine
-  instructions on a 64-bit CPU (the intended target being RISC-V), so a certified
-  unit cost `t` means at most `c · t` cycles. A source language compiles to Caliper
-  carrying certified bounds, and Caliper's per-instruction contract carries those
-  bounds to the hardware. The contract, and its limits, are in
-  [doc/caliper.md](doc/caliper.md).
+- Capture the meaning of "one computation step" on a modern, real-world CPU.
+- Be easy to prove statements above in Lean.
+- Easily extend to also prove *asymptotic* complexity bounds.
 
-The fixed 64-bit surface `Caliper64` (`Caliper/W64.lean`) is what programs and
-specs should be written against; the core stays generic in the word size.
+To do this, it is a very simple imperative language modelled after the RISC-V instruction set.
+Each Caliper instruction corresponds (roughly) to a single RISC-V instruction.
+The only datatype in Caliper is words of a fixed size, usually 64 bits.
 
-Caliper was built as the compilation target for the witness-generation IR of the
-[Clean](https://github.com/rot256/clean) zk-circuit project, which depends on this
-library; the witgen compiler, field gadget library, and `TimedCircuit` budgets live
-there.
+We hope for Caliper to become the "yardstick" by which we can compare "real world" complexity in Lean.
 
-## Documentation
+## Correspondence to RISC-V
 
-See [doc/caliper.md](doc/caliper.md) for the machine, ISA, memory model, program
-logic, and trust boundary.
+A Caliper program can easily be translated into RISC-V assembly.
+The only requirements are:
+
+- Register allocation and liveness analysis: Caliper has an infinite number of registers (each of which "cost" 1 memory), while the real CPU has a finite number of registers.
+- Implementing a heap: Caliper can allocate/free arrays of words of fixed/variable size, hence a heap must be implemented.
+
+Overall the goal of Caliper is that if a Caliper program can be proven to have computational cost $n$, 
+then a real RISC-V program can be written which executes in $c \cdot n$ instructions on any reasonable RISC-V CPU
+where $c$ is a small constant; roughly speaking we target $c < 10$ and have some tests with unicorn engine to sanity check this.
+Similarly, if a Caliper program can be proven to have memory cost $m$, 
+then a real RISC-V program can be written which uses $c \cdot m$ words of memory for a constant $c$; roughly speaking we target $c \ll 2$.
+
+## Why Not RISC-V?
+
+A natural question is why not just use RISC-V to reason about concrete running time directly?
+The answer is that reasoning about RAM machines is complicated,
+in particular, requiring reasoning about memory, including aliasing of memory locations.
+Caliper sidesteps this by modelling memory as arrays of words which can only be atomically allocated/freed 
+and cannot be aliased (there are no pointer types in Caliper, only indexes).
+It also allows us to sidestep a bunch of complexity related to e.g. register spilling:
+a real RISC-V CPU has only a finite number of registers, if you need additional variables in your program,
+it requires the implementer loading/storing these variables from/to memory.
+
+## Asymptotic Bounds
+
+To enable asymptotic statements, the *register size* of Caliper is configurable,
+for instance, it may be set to match the security parameter $\lambda$ of a scheme.
+Enabling random access to a random memory of size $2^\lambda$.
+
+## Outside The Scope
+
+Caliper does not model all parts of a modern CPU,
+and hence, Caliper performance is not 1-to-1 with runtime performance:
+for instance, Caliper does not model caches, branch prediction, out-of-order execution, pipeline stalls or intrinsics available on some CPUs.
+We think that modelling these, for theoretic purposes, would needlessly complicate the model and make comparison harder.
 
 ## Building
 
 ```
-lake exe cache get   # fetch Mathlib build artifacts
+lake exe cache get
 lake build
 ```
