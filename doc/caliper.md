@@ -2,10 +2,8 @@
 
 Caliper is a deep-embedded imperative language whose every instruction runs in
 constant time, designed as a compilation target for languages that want certified
-resource bounds; in particular the witness-generation IR of the
-[Clean](https://github.com/rot256/clean) zk-circuit project, which depends on this
-library. Programs carry machine-checked upper bounds on running time and on
-allocated memory.
+resource bounds, witness-generation IRs among them. Programs carry machine-checked
+upper bounds on running time and on allocated memory.
 
 ## Files
 
@@ -19,14 +17,13 @@ allocated memory.
 | `Liveness.lean` | Backward liveness analysis (`Stmt.liveBefore`), inferred peak register pressure (`Stmt.regPeak`/`Stmt.regPeak₀`), the live-ins + writes bound, the combined buffers-plus-registers judgment (`SpaceBound`), and `Exec.straight_total_footprint_le` |
 | `W64.lean` | Fixed 64-bit surface: namespace `Caliper64` of reducible `abbrev`s pinning `w := 64` |
 
-## Where the rest of the pipeline lives
+## Scope
 
 This repository contains the machine: syntax, cost semantics, program logic,
-builder surface, renderer, and the fixed 64-bit surface `Caliper64`. The layers
-on top of it (the witness-generation compiler, the prime-field gadget library
-`Fp w p`, the `TimedCircuit` budgeted-witgen structure) live in the
-[Clean](https://github.com/rot256/clean) project, which depends on this library.
-Claims about those layers are stated and proved there, not here.
+builder surface, renderer, and the fixed 64-bit surface `Caliper64`. Layers built
+on top of it, such as a compiler targeting the machine or a gadget library, live in
+the projects that depend on this one; claims about those layers are stated and
+proved there, not here.
 
 ## Design decisions
 
@@ -416,9 +413,9 @@ their own concrete numerals. `#print axioms <theorem>` is the audit tool.
 ## Caveats / next steps
 - Natural next steps: a performant runner beyond the reference interpreter, and
   refining the cost model toward a concrete backend.
-- A `Proc` record bundling `code`/`Pre`/`Post`/`time`/`space`/`spec` (mirroring
-  Clean's `FormalCircuit`) would package subroutines more tightly; the examples
-  inline this pattern with plain `have`s for now.
+- A `Proc` record bundling `code`/`Pre`/`Post`/`time`/`space`/`spec` would package
+  subroutines more tightly; the examples inline this pattern with plain `have`s for
+  now.
 - Registers in the examples use fixed conventions (callee-clobbered scratch); a
   register-window or parameterized-register discipline is mechanical to add
   (distinctness side conditions close by `decide`).

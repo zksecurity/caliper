@@ -4,8 +4,8 @@ import Caliper.Builder
 /-!
 # Caliper at word size 64
 
-The Caliper core is generic over the word size `w`, but in practice, and in
-particular for Clean's witgen backend, the word size is 64. This file is the surface
+The Caliper core is generic over the word size `w`, but in practice, and for every
+intended backend, the word size is 64. This file is the surface
 programs and specs should be written against: reducible `abbrev`s fixing `w := 64`,
 so that
 

@@ -12,7 +12,7 @@ Control flow renders structurally: `ifnz r<c> { … } else { … }`, and `whileN
 verdict register, mirroring the `Exec` rules (guard, test, body, repeat). `skip`
 renders as `skip`, since compiled code can contain genuine no-ops.
 
-The printer is for *reading* programs, builder output or compiled witgen code. It is
+The printer is for *reading* programs, builder output or compiled code. It is
 not part of any trusted surface and nothing is proved about it.
 -/
 

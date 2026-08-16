@@ -4,10 +4,10 @@ import Mathlib.Tactic
 # A unit-cost machine model
 
 A small imperative language whose every instruction runs in constant time, intended
-as a compilation target for Clean's witness-generation IR
-(`Clean/Circuit/WitnessIR.lean`). Programs carry machine-checked upper bounds on
-running time and memory. Design rationale, the lowering contract and the trust
-boundary are in `doc/caliper.md`; this module is the machine.
+as a compilation target for languages that want certified resource bounds. Programs
+carry machine-checked upper bounds on running time and memory. Design rationale, the
+lowering contract and the trust boundary are in `doc/caliper.md`; this module is the
+machine.
 
 Buffers, not a RAM: the machine has an unbounded supply of independent, named
 buffers, so the only separation fact a proof ever needs is `b₁ ≠ b₂` on buffer
@@ -56,7 +56,7 @@ abbrev Reg := ℕ
 /-- Buffer names. Static: part of the syntax, never a runtime value. -/
 abbrev BufId := ℕ
 
-/-- Machine words. Fixed at `w = 64` for Clean's witgen backend. -/
+/-- Machine words. Fixed at `w = 64` by the `Caliper64` surface. -/
 abbrev Word (w : ℕ) := BitVec w
 
 variable {w : ℕ}
