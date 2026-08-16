@@ -9,36 +9,31 @@ value that some later instruction may still read, and how many are live *at once
 The analysis computes, for a statement `c` and a set `after` of registers assumed
 live after `c`:
 
-* `Stmt.liveBefore c after` — an over-approximation of the registers live before
-  `c` (read somewhere in or after `c` before being overwritten);
-* `Stmt.regPeak c after` — an upper bound on the number of simultaneously live
+* `Stmt.liveBefore c after`: an over-approximation of the registers live before `c`,
+  read somewhere in or after `c` before being overwritten;
+* `Stmt.regPeak c after`: an upper bound on the number of simultaneously live
   registers at any program point inside `c`.
 
-`Stmt.regPeak₀ c := c.regPeak ∅` is the headline number: the peak register
-pressure of a whole program (nothing live at exit). It **is** the register
-metric of the machine: register lifetimes are static information (there is no
-dynamic register indexing), so the register file's footprint is computed from
-the code rather than metered at runtime — the dynamic `Exec` profile `(d, p)`
-covers buffers only. `SpaceBound` below is the canonical *combined* statement:
-total memory = buffer peak + `regPeak₀`, so no buffers-only number can be
-quoted as "the memory" without the register term.
+`Stmt.regPeak₀ c := c.regPeak ∅` is the register metric of the machine: peak
+register pressure of a whole program, nothing live at exit. Register lifetimes are
+static information, there being no dynamic register indexing, so the register
+file's footprint is computed from the code rather than metered at runtime; the
+dynamic `Exec` profile `(d, p)` covers buffers only. `SpaceBound` below is the
+combined statement, total memory = buffer peak + `regPeak₀`, so no buffers-only
+number can be quoted as "the memory".
 
-Everything is computable (`Finset ℕ`), structural (no fixpoints — the `whileNZ`
-case widens conservatively instead of iterating; see `Stmt.liveBefore`), and
-conservative: err on the side of counting a register live.
+Everything is computable (`Finset ℕ`), structural (no fixpoints; the `whileNZ` case
+widens instead of iterating, see `Stmt.liveBefore`), and conservative: err on the
+side of counting a register live.
 
-The headline theorem, `Stmt.regPeak_le_card_liveBefore_add_writesTotal`, bounds
-the peak by *live-in registers plus register-writing instructions*: every
-register live at some point either was live on entry or has been written by one
-of the register-writing leaves executed so far. For straight-line code the write
-count is at most the unit-model static time
+The main theorem `Stmt.regPeak_le_card_liveBefore_add_writesTotal` bounds the peak
+by live-in registers plus register-writing instructions. For straight-line code the
+write count is at most the unit-model static time
 (`Stmt.Straight.writesTotal_le_staticTime_unit`), giving
-`Stmt.Straight.regPeak₀_le`: peak register pressure is bounded by live-ins plus
-running time — the liveness-side analogue of `Exec.peak_le_time`. The two
-combine into the total-footprint bound
-`Exec.straight_total_footprint_le`: buffer peak **plus** register peak is at
-most live-ins plus the (unit-model) running time, because the instructions that
-cover the buffer words (per-word allocation charges) and those that cover the
+`Stmt.Straight.regPeak₀_le`, the liveness-side analogue of `Exec.peak_le_time`. The
+two combine into `Exec.straight_total_footprint_le`: buffer peak plus register peak
+is at most live-ins plus the unit-model running time, because the instructions
+covering the buffer words (per-word allocation charges) and those covering the
 register slots (register-writing leaves) are disjoint.
 -/
 
@@ -49,9 +44,8 @@ variable {w : ℕ}
 /-! ## Per-instruction register footprints -/
 
 /-- The registers an instruction *reads*. On compound statements this unions the
-whole subtree (which is what the `whileNZ` widening needs — see `Stmt.usesSet`);
-the backward dataflow (`Stmt.liveBefore`) only ever consults it at leaves and
-drives the composition through its own recursion. -/
+whole subtree, which is what the `whileNZ` widening needs (`Stmt.usesSet`); the
+backward dataflow only consults it at leaves. -/
 def Stmt.readsSet : Stmt w → Finset ℕ
   | .skip => ∅
   | .seq c₁ c₂ => c₁.readsSet ∪ c₂.readsSet
@@ -70,9 +64,9 @@ def Stmt.readsSet : Stmt w → Finset ℕ
   | .ifNZ c t e => insert c (t.readsSet ∪ e.readsSet)
   | .whileNZ g c b => insert c (g.readsSet ∪ b.readsSet)
 
-/-- The registers an instruction *writes* (assigns a value to — exactly the
-`Stmt.Writes` relation, as a computable set). Like `Stmt.readsSet`, compound
-statements union the subtree, but the dataflow only consults leaves. -/
+/-- The registers an instruction *writes*, i.e. the `Stmt.Writes` relation as a
+computable set. Like `Stmt.readsSet`, compound statements union the subtree, but the
+dataflow only consults leaves. -/
 def Stmt.writesSet : Stmt w → Finset ℕ
   | .skip => ∅
   | .seq c₁ c₂ => c₁.writesSet ∪ c₂.writesSet
@@ -91,34 +85,31 @@ def Stmt.writesSet : Stmt w → Finset ℕ
   | .ifNZ _ t e => t.writesSet ∪ e.writesSet
   | .whileNZ g _ b => g.writesSet ∪ b.writesSet
 
-/-- All registers read anywhere in the subtree — the whole-subtree *use* set the
-`whileNZ` widening needs. Since `Stmt.readsSet` already unions over
-sub-statements, this coincides with it definitionally; the separate name marks
-the role: `usesSet` is quoted only where a whole-subtree union is wanted. -/
+/-- All registers read anywhere in the subtree, the *use* set the `whileNZ` widening
+needs. Definitionally `Stmt.readsSet`, which already unions over sub-statements; the
+separate name marks where a whole-subtree union is meant. -/
 def Stmt.usesSet : Stmt w → Finset ℕ := Stmt.readsSet
 
 /-! ## The backward analysis -/
 
 /-- Live registers *before* `c`, given the set `after` live after it.
 
-* Leaves: `(after \ writesSet) ∪ readsSet` — the write kills, the reads gen.
-* `seq` composes right to left; `ifNZ` joins the branches and adds the
-  condition register.
-* `whileNZ g c b` is **conservative — no fixpoint**. Let
-  `U := insert c (g.usesSet ∪ b.usesSet)` (everything the loop reads anywhere,
-  plus the verdict register). The result is
-  `g.liveBefore (after ∪ U) ∪ after`.
+* Leaves: `(after \ writesSet) ∪ readsSet`; the write kills, the reads gen.
+* `seq` composes right to left; `ifNZ` joins the branches and adds the condition
+  register.
+* `whileNZ g c b` widens instead of iterating a fixpoint. With
+  `U := insert c (g.usesSet ∪ b.usesSet)`, everything the loop reads anywhere plus
+  the verdict register, the result is `g.liveBefore (after ∪ U) ∪ after`.
 
-  Intended invariant (over-approximation): *every register that any iteration
-  may read — in the guard or the body — before writing it is in the result, and
-  so is everything in `after`.* Justification: a register live at the
-  guard/body branch point is either read later inside some iteration before
-  being written (hence in `U`) or live after the loop (hence in `after`), so
-  `after ∪ U` over-approximates every live-after set the guard can face — in
-  particular the fixpoint a Kildall iteration would converge to. The extra
-  `∪ after` is pure inclusion-side conservatism (a guard could kill a member of
-  `after` that the exit path never reads; we keep it live anyway). Simplicity
-  beats precision: the analysis stays a single structural recursion. -/
+  Invariant: every register any iteration may read, in the guard or the body,
+  before writing it is in the result, and so is everything in `after`. A register
+  live at the guard/body branch point is either read later inside some iteration
+  before being written, hence in `U`, or live after the loop, hence in `after`, so
+  `after ∪ U` over-approximates every live-after set the guard can face, including
+  the fixpoint a Kildall iteration would converge to. The extra `∪ after` is
+  inclusion-side conservatism: a guard could kill a member of `after` the exit path
+  never reads, and it stays live anyway. The analysis stays one structural
+  recursion. -/
 def Stmt.liveBefore : Stmt w → Finset ℕ → Finset ℕ
   | .seq c₁ c₂, after => c₁.liveBefore (c₂.liveBefore after)
   | .ifNZ c t e, after => insert c (t.liveBefore after ∪ e.liveBefore after)
@@ -128,10 +119,10 @@ def Stmt.liveBefore : Stmt w → Finset ℕ → Finset ℕ
 
 /-- Peak number of simultaneously live registers at any program point in `c`,
 threading the same after-sets as `Stmt.liveBefore`. At a leaf the two candidate
-points are *before* the instruction (`|liveBefore|`) and *at the write*
-(`|after ∪ writesSet|` — the destination is materialized while everything
-live-after persists). `whileNZ` prices the guard and body against the same
-widened after-set `after ∪ U` its `liveBefore` uses. -/
+points are before the instruction (`|liveBefore|`) and at the write
+(`|after ∪ writesSet|`, the destination materialized while everything live-after
+persists). `whileNZ` prices guard and body against the widened after-set `after ∪ U`
+its `liveBefore` uses. -/
 def Stmt.regPeak : Stmt w → Finset ℕ → ℕ
   | .seq c₁ c₂, after => max (c₁.regPeak (c₂.liveBefore after)) (c₂.regPeak after)
   | .ifNZ c t e, after =>
@@ -222,9 +213,8 @@ theorem Stmt.liveBefore_subset (c : Stmt w) (after : Finset ℕ) :
     exact fun x hx => Finset.union_subset_union Finset.sdiff_subset
       (Finset.Subset.refl _) hx
 
-/-- **Monotonicity of `liveBefore`** in the after-set — the compositional fact:
-enlarging what is assumed live after a statement can only enlarge what is live
-before it. -/
+/-- Monotonicity of `liveBefore` in the after-set: enlarging what is assumed live
+after a statement can only enlarge what is live before it. -/
 theorem Stmt.liveBefore_mono (c : Stmt w) :
     ∀ {a a' : Finset ℕ}, a ⊆ a' → c.liveBefore a ⊆ c.liveBefore a' := by
   induction c with
@@ -239,8 +229,8 @@ theorem Stmt.liveBefore_mono (c : Stmt w) :
     exact fun h => Finset.union_subset_union
       (Finset.sdiff_subset_sdiff h (Finset.Subset.refl _)) (Finset.Subset.refl _)
 
-/-- **Monotonicity of `regPeak`** in the after-set: pricing a statement against
-a larger live-after set can only raise the peak. -/
+/-- Monotonicity of `regPeak` in the after-set: pricing a statement against a larger
+live-after set can only raise the peak. -/
 theorem Stmt.regPeak_mono (c : Stmt w) :
     ∀ {a a' : Finset ℕ}, a ⊆ a' → c.regPeak a ≤ c.regPeak a' := by
   induction c with
@@ -263,13 +253,13 @@ theorem Stmt.regPeak_mono (c : Stmt w) :
           (Finset.sdiff_subset_sdiff h (Finset.Subset.refl _)) (Finset.Subset.refl _)))
         (Finset.card_le_card (Finset.union_subset_union h (Finset.Subset.refl _)))
 
-/-! ## The headline bound: peak ≤ live-ins + register-writing instructions -/
+/-! ## The main bound: peak ≤ live-ins + register-writing instructions -/
 
 /-- The number of *register-writing* leaves (`imm`/`mov`/`un`/`bin`/`memLen`/
-`memLoad` — exactly the leaves with nonempty `writesSet`), counted through all
-branches and loop bodies. Not an instruction count: memory-only instructions do
-not write a register and are not counted, which is what lets the straight-line
-corollary survive 0-cost instructions like `memAllocI _ 0`. -/
+`memLoad`, exactly the leaves with nonempty `writesSet`), counted through all
+branches and loop bodies. Not an instruction count: memory-only instructions write
+no register and are not counted, which is what lets the straight-line corollary
+survive 0-cost instructions like `memAllocI _ 0`. -/
 def Stmt.writesTotal : Stmt w → ℕ
   | .seq c₁ c₂ => c₁.writesTotal + c₂.writesTotal
   | .imm .. => 1
@@ -294,10 +284,9 @@ theorem Stmt.card_writesSet_le_writesTotal (c : Stmt w) :
     exact (Finset.card_union_le _ _).trans (Nat.add_le_add ihg ihb)
   | _ => simp [Stmt.writesSet, Stmt.writesTotal]
 
-/-- Running a statement backward loses at most `writesTotal` registers from the
-live set: `|after| ≤ |liveBefore| + writesTotal`. This is the invariant behind
-the headline bound — read forward, every register live at exit was live at
-entry or was written along the way. -/
+/-- Running a statement backward loses at most `writesTotal` registers from the live
+set: `|after| ≤ |liveBefore| + writesTotal`. Read forward, every register live at
+exit was live at entry or was written along the way. -/
 theorem Stmt.card_le_card_liveBefore_add_writesTotal (c : Stmt w) (after : Finset ℕ) :
     after.card ≤ (c.liveBefore after).card + c.writesTotal := by
   have h1 : after.card ≤ (after \ c.writesSet).card + c.writesSet.card :=
@@ -322,17 +311,16 @@ private theorem leaf_peak_bound {after W R : Finset ℕ} {k : ℕ} (hW : W.card 
   have h2 := (Finset.card_le_card h1).trans (Finset.card_union_le _ _)
   omega
 
-/-- **The headline bound.** The peak live-register count is at most the live-in
-count plus the number of register-writing instructions:
+/-- The peak live-register count is at most the live-in count plus the number of
+register-writing instructions:
 
     regPeak c after ≤ |liveBefore c after| + writesTotal c
 
-Meaning: at every program point, the live set is contained in (registers live
-on entry) ∪ (registers written by the instructions executed so far) — a live
-register's value had to come from *somewhere*. Live-in registers (read before
-ever written — the program's inputs) genuinely count toward the peak and are
-*not* written by the program, which is why the `|liveBefore|` summand cannot be
-dropped. -/
+At every program point the live set is contained in the registers live on entry
+union those written by the instructions executed so far; a live register's value had
+to come from somewhere. Live-in registers, read before ever being written, count
+toward the peak and are not written by the program, which is why the `|liveBefore|`
+summand cannot be dropped. -/
 theorem Stmt.regPeak_le_card_liveBefore_add_writesTotal (c : Stmt w)
     (after : Finset ℕ) :
     c.regPeak after ≤ (c.liveBefore after).card + c.writesTotal := by
@@ -380,9 +368,9 @@ theorem Stmt.regPeak_le_card_liveBefore_add_writesTotal (c : Stmt w)
 /-- For straight-line code the register-writing leaf count is bounded by the
 unit-model static time: every register-writing leaf (`imm`/`mov`/`un`/`bin`/
 `memLen`/`memLoad`) costs exactly 1 in `CostModel.unit`, and every other leaf
-costs ≥ 0 — including the 0-cost `memAllocI _ 0`, which writes no register and
-so is not counted. (`Straight` excludes `ifNZ`/`whileNZ`/dynamic `memAlloc`, so
-no `max`/loop shapes arise.) -/
+costs ≥ 0, including the 0-cost `memAllocI _ 0`, which writes no register and so is
+not counted. `Straight` excludes `ifNZ`/`whileNZ`/dynamic `memAlloc`, so no
+`max`/loop shapes arise. -/
 theorem Stmt.Straight.writesTotal_le_staticTime_unit {c : Stmt w} (h : c.Straight) :
     c.writesTotal ≤ c.staticTime CostModel.unit := by
   induction c with
@@ -390,32 +378,29 @@ theorem Stmt.Straight.writesTotal_le_staticTime_unit {c : Stmt w} (h : c.Straigh
   | memAlloc | ifNZ | whileNZ => exact h.elim
   | _ => simp [Stmt.writesTotal, Stmt.staticTime, CostModel.unit]
 
-/-- **Straight-line code: peak register pressure ≤ live-ins + running time.**
-With nothing live at exit, the peak live-register count of a straight-line
-program is bounded by its live-in count (registers the program reads before
-ever writing — its inputs, which the program does not pay time to produce) plus
-its exact unit-model running time. The liveness-side analogue of
-`Exec.peak_le_time`: time bounds space, here read off the syntax alone. -/
+/-- Straight-line code: peak register pressure ≤ live-ins + running time. With
+nothing live at exit, the peak live-register count is bounded by the live-in count
+(registers read before ever being written, the program's inputs, which cost no time
+to produce) plus the exact unit-model running time. The liveness-side analogue of
+`Exec.peak_le_time`, read off the syntax alone. -/
 theorem Stmt.Straight.regPeak₀_le {c : Stmt w} (h : c.Straight) :
     c.regPeak₀ ≤ (c.liveBefore ∅).card + c.staticTime CostModel.unit :=
   (c.regPeak_le_card_liveBefore_add_writesTotal ∅).trans
     (Nat.add_le_add_left h.writesTotal_le_staticTime_unit _)
 
-/-! ## The canonical combined footprint: buffers + registers
+/-! ## The combined footprint: buffers + registers
 
-The machine's total memory is **two summands**: the dynamic buffer profile
-(the `(d, p)` indices of `Exec`/`SpaceTriple`, metering reserved capacities)
-plus the static register peak (`Stmt.regPeak₀`, read off the code). Registers
-are memory — they are counted *statically* because register liveness is static
-information, not because they are free. `SpaceBound` packages the sum as the
-one number a user-facing space claim should quote, so a buffers-only figure
-can never masquerade as "the memory". -/
+Total memory is two summands: the dynamic buffer profile (the `(d, p)` indices of
+`Exec`/`SpaceTriple`, metering reserved capacities) plus the static register peak
+`Stmt.regPeak₀`, read off the code. Registers are memory, counted statically because
+register liveness is static information, not because they are free. `SpaceBound`
+packages the sum as the number a space claim should quote, so a buffers-only figure
+cannot masquerade as "the memory". -/
 
-/-- **The canonical total-memory bound.** `SpaceBound C P c Q M` says: from any
-state satisfying `P`, `c` terminates in a state satisfying `Q`, and its total
-peak footprint — dynamic buffer peak **plus** the statically inferred register
-peak `c.regPeak₀` — is at most `M`. The buffer side is an ordinary
-`SpaceTriple`; the register side is a compile-time constant of the code. -/
+/-- `SpaceBound C P c Q M`: from any state satisfying `P`, `c` terminates in a state
+satisfying `Q` with total peak footprint at most `M`, dynamic buffer peak plus the
+inferred register peak `c.regPeak₀`. The buffer side is an ordinary `SpaceTriple`,
+the register side a compile-time constant of the code. -/
 def SpaceBound (C : CostModel) (P : State w → Prop) (c : Stmt w)
     (Q : State w → Prop) (M : ℤ) : Prop :=
   ∃ D Mbuf : ℤ, SpaceTriple C P c Q D Mbuf ∧ Mbuf + (c.regPeak₀ : ℤ) ≤ M
@@ -429,10 +414,10 @@ theorem SpaceTriple.spaceBound {C : CostModel} {P Q : State w → Prop}
 
 /-! ### Time ≥ total memory, on the straight fragment
 
-The buffer peak is covered by the per-word allocation charges and the register
-peak (beyond live-ins) by the register-writing leaves — and those two
-instruction sets are **disjoint** (an allocation writes no register), so the
-two space summands fit inside a *single* running time, not two copies of it. -/
+The buffer peak is covered by the per-word allocation charges and the register peak,
+beyond live-ins, by the register-writing leaves. Those two instruction sets are
+disjoint, an allocation writing no register, so the two space summands fit inside a
+*single* running time rather than two copies of it. -/
 
 /-- Total words of buffer capacity a statement can acquire, summed over every
 `memAllocI` immediate (the dynamic `memAlloc` is excluded from `Stmt.Straight`,
@@ -446,7 +431,7 @@ def Stmt.allocTotal : Stmt w → ℕ
   | _ => 0
 
 /-- On straight-line code the buffer peak never exceeds the total immediate
-allocation capacity — a purely syntactic bound, in any cost model. -/
+allocation capacity: a syntactic bound, in any cost model. -/
 theorem Exec.straight_peak_le_allocTotal {C : CostModel} {c : Stmt w}
     {s s' : State w} {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p)
     (hs : c.Straight) : p ≤ (c.allocTotal : ℤ) := by
@@ -477,17 +462,14 @@ theorem Stmt.Straight.allocTotal_add_writesTotal_le_staticTime_unit {c : Stmt w}
   | memAlloc | ifNZ | whileNZ => exact h.elim
   | _ => simp [Stmt.allocTotal, Stmt.writesTotal, Stmt.staticTime, CostModel.unit]
 
-/-- **Straight-line code: total footprint ≤ live-ins + running time.** Buffer
-peak `p` plus the inferred register peak `regPeak₀` is bounded by the live-in
-count plus the *single* unit-model running time `t`: the buffer words are
-covered by the per-word allocation charges
-(`Exec.straight_peak_le_allocTotal`), the registers beyond the live-ins by
-their first-write instructions
-(`Stmt.regPeak_le_card_liveBefore_add_writesTotal`), and the two instruction
-sets are disjoint
-(`Stmt.Straight.allocTotal_add_writesTotal_le_staticTime_unit`) — so the sum
-fits in `t`, not `2t`. The combined-resource sharpening of `Exec.peak_le_time`
-+ `Stmt.Straight.regPeak₀_le`. -/
+/-- Straight-line code: total footprint ≤ live-ins + running time. Buffer peak `p`
+plus the inferred register peak `regPeak₀` is bounded by the live-in count plus the
+*single* unit-model running time `t`. The buffer words are covered by the per-word
+allocation charges (`Exec.straight_peak_le_allocTotal`), the registers beyond the
+live-ins by their first-write instructions
+(`Stmt.regPeak_le_card_liveBefore_add_writesTotal`), and the two instruction sets
+are disjoint (`Stmt.Straight.allocTotal_add_writesTotal_le_staticTime_unit`), so the
+sum fits in `t`, not `2t`. -/
 theorem Exec.straight_total_footprint_le {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (hexec : Exec CostModel.unit c s s' t d p) (h : c.Straight) :
     p + (c.regPeak₀ : ℤ) ≤ ((c.liveBefore ∅).card + t : ℤ) := by
@@ -500,41 +482,32 @@ theorem Exec.straight_total_footprint_le {c : Stmt w} {s s' : State w} {t : ℕ}
 
 /-! ## Demos
 
-Inferred register peaks for the example programs, and their canonical combined
-(`SpaceBound`) statements. Since the machine's register instructions are gone,
-these numbers **are** the register footprint — quoted alongside the buffers-only
-interpreter pins of `Examples.lean`. (Historical note: before this run the
-machine metered registers dynamically through explicit `regAlloc`/`regFree`
-instructions; the analysis, which then ran alongside that accounting, was
-already at least as sharp — on `ScopedSumSq` it inferred 2 where the
-instruction brackets certified 3 — and it has now replaced the instruction
-accounting as *the* register metric.) -/
+Inferred register peaks for the example programs, and their combined (`SpaceBound`)
+statements. These numbers are the register footprint, quoted alongside the
+buffers-only interpreter pins of `Examples.lean`. -/
 
-/- `SumBuf.code 0` — also exactly the builder's output for `sumB`: inferred
-peak 6. The conservative loop widening keeps all six registers live across the
-guard/branch point (`r3`'s verdict is materialized while `r0-r2, r4, r5` stay
-in `U`), matching the 6 registers the program names. -/
+/- `SumBuf.code 0`, also exactly the builder's output for `sumB`: inferred peak 6.
+The loop widening keeps all six registers live across the guard/branch point (`r3`'s
+verdict is materialized while `r0-r2, r4, r5` stay in `U`), matching the 6 registers
+the program names. -/
 
 /-- info: 6 -/
 #guard_msgs in
 #eval (Examples.SumBuf.code (w := 64) 0).regPeak₀
 
-/- The inferred live-*in* set of `SumBuf.code` is `{4, 5}` — an artifact of the
-loop widening: `r4`/`r5` are read somewhere in the body, so the analysis
-conservatively assumes an iteration might read them before the body's own
-writes. (In truth every iteration writes them first; a fixpoint analysis would
-infer `∅`. Err on the side of inclusion.) -/
+/- The inferred live-*in* set of `SumBuf.code` is `{4, 5}`, an artifact of the loop
+widening: `r4`/`r5` are read somewhere in the body, so the analysis assumes an
+iteration might read them before the body's own writes. Every iteration in fact
+writes them first, and a fixpoint analysis would infer `∅`. -/
 
 /-- info: [4, 5] -/
 #guard_msgs in
 #eval ((Examples.SumBuf.code (w := 64) 0).liveBefore ∅).sort (· ≤ ·)
 
-/- `ScopedSumSq.code` (`3² + 4²`, five registers named): inferred peak **2** —
-each stage's scratch is dead the moment its `mul` consumes it, so at most two
-*values* ever need slots simultaneously. Sharper than any bracket-shaped
-accounting could honestly certify (an alloc/free bracket around each
-name-lifetime would have said 3, counting stage-1 result + stage-2 scratch +
-stage-2 result as coexisting names). -/
+/- `ScopedSumSq.code` (`3² + 4²`, five registers named): inferred peak 2, since each
+stage's scratch is dead the moment its `mul` consumes it, so at most two *values*
+need slots at once. Brackets around name lifetimes would say 3, counting stage-1
+result, stage-2 scratch and stage-2 result as coexisting names. -/
 
 /-- info: 2 -/
 #guard_msgs in
@@ -542,7 +515,7 @@ stage-2 result as coexisting names). -/
 
 /-- A temp dying early, hand-written: 4 registers are *named* (`r0`-`r3`), but
 `r0`/`r1` die at the first `add` and `r2` is consumed by the last instruction,
-so at most 2 are ever live at once — peak < registers mentioned. -/
+so at most 2 are ever live at once: peak below registers mentioned. -/
 def tempDies : Stmt 64 :=
   .imm 0 1 ;; .imm 1 2 ;; .bin .add 2 0 1 ;; .bin .add 2 2 2 ;; .un .isZero 3 2
 
@@ -550,35 +523,35 @@ def tempDies : Stmt 64 :=
 #guard_msgs in
 #eval tempDies.regPeak₀
 
-/-! ### Combined (`SpaceBound`) statements for the headline examples
+/-! ### Combined (`SpaceBound`) statements for the examples
 
-Each pairs the buffer-side `SpaceTriple` proved in `Examples.lean` with the
-inferred register peak — the canonical total a space claim should quote. -/
+Each pairs the buffer-side `SpaceTriple` proved in `Examples.lean` with the inferred
+register peak: the total a space claim should quote. -/
 
-/-- `ScopedSumSq`: buffer peak 0 + register peak 2 = **total 2**. -/
+/-- `ScopedSumSq`: buffer peak 0 + register peak 2 = total 2. -/
 theorem ScopedSumSq.total_space {C : CostModel} :
     SpaceBound C (fun _ => True) Examples.ScopedSumSq.code (fun _ => True) 2 :=
   Examples.ScopedSumSq.space_spec.spaceBound (by decide)
 
-/-- `SumBuf` (on buffer 0): buffer peak 0 + register peak 6 = **total 6**,
-alongside its linear time bound. -/
+/-- `SumBuf` (on buffer 0): buffer peak 0 + register peak 6 = total 6, alongside its
+linear time bound. -/
 theorem SumBuf.total_space {C : CostModel} (arr : Array (Word 64))
     (hsz : arr.size < 2 ^ 64) :
     SpaceBound C (fun s => s.bufs 0 = arr) (Examples.SumBuf.code 0)
       (fun s => s.regs 0 = Examples.SumBuf.sumTo arr arr.size) 6 :=
   (Examples.SumBuf.spec 0 arr hsz).space.spaceBound (by decide)
 
-/-- `ScratchLoop` (on buffer 0): buffer peak 1 + register peak 4 = **total 5**,
-independent of the trip count — memory reuse in the buffer summand, static
-inference in the register summand. -/
+/-- `ScratchLoop` (on buffer 0): buffer peak 1 + register peak 4 = total 5,
+independent of the trip count: memory reuse in the buffer summand, static inference
+in the register summand. -/
 theorem ScratchLoop.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
     SpaceBound C (fun s => s.regs 2 = BitVec.ofNat 64 n)
       (Examples.ScratchLoop.code 0)
       (fun s => s.bufs 0 = #[] ∧ s.caps 0 = 0) 5 :=
   (Examples.ScratchLoop.spec 0 n hn).space.spaceBound (by decide)
 
-/-- `Iota` (on buffer 0): buffer peak `n` + register peak 4 = **total n + 4** —
-the one genuinely linear-space example keeps its linear total. -/
+/-- `Iota` (on buffer 0): buffer peak `n` + register peak 4 = total `n + 4`, the one
+genuinely linear-space example. -/
 theorem Iota.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
     SpaceBound C (fun s => s.regs 2 = BitVec.ofNat 64 n)
       (Examples.Iota.code 0)
@@ -587,18 +560,17 @@ theorem Iota.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
     (by have : (Examples.Iota.code (w := 64) 0).regPeak₀ = 4 := by decide
         omega)
 
-/- `nestedB` (`3² + 3²`, 3 names): inferred peak **1** — each value dies at the
-instruction producing its successor. Combined with its buffers-only profile
-(0, 0): total 1. -/
+/- `nestedB` (`3² + 3²`, 3 names): inferred peak 1, each value dying at the
+instruction producing its successor. With its buffers-only profile (0, 0), total
+1. -/
 
 /-- info: 1 -/
 #guard_msgs in
 #eval (Build.build Examples.nestedB).2.regPeak₀
 
-/- `pairProg` (the array-of-pairs demo, 18 register names): inferred peak
-**3**. Combined with its buffer peak 4 (`pairDemo` pin in `Examples.lean`):
-**total 7** — where the old instruction-driven accounting, which never released
-a temporary, reported 22 (4 buffer words + all 18 names). -/
+/- `pairProg` (the array-of-pairs demo, 18 register names): inferred peak 3. With
+its buffer peak 4 (`pairDemo` pin in `Examples.lean`), total 7, against the 22 a
+name count would give. -/
 
 /-- info: 3 -/
 #guard_msgs in

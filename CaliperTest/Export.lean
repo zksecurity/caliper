@@ -5,13 +5,13 @@ import Caliper.Liveness
 /-!
 # Differential test-vector exporter (test-only)
 
-For each corpus program (plus a few of the worked examples) this emits a JSON
-vector to `tests/vectors/<name>.json` containing the lowered RV64 code and
-the expected outcome **computed by the reference interpreter** (`Caliper.run`
-— the executable semantics proved sound against `Exec` by `run_sound`). The
-Unicorn harness (`tests/run_unicorn.py`) executes the RV64 words on a real
-emulator and checks that registers and buffer contents agree, counting
-executed instructions to measure the lowering constant `c`.
+For each corpus program, plus a few of the examples, this emits a JSON vector to
+`tests/vectors/<name>.json` containing the lowered RV64 code and the expected
+outcome computed by the reference interpreter `Caliper.run`, the executable
+semantics proved sound against `Exec` by `run_sound`. The Unicorn harness
+(`tests/run_unicorn.py`) executes the RV64 words on a real emulator and checks that
+registers and buffer contents agree, counting executed instructions to measure the
+lowering constant `c`.
 
 Vector format (JSON, fixed key order, values decimal except `code_hex`):
 
@@ -31,8 +31,8 @@ Vector format (JSON, fixed key order, values decimal except `code_hex`):
 }
 ```
 
-Run with `lake env lean --run CaliperTest/Export.lean` from the repo root
-(interpreter mode — no native compilation of the mathlib closure needed).
+Run with `lake env lean --run CaliperTest/Export.lean` from the repo root, in
+interpreter mode, so no native compilation of the mathlib closure is needed.
 -/
 
 namespace CaliperTest.Export

@@ -1,30 +1,27 @@
 import Caliper.Core
 
 /-!
-# Canonical pretty-printer
+# Pretty-printer
 
-`Stmt.render` prints a statement in Caliper's canonical assembly dialect: one
-instruction per line, memory operations under the `mem.` qualifier, destination
-first, buffers as `b<i>`, registers as `r<i>`, two-space indentation for block
-bodies.
+`Stmt.render` prints a statement in Caliper's assembly dialect: one instruction per
+line, memory operations under the `mem.` qualifier, destination first, buffers as
+`b<i>`, registers as `r<i>`, two-space indentation for block bodies.
 
-Control flow renders structurally: `ifnz r<c> { … } else { … }`, and `whileNZ`
-as `loop { <guard> bifz r<c> <body> }` — `bifz` is break-if-zero on the guard's
-verdict register, mirroring the `Exec` rules exactly (guard, test, body, repeat).
-`skip` renders as `skip`: compiled code can contain genuine no-ops (e.g. from
-copy elision), and the printer reports them honestly.
+Control flow renders structurally: `ifnz r<c> { … } else { … }`, and `whileNZ` as
+`loop { <guard> bifz r<c> <body> }`, where `bifz` is break-if-zero on the guard's
+verdict register, mirroring the `Exec` rules (guard, test, body, repeat). `skip`
+renders as `skip`, since compiled code can contain genuine no-ops.
 
-The printer is for *reading* programs — builder output, compiled witgen code —
-not part of any trusted surface; nothing is proved about it.
+The printer is for *reading* programs, builder output or compiled witgen code. It is
+not part of any trusted surface and nothing is proved about it.
 -/
 
 namespace Caliper
 
 variable {w : ℕ}
 
-/-- Assembly mnemonic of a unary operation. The zero tests render as `seqz`/
-`snez` — the RISC-V pseudo-mnemonics for exactly these operations (set-if-
-equal-to-zero, set-if-not-equal-to-zero). -/
+/-- Assembly mnemonic of a unary operation. The zero tests render as `seqz`/`snez`,
+the RISC-V pseudo-mnemonics for exactly these operations. -/
 def UnOp.mnemonic : UnOp → String
   | .not => "not"
   | .neg => "neg"

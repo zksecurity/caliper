@@ -3,84 +3,48 @@ import Mathlib.Tactic
 /-!
 # A unit-cost machine model
 
-This is the core of a small imperative language whose **every instruction runs in
-constant time**, intended as a compilation target for Clean's witness-generation IR
-(`Clean/Circuit/WitnessIR.lean` in the Clean project). Programs in this language carry machine-checked
-*upper bounds* on running time and memory.
+A small imperative language whose every instruction runs in constant time, intended
+as a compilation target for Clean's witness-generation IR
+(`Clean/Circuit/WitnessIR.lean`). Programs carry machine-checked upper bounds on
+running time and memory. Design rationale, the lowering contract and the trust
+boundary are in `doc/caliper.md`; this module is the machine.
 
-## Why not a RAM machine?
+Buffers, not a RAM: the machine has an unbounded supply of independent, named
+buffers, so the only separation fact a proof ever needs is `b₁ ≠ b₂` on buffer
+names, decidable over `ℕ` (`bufs_setBuf_ne`). Names are part of the syntax, never
+runtime values, so a program cannot alias two buffers; buffer *lengths* are fully
+dynamic.
 
-A flat address space forces every proof about two data structures to first establish
-that their address ranges are disjoint — separation logic, in other words. Instead the
-machine has an unbounded supply of **independent, named buffers**. Two buffers are
-either the same buffer or completely disjoint, so the only "separation" fact a proof
-ever needs is `b₁ ≠ b₂` on buffer *names*, which is a decidable statement about `ℕ`.
-See `bufs_setBuf_ne` — that lemma is the entire separation theory.
+Every constructor other than `seq`/`ifNZ`/`whileNZ` is one instruction priced by a
+`CostModel`, a table indexed by the *instruction*, never by the state. That is the
+content of "unit time": `straight_time_eq` says a branch-free program's running
+time is a syntactic constant. Two consequences for the instruction set:
 
-Buffer names are part of the *syntax*, not values held in registers, so a program can
-never alias two buffers at runtime. Buffer *lengths* are fully dynamic; only the number
-of distinct buffers is fixed statically (and `Builder.lean` allocates those names
-automatically, so this is invisible when writing programs).
+* Memory is reserved, not initialised: `memAlloc`/`memAllocI` reserve capacity
+  without a `memset`, and `memLoad` requires `i < size`, so uninitialised capacity
+  is never observable and initialisation is paid for by the pushes and stores that
+  perform it. Acquisition is charged `C.memAlloc + n * C.allocPerWord`, at least a
+  tick per word, so nothing acquires `n` words in `o(n)` time and peak memory is
+  bounded by running time (`Exec.peak_le_time`).
+* `memPush` requires free capacity (a proof obligation, like `memLoad`'s in-range
+  obligation), hence is worst-case unit time: no doubling, no amortisation
+  anywhere in the machine. A growable vector is a library on top.
 
-## What "unit time" means here
-
-Every constructor of `Stmt` other than `seq`/`ifNZ`/`whileNZ` maps to one instruction
-whose cost is drawn from a `CostModel` — a table indexed by the *instruction*, never by
-the *state*. That is the formal content of "unit time": see `straight_time_eq`, which
-says a branch-free program's running time is a syntactic constant, independent of its
-input. (That is data-independence of the abstract time counter — an ingredient of a
-constant-time argument, not by itself a side-channel guarantee; see
-`doc/caliper.md`.)
-
-Two consequences for the instruction set:
-
-* Memory is *reserved*, not initialised: `memAlloc`/`memAllocI` reserve capacity for
-  `n` words — an allocation without `memset`. Reads are only allowed below the
-  *filled* length (`memLoad` requires `i < size`), so uninitialised capacity is never
-  observable, and initialisation is paid for by the `memPush`/`memStore` instructions
-  that perform it. Allocation is *not* one tick: it is charged
-  `C.memAlloc + n * C.allocPerWord` — a base (0 in both shipped tables: static
-  buffer names admit an arena/bump allocator, so no `malloc` fast path is priced)
-  plus at least one time unit per
-  word of capacity acquired — so no instruction can acquire `n` words of memory in
-  `o(n)` time, and peak memory is bounded by running time (`Exec.peak_le_time`).
-  For `memAllocI` the capacity `n` is an *immediate* in the syntax, so this charge
-  is still a pure function of the instruction and static pricing
-  (`Stmt.Straight`/`staticTime`) applies; for the dynamic `memAlloc` the capacity
-  comes from a register, so its time is data-dependent by design and it is excluded
-  from `Stmt.Straight` (like a loop).
-* `memPush` requires free capacity (`size < cap` — a proof obligation, like the
-  in-range obligation of `memLoad`) and is therefore **worst-case** unit time: no
-  doubling, no amortisation anywhere in the machine. A growable vector is a *library*
-  on top — its realloc-copy loop costs what it visibly costs, and its amortised spec
-  is proved in the program logic rather than trusted in the machine.
-
-## Cost is a time and a memory *profile*
-
-`Exec C c s s' t d p` says: from `s`, statement `c` terminates in `s'`, having spent
-`t` time units, with **net** live-memory change `d` (in words, signed) and **peak**
-live-memory growth `p` above the starting level. Live memory is the sum of reserved
-buffer capacities: `memAlloc` charges `n - oldCap`, `memFree` credits back, and
-`memPush`/`memPop` move the fill level inside already-charged capacity, so they are
-memory-neutral. The register file is *not* part of the dynamic profile: register
-lifetimes are static information, so the register footprint is the statically
-inferred peak live-register count `Stmt.regPeak₀` (`Liveness.lean`), quoted
-alongside the dynamic buffer profile. Profiles compose like resource high-water
-marks:
+`Exec C c s s' t d p`: from `s`, `c` terminates in `s'` spending `t` time units,
+with net live-memory change `d` (signed words) and peak growth `p` above the
+starting level. Live memory is the sum of reserved buffer capacities, so push and
+pop are memory-neutral. Registers are outside the dynamic profile: their lifetimes
+are static, so the register footprint is the inferred peak `Stmt.regPeak₀`
+(`Liveness.lean`). Profiles compose as high-water marks:
 
     seq:  net = d₁ + d₂        peak = max p₁ (d₁ + p₂)
 
-so memory *reuse* is visible: code that frees (or works inside fixed capacity) does
-not accumulate a phantom footprint, and a working buffer reused across `n` loop
-iterations is charged once, not `n` times (see `ScratchLoop` in `Examples.lean`).
-`0 ≤ p` and `d ≤ p` always (`peak_nonneg`, `net_le_peak`); code containing no
-allocation has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`); and because allocation is
-charged per word, `p ≤ t` whenever `1 ≤ C.allocPerWord` (`Exec.peak_le_time`) — a
-time bound is automatically a peak-memory bound. Time stays a plain `ℕ`; the
-memory indices are `ℤ` so that `omega` closes the arithmetic.
-
-Out-of-range buffer accesses have *no* `Exec` derivation, so exhibiting a derivation
-(which is what a `Triple` does) proves memory safety along the way.
+so a scratch buffer reused across `n` iterations is charged once, not `n` times
+(`ScratchLoop` in `Examples.lean`). Always `0 ≤ p` and `d ≤ p` (`peak_nonneg`,
+`net_le_peak`); allocation-free code has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`). Time
+is `ℕ`, the memory indices `ℤ`, so `omega` closes the arithmetic. Out-of-range
+accesses have no `Exec` derivation, so exhibiting one proves memory safety along
+the way.
 -/
 
 namespace Caliper
@@ -106,9 +70,8 @@ deriving DecidableEq, Repr, Inhabited
 inductive BinOp where
   | add | sub | mul
   /-- High word of the widening unsigned multiply (`MULHU` on RISC-V M, `UMULH` on
-  AArch64, the `RDX` half of `MUL` on x86-64). `mulhi` + `mul` give the full
-  `2w`-bit product — the primitive that field reduction (Goldilocks, Montgomery)
-  needs. -/
+  AArch64, the `RDX` half of `MUL` on x86-64). With `mul` it gives the full `2w`-bit
+  product, the primitive field reduction (Goldilocks, Montgomery) needs. -/
   | mulhi
   | udiv | umod
   | and | or | xor | shl | shr
@@ -122,8 +85,7 @@ deriving DecidableEq, Repr, Inhabited
   | .isNonZero, x => if x = 0 then 0 else 1
 
 /-- Shifts by an amount `≥ w` produce `0` (`BitVec` semantics). A backend targeting
-x86/ARM, where the shift amount is masked, must emit an explicit mask; see
-`doc/caliper.md`. -/
+x86/ARM, where the shift amount is masked, must emit an explicit mask. -/
 @[simp] def BinOp.eval : BinOp → Word w → Word w → Word w
   | .add, x, y => x + y
   | .sub, x, y => x - y
@@ -143,10 +105,9 @@ x86/ARM, where the shift amount is masked, must emit an explicit mask; see
 
 /-! ## Syntax -/
 
-/-- Statements. The whole language: this is what the cost model has to be trusted
-about, and it is deliberately tiny. Structures, typed values, arrays-of-structs and
-subroutines are all built on top at *generation* time (`Builder.lean`) and compile away
-to exactly these instructions. -/
+/-- Statements. The whole language, and the whole surface the cost model has to be
+trusted about. Structures, typed values, arrays-of-structs and subroutines are built
+on top at *generation* time (`Builder.lean`) and compile to these instructions. -/
 inductive Stmt (w : ℕ) where
   /-- No-op. -/
   | skip
@@ -160,37 +121,33 @@ inductive Stmt (w : ℕ) where
   | un (op : UnOp) (d a : Reg)
   /-- `d ← a op b` -/
   | bin (op : BinOp) (d a b : Reg)
-  /-- `b ← alloc(regs n)`: reserve capacity for that many words, empty fill. Frees
-  whatever `b` previously held. Reserved words are charged but uninitialised —
-  unreadable until pushed. Time is `C.memAlloc + cap * C.allocPerWord` with `cap`
-  the *runtime* register value, so this instruction's time is **data-dependent**:
-  it is excluded from `Stmt.Straight` and `staticTime?` returns `none` for it.
-  Use `memAllocI` when the capacity is known at generation time. -/
+  /-- `b ← alloc(regs n)`: reserve capacity for that many words, empty fill, freeing
+  whatever `b` held. Reserved words are charged but uninitialised, unreadable until
+  pushed. Time is `C.memAlloc + cap * C.allocPerWord` with `cap` the *runtime*
+  register value, so the time is data-dependent: excluded from `Stmt.Straight`, and
+  `staticTime?` returns `none`. Use `memAllocI` for a generation-time capacity. -/
   | memAlloc (b : BufId) (n : Reg)
-  /-- `b ← alloc(n)` with the capacity `n` an **immediate** in the syntax: same
-  semantics as `memAlloc` at that capacity, but the per-word time charge
-  `C.memAlloc + n * C.allocPerWord` is a pure function of the instruction, so
-  static pricing (`Stmt.Straight`, `staticTime`) applies.
+  /-- `b ← alloc(n)` with the capacity `n` an immediate in the syntax: same semantics
+  as `memAlloc` at that capacity, but the charge `C.memAlloc + n * C.allocPerWord` is
+  a pure function of the instruction, so static pricing (`Stmt.Straight`,
+  `staticTime`) applies.
 
-  **Hazard**: the immediate is a bare `ℕ`. Unlike `memAlloc`, whose capacity is
-  read from a `w`-bit register and is therefore `< 2 ^ w`, a `memAllocI` with
-  `n ≥ 2 ^ w` is expressible — and a buffer filled past `2 ^ w` words makes
-  `memLen` read back a *wrapped* length (see `memLen`) while every cost/semantics
-  theorem still holds. Keep immediate capacities `< 2 ^ w`; the builder surface
-  `Mem.allocI` enforces exactly this bound. -/
+  Hazard: the immediate is a bare `ℕ`, so unlike `memAlloc`, whose capacity comes
+  from a `w`-bit register and is `< 2 ^ w`, a `memAllocI` with `n ≥ 2 ^ w` is
+  expressible. Every cost and semantics theorem still holds, but a buffer filled past
+  `2 ^ w` words makes `memLen` read back a wrapped length. Keep immediate capacities
+  `< 2 ^ w`; the builder's `Mem.allocI` enforces that bound. -/
   | memAllocI (b : BufId) (n : ℕ)
-  /-- `free b`: release `b`'s capacity entirely. Releasing is free — always
-  (`C.memFree = 0` in both shipped tables): the buffer's whole lifecycle was
-  paid at acquisition, whose charge prices creation *and* eventual destruction
-  (see `CostModel.memFree`). A `memFree` of a buffer that was never acquired
-  is statically detectable — buffer names are static, part of the syntax — so
-  a backend can elide it, the `free(NULL)` no-op. -/
+  /-- `free b`: release `b`'s capacity entirely. Releasing is always free
+  (`C.memFree = 0` in both shipped tables): the buffer's whole lifetime was paid at
+  acquisition, whose charge prices creation and destruction (see `CostModel.memFree`).
+  A `memFree` of a never-acquired buffer is statically detectable, since buffer names
+  are syntax, so a backend can elide it like `free(NULL)`. -/
   | memFree (b : BufId)
-  /-- `d ← |b|` (the filled length, not the capacity). The length is loaded as the
-  word `BitVec.ofNat w size`, so it is **exact only while the size is `< 2 ^ w`**:
-  a buffer filled past that — reachable only through a `memAllocI` immediate
-  capacity `≥ 2 ^ w`, since register-driven `memAlloc` capacities are `< 2 ^ w` —
-  reads back wrapped. -/
+  /-- `d ← |b|` (the filled length, not the capacity). The length is loaded as
+  `BitVec.ofNat w size`, so it is exact only while the size is `< 2 ^ w`; past that
+  it reads back wrapped, reachable only through a `memAllocI` immediate capacity
+  `≥ 2 ^ w`, since register-driven capacities are `< 2 ^ w`. -/
   | memLen (d : Reg) (b : BufId)
   /-- `d ← b[i]`; requires `i < |b|`. -/
   | memLoad (d : Reg) (b : BufId) (i : Reg)
@@ -203,7 +160,7 @@ inductive Stmt (w : ℕ) where
   | memPop (b : BufId)
   | ifNZ (c : Reg) (thn els : Stmt w)
   /-- `guard; while (c ≠ 0) { body; guard }`. The guard is a *statement* because
-  computing a loop condition costs real instructions; making it an expression would
+  computing a loop condition costs real instructions; as an expression it would
   smuggle in unaccounted work. `c` is the register the guard leaves its verdict in. -/
   | whileNZ (guard : Stmt w) (c : Reg) (body : Stmt w)
 deriving Repr, Inhabited, BEq
@@ -212,44 +169,32 @@ deriving Repr, Inhabited, BEq
 
 /-! ## Cost model
 
-The costs of the individual instructions. Every field is a function of the
-*instruction* only — nothing here can look at the machine state, which is exactly why
-running time is data-independent. The default is the uniform model (everything 1); the
-`cycles` model below is a rough Skylake-ish latency table, and any bound proved
-generically over `C` instantiates to both. -/
+Per-instruction costs. Every field is a function of the *instruction* only; nothing
+here can look at the machine state, which is why running time is data-independent.
+The default is the uniform model (everything 1); `cycles` below is a rough
+Skylake-ish latency table, and any bound proved generically over `C` instantiates to
+both. -/
 structure CostModel where
   imm : ℕ := 1
   mov : ℕ := 1
   un : UnOp → ℕ := fun _ => 1
   bin : BinOp → ℕ := fun _ => 1
-  /-- *Base* cost of a capacity reservation, beyond the universal per-word
-  charge: the full charge of an allocation is
-  `memAlloc + capacity * allocPerWord`. **0 by design** in both shipped tables:
-  buffer names are static and capacities explicit in the syntax, so a backend
-  can lay buffers out in an arena/bump allocator — object creation is a pointer
-  bump, amortized into the per-word charge, and no general-purpose `malloc` is
-  required. The acquisition charge `capacity * allocPerWord` prices the buffer's
-  whole lifecycle, creation *and* eventual destruction (see `memFree`). The only
-  zero-time allocation is the zero-capacity one — which acquires nothing and is
-  exactly `memFree`'s effect, a release, free by principle.
-  `CostModel.Admissible` exempts this base (the `allocPerWord` field keeps the
-  per-word charge ≥ 1). -/
+  /-- Base cost of a reservation, on top of the per-word charge: an allocation costs
+  `memAlloc + capacity * allocPerWord`. 0 in both shipped tables, since static buffer
+  names and explicit capacities admit an arena/bump allocator, so creation is a
+  pointer bump amortized into the per-word charge. `CostModel.Admissible` exempts
+  this base; `allocPerWord` keeps the per-word charge ≥ 1. -/
   memAlloc : ℕ := 0
   /-- Per-word cost of acquiring capacity. Any model with `1 ≤ allocPerWord`
   makes peak memory bounded by running time (`Exec.peak_le_time`): no program can
   hold more live words than it has spent time steps. -/
   allocPerWord : ℕ := 1
-  /-- Cost of releasing a buffer's capacity: **0 by design** in both shipped
-  tables. The realizability story is lifecycle amortization: every `memFree`
-  pairs with a unique earlier acquisition of the same buffer, whose charge
-  (capacity · `allocPerWord`, plus the `memAlloc` base — 0 in the shipped
-  tables) prices creation *and* eventual destruction. That lifecycle split is
-  the only accounting stable across real
-  allocators — a freelist push, deferred coalescing, or an `munmap` teardown
-  are each bounded by the size-linear work already paid at acquisition. A
-  `memFree` with no matching acquisition is statically detectable (buffer
-  names are static) and elidable by a backend, like `free(NULL)`.
-  `CostModel.Admissible` exempts it. -/
+  /-- Cost of releasing a buffer's capacity: 0 in both shipped tables. Every
+  `memFree` pairs with a unique earlier acquisition of the same buffer, whose charge
+  prices creation and destruction; a freelist push, deferred coalescing or an
+  `munmap` teardown are each bounded by the size-linear work already paid there. A
+  `memFree` with no matching acquisition is statically detectable and elidable, like
+  `free(NULL)`. `CostModel.Admissible` exempts it. -/
   memFree : ℕ := 0
   memLen : ℕ := 1
   memLoad : ℕ := 1
@@ -259,56 +204,42 @@ structure CostModel where
   /-- Cost of testing a condition register and taking the branch. -/
   branch : ℕ := 1
 
-/-- Uniform model: every priced entry is 1, so acquiring capacity costs exactly
-one tick per word (`allocPerWord`) with no base — the alloc base `memAlloc` is
-0 by design, and so is the release `memFree` (releasing live memory is free —
-always; see those fields). -/
+/-- Uniform model: every priced entry is 1, so acquiring capacity costs one tick per
+word with no base, and releasing is free (see `memAlloc`, `memFree`). -/
 def CostModel.unit : CostModel := {}
 
-/-- A coarse "cycles on a modern out-of-order core" model. Included to show that
-bounds proved generically over `C` are not tied to the uniform model. -/
+/-- A coarse "cycles on a modern out-of-order core" model, here to show that bounds
+proved generically over `C` are not tied to the uniform model. -/
 def CostModel.cycles : CostModel where
   bin := fun op => match op with
     | .mul | .mulhi => 3
     | .udiv | .umod => 30
     | _ => 1
-  memAlloc := 0   -- no malloc: static buffer names admit an arena/bump allocator,
-                  -- so creation is a pointer bump amortized into the per-word charge
-  -- one cycle per acquired word: a cache-line-amortised first touch of the new
-  -- capacity. Deliberately kept ≥ 1 so `Exec.peak_le_time` applies to this table.
+  memAlloc := 0   -- no malloc: static buffer names admit an arena/bump allocator
+  -- one cycle per acquired word: a cache-line-amortised first touch. Kept ≥ 1 so
+  -- `Exec.peak_le_time` applies to this table.
   allocPerWord := 1
-  memFree := 0    -- release is free; the lifecycle was priced per word at acquisition
+  memFree := 0    -- release is free; priced per word at acquisition
   memLoad := 4     -- L1 hit
   memStore := 4
   memPush := 5
   branch := 2     -- mispredict-amortised
 
-/-- **Admissibility**: every cost-table entry pricing an instruction is at least
-one time unit — no instruction runs for free, and no word of live memory is
-acquired for free. Two *deliberate* exemptions, both instances of the
-free-is-free principle (release costs are covered by acquisition; holding is
-free). The release instruction `memFree` (0 in both shipped tables) gets no
-`≥ 1` field — a buffer release's work was priced into the acquisition charge
-that created the buffer (lifecycle amortization; see the `CostModel.memFree`
-docstring). And the alloc *base* `memAlloc` (0 in both shipped tables) gets
-none either, because the full acquisition charge
-`memAlloc + capacity * allocPerWord` is already kept at ≥ 1 per acquired
-word by the `allocPerWord` field below. An admissible model therefore still
-never acquires live memory in zero time; the only zero-time allocation is the
-zero-capacity `memAlloc`/`memAllocI`, which acquires nothing — its effect is
-exactly `memFree`'s, a release, free by principle.
+/-- Every table entry pricing an instruction is at least one time unit: no
+instruction runs for free, and no word of live memory is acquired for free.
 
-Why this predicate exists: every cost theorem is generic in `C`, and a degenerate
-table with a zero entry makes cost claims vacuous — a model that prices real work
-at zero can certify any program under any budget, and an execution's peak memory
-can exceed its running time. Admissibility is the one-line hypothesis that rules
-this out: under an admissible model every executed non-release instruction
-contributes at least one tick to `t`, and the per-word allocation charge keeps
-`Exec.peak_le_time` applicable (its `1 ≤ C.allocPerWord` hypothesis is exactly
-the `allocPerWord` field of this structure — the field accessor *is* the lemma).
-Both shipped headline tables are proved admissible (`CostModel.unit.admissible`,
-`CostModel.cycles.admissible`), so every headline number in this development is
-accounted in a model where nothing runs for free. -/
+The predicate exists because every cost theorem is generic in `C`, and a degenerate
+table with a zero entry makes cost claims vacuous: a model pricing real work at zero
+certifies any program under any budget, and peak memory can exceed running time.
+Under an admissible model every executed non-release instruction contributes a tick
+to `t`, and the `allocPerWord` field is literally the `1 ≤ C.allocPerWord`
+hypothesis of `Exec.peak_le_time`. Both shipped tables are proved admissible
+(`CostModel.unit.admissible`, `CostModel.cycles.admissible`).
+
+Two exemptions, both free-is-free: the release `memFree`, whose work was priced into
+the acquisition that created the buffer, and the alloc *base* `memAlloc`, since
+`allocPerWord` already keeps the full acquisition charge ≥ 1 per word. The only
+zero-time allocation is the zero-capacity one, which acquires nothing. -/
 structure CostModel.Admissible (C : CostModel) : Prop where
   imm : 1 ≤ C.imm
   mov : 1 ≤ C.mov
@@ -377,8 +308,8 @@ def State.allocBuf (s : State w) (b : BufId) (n : ℕ) : State w :=
 @[simp] theorem bufs_setBuf_self (s : State w) (b : BufId) (a : Array (Word w)) :
     (s.setBuf b a).bufs b = a := by simp [State.setBuf]
 
-/-- **The entire separation theory.** Writing buffer `b` leaves buffer `b'` alone, and
-the side condition is a decidable statement about two `ℕ`s. -/
+/-- The separation theory, in full: writing buffer `b` leaves buffer `b'` alone, with
+a side condition decidable over two `ℕ`s. -/
 @[simp] theorem bufs_setBuf_ne (s : State w) {b b' : BufId} (a : Array (Word w))
     (h : b' ≠ b) : (s.setBuf b a).bufs b' = s.bufs b' := by simp [State.setBuf, h]
 
@@ -411,7 +342,7 @@ the side condition is a decidable statement about two `ℕ`s. -/
 `Exec C c s s' t d p`: statement `c` takes state `s` to `s'`, spending `t` time units,
 changing live memory by `d` words (net, signed) with peak growth `p`.
 
-Out-of-range `memLoad`/`memStore` simply have no rule, so a derivation witnesses memory
+Out-of-range `memLoad`/`memStore` have no rule, so a derivation witnesses memory
 safety. -/
 inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℤ → ℤ → Prop where
   | skip {s} : Exec C .skip s s 0 0 0
@@ -425,9 +356,9 @@ inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℤ 
   | bin {op d a b s} :
       Exec C (.bin op d a b) s (s.setReg d (op.eval (s.regs a) (s.regs b)))
         (C.bin op) 0 0
-  /-- Reserve capacity (dynamic, from a register): charges the new capacity,
-  credits the old. Time is `C.memAlloc + cap * C.allocPerWord` — **state-dependent**,
-  since the capacity is read from a register at runtime. -/
+  /-- Reserve capacity (dynamic, from a register): charges the new capacity, credits
+  the old. Time is `C.memAlloc + cap * C.allocPerWord`, state-dependent, since the
+  capacity is read from a register at runtime. -/
   | memAlloc {b n s} :
       Exec C (.memAlloc b n) s (s.allocBuf b (s.regs n).toNat)
         (C.memAlloc + (s.regs n).toNat * C.allocPerWord)
@@ -440,7 +371,7 @@ inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℤ 
         (C.memAlloc + n * C.allocPerWord)
         ((n : ℤ) - (s.caps b : ℤ))
         (max ((n : ℤ) - (s.caps b : ℤ)) 0)
-  /-- Free: credits the whole capacity, at time `C.memFree` — 0 in both shipped
+  /-- Free: credits the whole capacity, at time `C.memFree`, 0 in both shipped
   tables (release was priced at acquisition). -/
   | memFree {b s} :
       Exec C (.memFree b) s (s.allocBuf b 0) C.memFree (-(s.caps b : ℤ)) 0
@@ -451,7 +382,7 @@ inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℤ 
   | memStore {b i src s} (h : (s.regs i).toNat < (s.bufs b).size) :
       Exec C (.memStore b i src) s
         (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) h)) C.memStore 0 0
-  /-- Push requires free capacity — no rule otherwise, so a derivation proves the
+  /-- Push requires free capacity: no rule otherwise, so a derivation proves the
   program stays within what it reserved. Memory-neutral. -/
   | memPush {b src s} (h : (s.bufs b).size < s.caps b) :
       Exec C (.memPush b src) s (s.setBuf b ((s.bufs b).push (s.regs src)))
@@ -474,9 +405,9 @@ inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℤ 
 
 /-! ## Basic metatheory -/
 
-/-- The machine is deterministic: a statement has at most one outcome, and in
-particular at most one cost. So "the" running time is well defined and an upper bound
-proved for one execution is a bound on all of them. -/
+/-- The machine is deterministic: a statement has at most one outcome, hence at most
+one cost, so "the" running time is well defined and a bound proved for one execution
+bounds all of them. -/
 theorem Exec.deterministic {C : CostModel} {c : Stmt w} {s s₁ s₂ : State w}
     {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
     (h₁ : Exec C c s s₁ t₁ d₁ p₁) (h₂ : Exec C c s s₂ t₂ d₂ p₂) :
@@ -523,9 +454,9 @@ theorem Exec.net_le_peak {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (h : Exec C c s s' t d p) : d ≤ p := by
   induction h <;> omega
 
-/-- The induction core of `Exec.peak_le_time`: both memory indices are bounded by
-the running time, in one induction (the `seq`/`whileNZ` peak algebra needs the net
-bound of the prefix to bound the peak of the whole). -/
+/-- The induction core of `Exec.peak_le_time`: both memory indices bounded by the
+running time in one induction, since the `seq`/`whileNZ` peak algebra needs the net
+bound of the prefix to bound the peak of the whole. -/
 theorem Exec.net_and_peak_le_time {C : CostModel} {c : Stmt w} {s s' : State w}
     {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hC : 1 ≤ C.allocPerWord) :
     d ≤ (t : ℤ) ∧ p ≤ (t : ℤ) := by
@@ -547,13 +478,11 @@ theorem Exec.net_and_peak_le_time {C : CostModel} {c : Stmt w} {s s' : State w}
     constructor <;> push_cast <;> omega
   | _ => constructor <;> omega
 
-/-- **Peak memory is bounded by running time.** In any cost model that charges at
-least one time unit per word of acquired live memory (`1 ≤ C.allocPerWord` — true
-of both `CostModel.unit` and `CostModel.cycles`), no execution's live-memory peak
-can exceed its running time: a time bound is automatically a space bound, and a
-single certificate covers both resources. The register-side counterpart —
-statically inferred peak register pressure bounded by static time — is
-`Stmt.Straight.regPeak₀_le` (`Liveness.lean`). -/
+/-- Peak memory is bounded by running time. In any model charging at least one time
+unit per acquired word (`1 ≤ C.allocPerWord`, true of both shipped tables), no
+execution's live-memory peak exceeds its running time, so one certificate covers
+both resources. The register-side counterpart is `Stmt.Straight.regPeak₀_le`
+(`Liveness.lean`). -/
 theorem Exec.peak_le_time {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (h : Exec C c s s' t d p) (hC : 1 ≤ C.allocPerWord) : p ≤ (t : ℤ) :=
   (h.net_and_peak_le_time hC).2
@@ -578,9 +507,8 @@ theorem Exec.net_le_time_admissible {C : CostModel} {c : Stmt w} {s s' : State w
 
 /-! ### Framing: which registers and buffers a statement can touch
 
-These are the ergonomic replacement for separation logic. Both are computed
-syntactically, hence decidable, hence dischargeable by `simp`/`decide` on the concrete
-code the builder produces. -/
+The replacement for separation logic. Both are computed syntactically, hence
+decidable, hence dischargeable by `simp`/`decide` on concrete code. -/
 
 /-- `c.Writes r`: `c` may assign register `r`'s *value*. -/
 def Stmt.Writes : Stmt w → Reg → Prop
@@ -702,8 +630,8 @@ theorem Exec.frame_reg {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
   | while_step _ _ _ _ ihg ihb ihl =>
     rw [ihl hr, ihb fun hh => hr (Or.inr hh), ihg fun hh => hr (Or.inl hh)]
 
-/-- Buffer frame rule — the analogue of a separation-logic frame, but with a decidable
-side condition instead of an entailment. -/
+/-- Buffer frame rule: a separation-logic frame with a decidable side condition
+instead of an entailment. -/
 theorem Exec.frame_buf {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} {b : BufId}
     (h : Exec C c s s' t d p) (hb : ¬ c.Touches b) : s'.bufs b = s.bufs b := by
@@ -741,13 +669,13 @@ theorem Exec.frame_cap {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
 
 /-! ### Unit time, precisely
 
-A statement with no branches costs a syntactically-determined number of time units, for
-*every* input state. This is the theorem that makes the cost model meaningful: nothing
-in the machine can make an instruction cheaper or more expensive depending on data. -/
+A statement with no branches costs a syntactically-determined number of time units,
+for *every* input state: nothing in the machine makes an instruction cheaper or more
+expensive depending on data. -/
 
-/-- No `ifNZ`, no `whileNZ`, and no *dynamic* `memAlloc` — the three constructs
-whose time depends on the state. (`memAllocI`, whose capacity is an immediate, IS
-straight: its per-word charge is a function of the syntax.) -/
+/-- No `ifNZ`, no `whileNZ`, no *dynamic* `memAlloc`: the three constructs whose time
+depends on the state. `memAllocI` is straight, its per-word charge being a function
+of the syntax. -/
 def Stmt.Straight : Stmt w → Prop
   | .seq c₁ c₂ => c₁.Straight ∧ c₂.Straight
   | .memAlloc .. => False
@@ -755,11 +683,10 @@ def Stmt.Straight : Stmt w → Prop
   | .whileNZ .. => False
   | _ => True
 
-/-- No `whileNZ` and no dynamic `memAlloc` anywhere; `ifNZ` is allowed (both
-branches must be loop-free). For such code `staticTime` is an upper bound on every
-execution (`Exec.time_le_staticTime_of_loopFree`). The dynamic `memAlloc` is
-excluded for the same reason as loops: its time charge depends on the state
-(the runtime capacity), so no syntactic bound exists. -/
+/-- No `whileNZ` and no dynamic `memAlloc` anywhere; `ifNZ` is allowed, with both
+branches loop-free. For such code `staticTime` is an upper bound on every execution
+(`Exec.time_le_staticTime_of_loopFree`). The dynamic `memAlloc` is excluded for the
+same reason as loops: its charge depends on the runtime capacity. -/
 def Stmt.LoopFree : Stmt w → Prop
   | .seq c₁ c₂ => c₁.LoopFree ∧ c₂.LoopFree
   | .memAlloc .. => False
@@ -774,19 +701,17 @@ theorem Stmt.Straight.loopFree {c : Stmt w} (h : c.Straight) : c.LoopFree := by
   | memAlloc | ifNZ | whileNZ => exact h.elim
   | _ => trivial
 
-/-- The syntactic running time of a **branch-free** statement — exact for `Straight`
-code (`straight_time_eq`). For `ifNZ` it is the upper-bound shape `branch + max`,
-proved safe for loop-free code by `Exec.time_le_staticTime_of_loopFree`; for
-`whileNZ` it is 0 and **meaningless — it returns 0 for every loop**, so quoting this
-function for code containing `whileNZ` produces a number that bounds nothing.
-Likewise for the *dynamic* `memAlloc` it returns only the base cost `C.memAlloc`
-and **under-reports**: the real charge adds `cap * C.allocPerWord` for the runtime
-capacity `cap`, which no function of the syntax can know. At the
-API surface use `staticTime?` (which returns `none` unless the number is exact) or
-pair this function with a `Stmt.Straight` (exact) or `Stmt.LoopFree` (upper bound)
-proof — both exclude the dynamic `memAlloc`; bounds for looping or
-dynamically-allocating code come from the `Triple` logic, never from this
-function. -/
+/-- The syntactic running time of a branch-free statement, exact for `Straight` code
+(`straight_time_eq`). For `ifNZ` it is the upper-bound shape `branch + max`, proved
+safe for loop-free code by `Exec.time_le_staticTime_of_loopFree`.
+
+Two ways to misuse it: on `whileNZ` it returns 0, so a number quoted for looping
+code bounds nothing; on the *dynamic* `memAlloc` it returns the base `C.memAlloc`
+and under-reports, since the real charge adds `cap * C.allocPerWord` for a runtime
+capacity no function of the syntax can know. At the API surface use `staticTime?`,
+which returns `none` unless the number is exact, or pair this with a
+`Stmt.Straight` (exact) or `Stmt.LoopFree` (upper bound) proof. Bounds for looping
+or dynamically-allocating code come from the `Triple` logic. -/
 def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .skip => 0
   | .seq c₁ c₂ => c₁.staticTime C + c₂.staticTime C
@@ -805,10 +730,9 @@ def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .ifNZ _ t e => C.branch + max (t.staticTime C) (e.staticTime C)
   | .whileNZ .. => 0
 
-/-- `c` acquires no live memory — no `memAlloc`/`memAllocI` — anywhere,
-including under branches and loops. `memFree` is allowed: it only ever
-*decreases* live memory, which is exactly what `Exec.allocFree_space`'s
-`d ≤ 0 ∧ p ≤ 0` conclusion certifies. -/
+/-- `c` acquires no live memory anywhere, branches and loops included: no
+`memAlloc`/`memAllocI`. `memFree` is allowed, as it only ever decreases live memory,
+which is what `Exec.allocFree_space`'s `d ≤ 0 ∧ p ≤ 0` certifies. -/
 def Stmt.AllocFree : Stmt w → Prop
   | .seq c₁ c₂ => c₁.AllocFree ∧ c₂.AllocFree
   | .ifNZ _ t e => t.AllocFree ∧ e.AllocFree
@@ -817,8 +741,8 @@ def Stmt.AllocFree : Stmt w → Prop
   | .memAllocI .. => False
   | _ => True
 
-/-- **Branch-free code runs in constant time.** The running time is a function of the
-syntax alone — it does not mention the state. -/
+/-- Branch-free code runs in constant time: the running time is a function of the
+syntax alone, never of the state. -/
 theorem Exec.straight_time_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (h : Exec C c s s' t d p) (hs : c.Straight) : t = c.staticTime C := by
   induction h with
@@ -826,10 +750,9 @@ theorem Exec.straight_time_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t :
   | memAlloc | ifNZ_true | ifNZ_false | while_done | while_step => exact hs.elim
   | _ => rfl
 
-/-- **Loop-free code is bounded by its static time.** With `ifNZ` in play the time is
-no longer exact — the branches may cost different amounts — but `staticTime`'s
-`branch + max` shape is a sound upper bound for every execution. This is the theorem
-behind calling that arm "the safe upper-bound shape". -/
+/-- Loop-free code is bounded by its static time. With `ifNZ` in play the time is no
+longer exact, since the branches may cost different amounts, but `staticTime`'s
+`branch + max` shape bounds every execution. -/
 theorem Exec.time_le_staticTime_of_loopFree {C : CostModel} {c : Stmt w}
     {s s' : State w} {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p)
     (hl : c.LoopFree) : t ≤ c.staticTime C := by
@@ -842,9 +765,9 @@ theorem Exec.time_le_staticTime_of_loopFree {C : CostModel} {c : Stmt w}
   | memAlloc | while_done | while_step => exact hl.elim
   | _ => exact le_rfl
 
-/-- Memory only ever enters through `memAlloc`/`memAllocI`: alloc-free code —
-straight-line or not — has non-positive net and zero peak growth (`memFree`
-may make the net strictly negative: freeing is allowed). -/
+/-- Memory only ever enters through `memAlloc`/`memAllocI`, so alloc-free code,
+straight-line or not, has non-positive net and zero peak growth. `memFree` may make
+the net strictly negative. -/
 theorem Exec.allocFree_space {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (h : Exec C c s s' t d p) (ha : c.AllocFree) :
     d ≤ 0 ∧ p ≤ 0 := by
@@ -865,22 +788,21 @@ theorem Exec.allocFree_space {C : CostModel} {c : Stmt w} {s s' : State w} {t : 
   | _ => omega
 
 /-- Corollary: two runs of the same branch-free program take the same time, whatever
-their inputs. (Data-independence of the abstract time counter — an ingredient of a
-constant-time argument, not by itself a side-channel guarantee.) -/
+their inputs. This is data-independence of the abstract time counter, an ingredient
+of a constant-time argument, not by itself a side-channel guarantee. -/
 theorem Exec.straight_data_independent {C : CostModel} {c : Stmt w}
     {s₁ s₁' s₂ s₂' : State w} {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
     (h₁ : Exec C c s₁ s₁' t₁ d₁ p₁) (h₂ : Exec C c s₂ s₂' t₂ d₂ p₂)
     (hs : c.Straight) : t₁ = t₂ :=
   (h₁.straight_time_eq hs).trans (h₂.straight_time_eq hs).symm
 
-/-- The static running time as a *partial* function — the safe way to quote a static
-time. `some n` exactly when the statement is straight-line (`Stmt.Straight`) with
-static time `n`, in which case every execution takes exactly `n` time units
-(`Exec.staticTime?_time_eq`); `none` as soon as the statement contains an `ifNZ`, a
-`whileNZ` or a dynamic `memAlloc` anywhere. Unlike the raw `staticTime`, this
-function cannot silently return a meaningless number for code with branches, loops
-or data-dependent allocation: it mirrors exactly the fragment on which
-`straight_time_eq` holds (`staticTime?_eq_some`). -/
+/-- The static running time as a *partial* function, and the safe way to quote a
+static time. `some n` exactly when the statement is straight-line with static time
+`n`, in which case every execution takes exactly `n` time units
+(`Exec.staticTime?_time_eq`); `none` as soon as an `ifNZ`, a `whileNZ` or a dynamic
+`memAlloc` appears. Unlike the raw `staticTime` it cannot silently return a
+meaningless number, since it mirrors the fragment on which `straight_time_eq` holds
+(`staticTime?_eq_some`). -/
 def Stmt.staticTime? (C : CostModel) : Stmt w → Option ℕ
   | .seq c₁ c₂ => (c₁.staticTime? C).bind fun t₁ => (c₂.staticTime? C).map (t₁ + ·)
   | .memAlloc .. => none
@@ -926,9 +848,9 @@ theorem Stmt.Straight.staticTime?_eq {c : Stmt w} (hs : c.Straight) (C : CostMod
     c.staticTime? C = some (c.staticTime C) :=
   Stmt.staticTime?_eq_some.mpr ⟨hs, rfl⟩
 
-/-- **Whenever `staticTime?` returns a number, that number is the exact running
-time** of every execution, on every input — the `Option`-valued API needs no
-side condition: `some` already certifies straightness. -/
+/-- Whenever `staticTime?` returns a number, that number is the exact running time of
+every execution, on every input. The `Option`-valued API needs no side condition:
+`some` already certifies straightness. -/
 theorem Exec.staticTime?_time_eq {C : CostModel} {c : Stmt w} {s s' : State w}
     {t n : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hn : c.staticTime? C = some n) :
     t = n := by
@@ -938,26 +860,25 @@ theorem Exec.staticTime?_time_eq {C : CostModel} {c : Stmt w} {s s' : State w}
 /-! ### Absolute live memory: well-formed states and `liveMem`
 
 `Exec` defines the indices `d` and `p` for *arbitrary* start states, including
-adversarial ones where they have no physical reading: a state claiming a huge unbacked
-`caps b` would let `memFree b ;; memAlloc b' n` fund a large allocation at certified
-peak 0 ("phantom credit"), and a state with `(s.bufs b).size > s.caps b` stores data
-the metric never charged ("hidden storage"). No such state is reachable from an honest
-start, and this section proves it: `State.WellFormed` — fill within reserved capacity,
-finitely many reservations — holds for `State.init` (`State.init_wellFormed`) and is
-preserved by every execution (`Exec.wellFormed_preserved`). Over such states the
-*absolute* footprint `State.liveMem` (the sum of reserved buffer capacities) is well
-defined (`liveMem_eq_of_supportBound`) and the profile is pinned to it exactly:
+adversarial ones where they have no physical reading. A state claiming a huge
+unbacked `caps b` would let `memFree b ;; memAlloc b' n` fund a large allocation at
+certified peak 0 (phantom credit), and a state with `(s.bufs b).size > s.caps b`
+stores data the metric never charged (hidden storage). No such state is reachable
+from an honest start: `State.WellFormed` (fill within reserved capacity, finitely
+many reservations) holds for `State.init` and is preserved by every execution
+(`Exec.wellFormed_preserved`). Over such states the *absolute* footprint
+`State.liveMem`, the sum of reserved buffer capacities, is well defined
+(`liveMem_eq_of_supportBound`) and the profile is pinned to it exactly:
 
 * the net change is exact: `liveMem s' = liveMem s + d` (`Exec.liveMem_eq`);
-* the final state is within the peak (`Exec.liveMem_le_peak`), and so is **every
-  intermediate state** of the execution (`Exec.reaches_liveMem_le_peak`, with
-  `Reaches` enumerating the states an execution passes through);
+* the final state is within the peak (`Exec.liveMem_le_peak`), and so is every
+  intermediate state (`Exec.reaches_liveMem_le_peak`, with `Reaches` enumerating
+  the states an execution passes through);
 * `memFree` credits only capacity genuinely present in the footprint
-  (`Exec.memFree_credit_le`) — no phantom credit.
+  (`Exec.memFree_credit_le`).
 
-So for executions from well-formed states — in particular anything reachable from
-`State.init` — `p` is an absolute high-water mark on physical memory above the start
-level, not merely growth relative to an arbitrary baseline. -/
+So from a well-formed state, `p` is an absolute high-water mark on physical memory
+above the start level, not growth relative to an arbitrary baseline. -/
 
 /-- `B` is a *support bound* for `s`: every buffer at or above `B` has no reserved
 capacity. The absolute footprint of such a state is `s.liveMem B`, and the choice
@@ -970,11 +891,10 @@ theorem State.SupportBound.mono {s : State w} {B B' : ℕ} (hs : s.SupportBound 
     (hB : B ≤ B') : s.SupportBound B' :=
   fun b hb => hs b (hB.trans hb)
 
-/-- The states the memory accounting is *about*: the filled prefix of every buffer
-fits inside its reserved capacity (no data the metric never charged), and only
-finitely many buffers are reserved (so total live memory is well defined). Holds for
-`State.init` and is preserved by execution (`Exec.wellFormed_preserved`), hence holds
-in every state reachable from an honest start. -/
+/-- The states the memory accounting is *about*: every buffer's filled prefix fits
+inside its reserved capacity, so no data goes uncharged, and only finitely many
+buffers are reserved, so total live memory is well defined. Holds for `State.init`
+and is preserved by execution (`Exec.wellFormed_preserved`). -/
 structure State.WellFormed (s : State w) : Prop where
   /-- Storage never exceeds what was reserved (and charged). -/
   size_le_cap : ∀ b, (s.bufs b).size ≤ s.caps b
@@ -1029,7 +949,7 @@ theorem Stmt.touches_lt_of_memBound_le {c : Stmt w} {B : ℕ} (hB : c.memBound �
     ∀ b, c.Touches b → b < B :=
   fun _ ht => lt_of_lt_of_le (touches_lt_memBound ht) hB
 
-/-- Preservation of the storage-within-capacity invariant — the induction core of
+/-- Preservation of the storage-within-capacity invariant; the induction core of
 `Exec.wellFormed_preserved`. `memPush` demands free capacity (its `size < cap`
 hypothesis is exactly what keeps the invariant alive), `memAlloc`/`memFree` install an
 empty array along with the new capacity, and no other instruction grows a buffer. -/
@@ -1079,7 +999,7 @@ theorem Exec.sizes_le_caps {C : CostModel} {c : Stmt w} {s s' : State w} {t : �
   | while_step _ _ _ _ ihg ihb ihl => exact ihl (ihb (ihg hs))
 
 /-- A support bound survives execution: capacities only change at buffers named in
-`c` — all of which lie below the bound. -/
+`c`, all of which lie below the bound. -/
 theorem Exec.supportBound_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
     {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
     (hc : ∀ b, c.Touches b → b < B)
@@ -1088,9 +1008,9 @@ theorem Exec.supportBound_preserved {C : CostModel} {c : Stmt w} {s s' : State w
   rw [h.frame_cap fun ht => Nat.lt_irrefl b (Nat.lt_of_lt_of_le (hc b ht) hb)]
   exact hs b hb
 
-/-- **Preservation of well-formedness.** With `State.init_wellFormed`: every state
-reachable from the initial state is well-formed, so the memory profile of an execution
-from an honest start reads as physical memory (`Exec.liveMem_eq`,
+/-- Preservation of well-formedness. With `State.init_wellFormed`, every state
+reachable from the initial state is well-formed, so the memory profile of an
+execution from an honest start reads as physical memory (`Exec.liveMem_eq`,
 `Exec.reaches_liveMem_le_peak`). -/
 theorem Exec.wellFormed_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
     {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hwf : s.WellFormed) :
@@ -1150,8 +1070,8 @@ theorem liveMem_allocBuf (s : State w) {b : BufId} (n : ℕ) {B : ℕ} (hb : b <
       push_cast
       omega
 
-/-- Any single reserved capacity is part of the footprint — the arithmetic heart of
-the no-phantom-credit corollary `Exec.memFree_credit_le`. -/
+/-- Any single reserved capacity is part of the footprint; the arithmetic behind
+`Exec.memFree_credit_le`. -/
 theorem caps_le_liveMem (s : State w) {b B : ℕ} (hb : b < B) :
     s.caps b ≤ s.liveMem B := by
   induction B with
@@ -1172,10 +1092,9 @@ theorem liveMem_eq_of_supportBound {s : State w} {B B' : ℕ} (hs : s.SupportBou
   | succ B' hB ih =>
     simp only [State.liveMem, ih, hs B' hB, Nat.add_zero]
 
-/-- **The net index is exact.** Over any bound `B` covering the buffers `c` names,
-the absolute footprint moves by exactly `d` — the net component of the profile is the
-true change in live memory, not just a bound on it. (A `Triple` still only certifies
-`d ≤ D`; the exactness is between `d` and the state.) -/
+/-- The net index is exact: over any bound `B` covering the buffers `c` names, the
+absolute footprint moves by exactly `d`, not merely by at most `d`. A `Triple` still
+only certifies `d ≤ D`; the exactness is between `d` and the state. -/
 theorem Exec.liveMem_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
     (hc : ∀ b, c.Touches b → b < B) :
@@ -1207,11 +1126,11 @@ theorem Exec.liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' : State w} {t : 
   have h₂ := h.net_le_peak
   omega
 
-/-- `Reaches C c s m`: an execution of `c` from `s` passes through machine state `m` —
-the start state, or a state at an instruction boundary strictly inside the execution
-(the branch conditions make every constructor follow the path the execution actually
-takes). The *final* state of the whole execution is covered separately by
-`Exec.liveMem_le_peak`; together the two enumerate every state an execution visits. -/
+/-- `Reaches C c s m`: an execution of `c` from `s` passes through state `m`, either
+the start state or a state at an instruction boundary strictly inside the execution;
+the branch conditions keep every constructor on the path actually taken. The final
+state is covered separately by `Exec.liveMem_le_peak`, so together the two enumerate
+every state an execution visits. -/
 inductive Reaches (C : CostModel) : Stmt w → State w → State w → Prop where
   | start {c : Stmt w} {s : State w} : Reaches C c s s
   | seq_left {c₁ c₂ : Stmt w} {s m : State w} :
@@ -1232,10 +1151,9 @@ inductive Reaches (C : CostModel) : Stmt w → State w → State w → Prop wher
       Exec C g s s₁ tg dg pg → s₁.regs r ≠ 0 → Exec C body s₁ s₂ tb db pb →
       Reaches C (.whileNZ g r body) s₂ m → Reaches C (.whileNZ g r body) s m
 
-/-- **The peak bounds every intermediate state.** Any state an execution passes
-through (`Reaches`) has absolute footprint at most `p` above the start — `p` really
-is the high-water mark of the whole execution, not just a statement about its
-endpoints. -/
+/-- The peak bounds every intermediate state: any state an execution passes through
+(`Reaches`) has absolute footprint at most `p` above the start, so `p` is the
+high-water mark of the whole execution, not a statement about its endpoints. -/
 theorem Exec.reaches_liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' m : State w}
     {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p) (hm : Reaches C c s m)
     (hc : ∀ b, c.Touches b → b < B) :
@@ -1291,12 +1209,11 @@ theorem Exec.reaches_liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' m : Stat
       have h3 := Exec.liveMem_eq hb fun b hb' => hc b (Or.inr hb')
       omega
 
-/-- **No phantom credit.** From *any* state, `memFree b` credits exactly the reserved
-capacity `s.caps b`, and that capacity is genuinely part of the current absolute
-footprint: the credit `-d` never exceeds `liveMem`. So a free can neither drive the
-footprint negative nor fund an allocation the profile did not pay for — by
-`Exec.liveMem_eq`, the footprint after `memFree b ;; memAlloc b' n` really is
-`liveMem s - s.caps b + n`, all charged. -/
+/-- No phantom credit: from any state, `memFree b` credits exactly `s.caps b`, and
+that capacity is part of the current absolute footprint, so the credit `-d` never
+exceeds `liveMem`. A free can neither drive the footprint negative nor fund an
+allocation the profile did not pay for; by `Exec.liveMem_eq` the footprint after
+`memFree b ;; memAlloc b' n` is `liveMem s - s.caps b + n`, all charged. -/
 theorem Exec.memFree_credit_le {C : CostModel} {b : BufId} {s s' : State w} {t : ℕ}
     {d p : ℤ} {B : ℕ} (h : Exec C (.memFree b) s s' t d p) (hb : b < B) :
     -d ≤ (s.liveMem B : ℤ) := by
@@ -1308,8 +1225,8 @@ theorem Exec.memFree_credit_le {C : CostModel} {b : BufId} {s s' : State w} {t :
 
 Executable semantics, agreeing with `Exec`. `fuel` bounds the recursion depth (every
 recursive call consumes one unit, so any `fuel ≥` statement depth × loop trip counts
-suffices); `none` means "ran out of fuel, or hit an out-of-range buffer access".
-Fuel is an interpreter artifact only — no cost is derived from it. -/
+suffices); `none` means "ran out of fuel, or hit an out-of-range buffer access". Fuel
+is an interpreter artifact; no cost is derived from it. -/
 
 def run (C : CostModel) : ℕ → Stmt w → State w → Option (State w × ℕ × ℤ × ℤ)
   | 0, _, _ => none

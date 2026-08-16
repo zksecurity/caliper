@@ -7,13 +7,13 @@ import Caliper.Liveness
 Four classic buffer routines, written against the raw `Stmt` syntax so their
 proofs and pins read off the code directly:
 
-* `Memcpy` — copy a buffer into a freshly (dynamically) allocated one; comes
-  with a proved `Triple`: functional correctness, linear time, net/peak
-  memory exactly the copied length.
-* `Memset` — overwrite every element of a buffer in place.
-* `Reverse` — reverse a buffer in place with two `memStore`s per step.
-* `StackSum` — drain a buffer as a stack (`memLen`/`memLoad`/`memPop`),
-  then release it (`memFree`): the sum survives, the memory is credited back.
+* `Memcpy`: copy a buffer into a freshly, dynamically allocated one, with a proved
+  `Triple` for functional correctness, linear time, and net/peak memory exactly the
+  copied length.
+* `Memset`: overwrite every element of a buffer in place.
+* `Reverse`: reverse a buffer in place with two `memStore`s per step.
+* `StackSum`: drain a buffer as a stack (`memLen`/`memLoad`/`memPop`), then release
+  it (`memFree`); the sum survives and the memory is credited back.
 
 Each program gets interpreter pins (`#guard_msgs` on a concrete input) and a
 pinned statically inferred register peak (`Stmt.regPeak₀`).
@@ -35,9 +35,9 @@ n = src.len; dst = alloc(n); i = 0;
 while (i < n) { dst.push(src[i]); i += 1; }
 ```
 Registers: `r0` index, `r1` length, `r2` loop flag, `r3` element, `r4` the
-constant 1. The destination capacity comes from a register (`memAlloc`), so
-the allocation is the *dynamic* one — its time charge is data-dependent and
-enters the bound through `Triple.memAlloc`'s capacity bound.
+constant 1. The destination capacity comes from a register (`memAlloc`), so the
+allocation is the *dynamic* one: its time charge is data-dependent and enters the
+bound through `Triple.memAlloc`'s capacity bound.
 -/
 def code (src dst : BufId) : Stmt w :=
   .memLen 1 src ;;
@@ -101,12 +101,11 @@ def timeBound (C : CostModel) (n : ℕ) : ℕ :=
     + (n + 1) * (C.bin .ult + C.branch)
     + n * (C.memLoad + C.memPush + C.imm + C.bin .add)
 
-/-- **Memcpy is correct, linear-time, and costs exactly its payload in
-memory**: from a state where `src` holds `arr`, the copy terminates with
-`dst = arr` (and `src` untouched), in time `timeBound C arr.size`, with net
-and peak live-memory growth `arr.size` — the destination's capacity, charged
-once at the dynamic allocation. `dst ≠ src` is the one separation fact; it is
-a statement about buffer *names*. -/
+/-- Memcpy is correct, linear-time, and costs exactly its payload in memory: from a
+state where `src` holds `arr`, the copy terminates with `dst = arr` and `src`
+untouched, in time `timeBound C arr.size`, with net and peak live-memory growth
+`arr.size`, the destination's capacity charged once at the dynamic allocation.
+`dst ≠ src` is the one separation fact, a statement about buffer *names*. -/
 theorem spec {C : CostModel} (src dst : BufId) (hne : dst ≠ src)
     (arr : Array (Word w)) (hsz : arr.size < 2 ^ w) :
     Triple C (fun s => s.bufs src = arr) (code src dst)
@@ -202,7 +201,7 @@ theorem spec {C : CostModel} (src dst : BufId) (hne : dst ≠ src)
     exact ⟨rfl, hsrc⟩
 
 /-- Copy `#[7, 11, 13]` from buffer 0 to buffer 1:
-`(dst contents, time, net, peak)` — time `25 = timeBound .unit 3`, memory
+`(dst contents, time, net, peak)`, with time `25 = timeBound .unit 3` and memory
 `(3, 3)`, instances of `spec`. -/
 def demo : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
   (run .unit 1000 (code 0 1)
@@ -243,7 +242,7 @@ def code (b : BufId) : Stmt w :=
      .bin .add 0 0 3)
 
 /-- Overwrite `#[1, 2, 3, 4]` with the value 9 from `r5`:
-`(contents, time, net, peak)` — zero memory, in place. -/
+`(contents, time, net, peak)`: zero memory, in place. -/
 def demo : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
   (run .unit 1000 (code 0)
       { State.init 64 with
@@ -273,8 +272,8 @@ while (i + 1 < j) { j -= 1; t = b[i]; u = b[j]; b[i] = u; b[j] = t; i += 1; }
 ```
 Registers: `r0` = `i`, `r1` = `j`, `r2` the constant 1, `r3` = `i + 1`,
 `r4` loop flag, `r5`/`r6` the two elements being swapped. The guard computes
-`i + 1 < j`, so its cost (an `imm`, an `add`, an `ult`) is billed on every
-check — guards are statements, never free side conditions.
+`i + 1 < j`, so its cost (an `imm`, an `add`, an `ult`) is billed on every check;
+guards are statements, never free side conditions.
 -/
 def code (b : BufId) : Stmt w :=
   .imm 0 0 ;;
@@ -317,10 +316,9 @@ while (b.len != 0) { acc += b[b.len - 1]; b.pop(); }
 free(b);
 ```
 Registers: `r0` accumulator, `r1` length, `r2` loop flag, `r3` the constant
-1, `r4` top index, `r5` element. The buffer is consumed as a stack — read the
-top (`memLen`, `sub`, `memLoad`), then `memPop` — and released at the end
-(`memFree`), so the net memory is *negative*: the program gives back the
-buffer's capacity.
+1, `r4` top index, `r5` element. The buffer is consumed as a stack, reading the top
+(`memLen`, `sub`, `memLoad`) and then `memPop`, and released at the end (`memFree`),
+so the net memory is *negative*: the program gives back the buffer's capacity.
 -/
 def code (b : BufId) : Stmt w :=
   .imm 0 0 ;;
@@ -332,8 +330,8 @@ def code (b : BufId) : Stmt w :=
      .memPop b) ;;
   .memFree b
 
-/-- Drain `#[3, 5, 9]`: `(sum, final length, final capacity, time, net, peak)`
-— the sum is 17, the buffer ends empty with its 3-word capacity credited back
+/-- Drain `#[3, 5, 9]`: `(sum, final length, final capacity, time, net, peak)`. The
+sum is 17 and the buffer ends empty with its 3-word capacity credited back
 (net −3). -/
 def demo : Option (Word 64 × ℕ × ℕ × ℕ × ℤ × ℤ) :=
   (run .unit 1000 (code 0)

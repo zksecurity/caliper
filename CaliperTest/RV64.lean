@@ -3,12 +3,11 @@ import Caliper.Core
 /-!
 # RV64IM encoder and Caliper → RV64 lowering (test-only, UNVERIFIED)
 
-This module is **not part of the Caliper library** and nothing here is proved:
-it exists to produce differential test vectors (`CaliperTest/Export.lean`)
-that are executed by a real RISC-V emulator (`tests/run_unicorn.py`).
-Correctness of the encoder and lowering comes from those differential tests
-alone — that is deliberate: this is the *untrusted* side of the experiment
-that measures the constant `c` in "one Caliper tick ≤ c RV64 instructions".
+This module is not part of the Caliper library and nothing here is proved. It exists
+to produce differential test vectors (`CaliperTest/Export.lean`) executed by a real
+RISC-V emulator (`tests/run_unicorn.py`). Correctness of the encoder and lowering
+comes from those tests alone: this is the *untrusted* side of the experiment
+measuring the constant `c` in "one Caliper tick ≤ c RV64 instructions".
 
 ## Encoder
 
@@ -56,28 +55,25 @@ Mnemonic → (format, opcode, f3, f7):
 
 ## Lowering conventions
 
-* **Registers**: Caliper `rN` maps to RISC-V `x(5+N)` (`x5`–`x30`); the
-  lowering *fails* (returns `.error`) for `N ≥ 26`. `x1`–`x3` are scratch
-  registers for the fixup sequences and address arithmetic; `x0` is the
-  hard-wired zero; `x4` and `x31` are unused.
-* **Buffer arena**: each `BufId` gets a fixed region decided at lowering
-  time from a per-test declared maximum capacity (a lowering parameter —
-  dynamic `memAlloc` capacities are not statically known). The region is
-  `1 + cap` 64-bit words starting at its base address: word 0 is the
-  buffer's **fill length**, the data follows. Regions are laid out
-  back-to-back from `arenaBase = 0x100000`.
-* **Semantics fixups** (Caliper semantics differ from raw RV64):
-  - `udiv` by zero is 0 in Caliper, all-ones on RV64 → mask the `DIVU`
-    result with `-(b ≠ 0)` (4 instructions total).
-  - `umod` by zero is the dividend in Caliper — `REMU` already agrees; no
-    fixup.
-  - shift amounts ≥ 64 give 0 in Caliper, RV64 masks to 6 bits → mask the
+* Registers: Caliper `rN` maps to RISC-V `x(5+N)` (`x5`–`x30`), and the lowering
+  fails (returns `.error`) for `N ≥ 26`. `x1`–`x3` are scratch registers for the
+  fixup sequences and address arithmetic, `x0` is the hard-wired zero, and `x4`,
+  `x31` are unused.
+* Buffer arena: each `BufId` gets a fixed region decided at lowering time from a
+  per-test declared maximum capacity, a lowering parameter, since dynamic `memAlloc`
+  capacities are not statically known. The region is `1 + cap` 64-bit words starting
+  at its base address: word 0 is the buffer's fill length, the data follows. Regions
+  are laid out back-to-back from `arenaBase = 0x100000`.
+* Semantics fixups, where Caliper differs from raw RV64:
+  - `udiv` by zero is 0 in Caliper, all-ones on RV64, so mask the `DIVU` result with
+    `-(b ≠ 0)` (4 instructions total).
+  - `umod` by zero is the dividend in Caliper, which `REMU` already gives; no fixup.
+  - shift amounts ≥ 64 give 0 in Caliper, RV64 masks to 6 bits, so mask the
     `SLL`/`SRL` result with `-(shamt <ᵤ 64)` (4 instructions total).
-  - `memAlloc`/`memAllocI`/`memFree` all reduce to *zeroing the length
-    slot*: regions are preassigned (so no runtime bump pointer is needed)
-    and `memFree` does not reclaim arena space — fine for the test arena,
-    where each buffer's region is dedicated.
-  - `memPop` on an empty buffer is a no-op → branch over the decrement.
+  - `memAlloc`/`memAllocI`/`memFree` all reduce to zeroing the length slot: regions
+    are preassigned, so no runtime bump pointer is needed, and `memFree` does not
+    reclaim arena space, each buffer's region being dedicated.
+  - `memPop` on an empty buffer is a no-op, so branch over the decrement.
 * Programs end with `EBREAK`; the harness runs until it is reached.
 -/
 
@@ -151,9 +147,9 @@ def ebreak : UInt32 := itype 1 0 0x0 0 0x73
 * `v < 2048`: one `ADDI`.
 * `v` (plus rounding) within 31 bits: `LUI` + `ADDI` (the classic split, with
   the low part sign-adjusted).
-* otherwise: 11-bit chunks, most significant first — `ADDI` then repeated
-  `SLLI 11; ADDI`. Always correct, never optimal; the corpus's large
-  constants are rare. -/
+* otherwise: 11-bit chunks, most significant first, `ADDI` then repeated
+  `SLLI 11; ADDI`. Always correct, never optimal; large constants are rare in the
+  corpus. -/
 def li (rd : Nat) (v : Nat) : Array UInt32 :=
   if v < 2048 then
     #[addi rd 0 (Int.ofNat v)]
@@ -207,8 +203,8 @@ private def s1 : Nat := 1
 private def s2 : Nat := 2
 private def s3 : Nat := 3
 
-/-- Caliper register → RISC-V register. Direct map `rN ↦ x(5+N)`, failing
-beyond the 26 registers `x5`–`x30` — plenty for the corpus. -/
+/-- Caliper register → RISC-V register. Direct map `rN ↦ x(5+N)`, failing beyond the
+26 registers `x5`–`x30`. -/
 def regMap (r : Reg) : Except String Nat :=
   if r < 26 then .ok (5 + r)
   else .error s!"register r{r} out of range: the RV64 test lowering maps r0–r25 only"

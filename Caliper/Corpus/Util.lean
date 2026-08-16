@@ -3,10 +3,9 @@ import Caliper.Triple
 /-!
 # Corpus helpers
 
-Small `BitVec` facts shared by the corpus proofs — the same wrap-around and
-comparison-flag lemmas the worked examples use (`Caliper/Examples.lean` keeps
-its copies `private`; the corpus needs them across files, so they live here,
-namespaced under `Caliper.Corpus`).
+Small `BitVec` facts shared by the corpus proofs: the same wrap-around and
+comparison-flag lemmas the examples use. `Caliper/Examples.lean` keeps its copies
+`private`; the corpus needs them across files, so they live here.
 -/
 
 namespace Caliper.Corpus
@@ -31,7 +30,7 @@ theorem cond_of_flag_ne {c : Prop} [Decidable c] {f : BitVec w}
   · rw [if_neg hc] at hf
     exact absurd hf hnz
 
-/-- A zero comparison flag refutes `c` — provided the word size can distinguish 1
+/-- A zero comparison flag refutes `c`, provided the word size can distinguish 1
 from 0 (`1 < 2 ^ w`), which each call site derives from its own bounds. -/
 theorem not_cond_of_flag_zero {c : Prop} [Decidable c]
     (h2 : 1 < 2 ^ w) (hf : (if c then (1 : BitVec w) else 0) = 0) : ¬ c := by

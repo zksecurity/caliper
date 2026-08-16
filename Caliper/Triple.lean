@@ -4,8 +4,8 @@ import Caliper.Core
 # Upper-bound Hoare triples
 
 `Triple C P c Q T D M` is total correctness with resource *upper bounds*: from any
-state satisfying `P`, the statement terminates (and is memory-safe — an `Exec`
-derivation exists), the result satisfies `Q`, and
+state satisfying `P`, the statement terminates and is memory-safe, an `Exec`
+derivation existing, the result satisfies `Q`, and
 
 * time `t ≤ T`,
 * net live-memory change `d ≤ D` (signed: freeing gives memory back),
@@ -22,14 +22,14 @@ peak once, not once per occurrence, and `whileNZ_measure` gives loops whose iter
 net is `≤ 0` a peak bound independent of the trip count.
 
 Bounds are `≤` throughout, so specs stay simple and weakening is free. The rules are
-the complete proof system used by the examples: one rule per instruction
-(`memLoad`/`memStore` demand the index in range, `memPush` demands free capacity —
-the memory-safety obligations), `seq`/`conseq`/`ifNZ`, the measure-indexed loop
+the complete proof system used by the examples: one rule per instruction, with the
+memory-safety obligations sitting in `memLoad`/`memStore` (index in range) and
+`memPush` (free capacity), plus `seq`/`conseq`/`ifNZ`, the measure-indexed loop
 rule, and decidable-side-condition frame rules replacing separation logic.
 
 Time and memory are also *independently* provable: `TimeTriple` bounds only the
-running time, `SpaceTriple` only the (net, peak) memory pair — each with the full
-rule set, so neither proof carries the other's algebra — and since the machine is
+running time, `SpaceTriple` only the (net, peak) memory pair, each with the full
+rule set, so neither proof carries the other's algebra. Since the machine is
 deterministic the two judgments recombine into a full `Triple`
 (`TimeTriple.and_space`).
 -/
@@ -99,8 +99,8 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
   fun s hs => ⟨_, _, _, _, .bin, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 /-- Reserve capacity (dynamic). The caller supplies an upper bound `N` on the
-*requested capacity* (the register value); it bounds the memory charge
-(`newCap - oldCap ≤ newCap ≤ N`, capacities being nonnegative) **and** the
+*requested capacity*, the register value, which bounds both the memory charge
+(`newCap - oldCap ≤ newCap ≤ N`, capacities being nonnegative) and the
 data-dependent time charge `C.memAlloc + newCap * C.allocPerWord ≤
 C.memAlloc + N * C.allocPerWord`. -/
 protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
@@ -157,9 +157,9 @@ protected theorem memStore {P Q : State w → Prop} {b : BufId} {i src : Reg}
   obtain ⟨hlt, hq⟩ := h s hs
   exact ⟨_, _, _, _, .memStore hlt, hq, le_refl _, le_refl _, le_refl _⟩
 
-/-- Push demands free capacity (`size < cap`) — the second memory-safety obligation,
-which is what makes push worst-case unit time. Memory-neutral: the word was charged
-at `memAlloc`. -/
+/-- Push demands free capacity (`size < cap`), the second memory-safety obligation
+and what makes push worst-case unit time. Memory-neutral: the word was charged at
+`memAlloc`. -/
 protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
     (h : ∀ s, P s → (s.bufs b).size < s.caps b
       ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
@@ -188,17 +188,17 @@ protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T 
     exact ⟨s', C.branch + t, d, p, .ifNZ_true hr hexec, hq,
       Nat.add_le_add_left hT _, hD, hM⟩
 
-/-- **The loop rule.** `I k` is the invariant before the guard when at most `k`
+/-- The loop rule. `I k` is the invariant before the guard when at most `k`
 iterations remain; `J k` is the invariant right after the guard.
 
 * The guard takes `I k` to `J k` within `(Tg, Dg, Mg)`.
 * If the guard's flag is up, at least one iteration remains (`hpos`), and the body
   takes `J (k+1)` back to `I k` within `(Tb, Db, Mb)`.
 
-Time is linear in `k` as before. Memory: both net and peak are bounded by
-`base + k * max (Dg + Db) 0` — `max` with 0 because the loop may exit early, and
-fewer iterations free less. The payoff: when each iteration's net `Dg + Db` is `≤ 0`
-(memory reused), **neither net nor peak grows with `k`**. -/
+Time is linear in `k`. Both memory bounds are `base + k * max (Dg + Db) 0`, with
+`max` against 0 because the loop may exit early and fewer iterations free less. So
+when each iteration's net `Dg + Db` is `≤ 0`, memory being reused, neither net nor
+peak grows with `k`. -/
 theorem whileNZ_measure {I J : ℕ → State w → Prop} {g body : Stmt w} {r : Reg}
     {Tg Tb : ℕ} {Dg Mg Db Mb : ℤ}
     (hg : ∀ k, Triple C (I k) g (J k) Tg Dg Mg)
@@ -281,20 +281,20 @@ end Triple
 
 /-! ## Decoupled judgments: time-only and space-only triples
 
-A `Triple` carries all three bounds at once, which forces every proof to do the
-memory algebra even when only a running-time bound is wanted (and vice versa).
-`TimeTriple` and `SpaceTriple` are the two halves: the same total-correctness core —
-an `Exec` derivation is exhibited, so termination and memory safety are still
-proved — but only one resource is bounded, and the other resource's arithmetic
-disappears from the rules entirely (`TimeTriple.seq` has no `max` profile algebra;
-`SpaceTriple.whileNZ_measure` has no trip-count time term).
+A `Triple` carries all three bounds at once, forcing every proof to do the memory
+algebra even when only a running-time bound is wanted, and vice versa. `TimeTriple`
+and `SpaceTriple` are the two halves. They keep the same total-correctness core, an
+`Exec` derivation being exhibited, so termination and memory safety are still
+proved, but bound one resource only and drop the other's arithmetic from the rules
+entirely: `TimeTriple.seq` has no `max` profile algebra, `SpaceTriple.whileNZ_measure`
+no trip-count time term.
 
-The halves lose nothing: `Triple.time`/`Triple.space` project a full triple, and
-because the machine is deterministic (`Exec.deterministic`) the executions exhibited
-by a `TimeTriple` and a `SpaceTriple` from the same state are the *same* execution,
-so `TimeTriple.and_space` recombines separately proved bounds into a full `Triple`
-after the fact. Decoupling is not just convenience: a bound of one kind can exist
-while the other provably does not — see `Drain` in `Examples.lean`, a loop with a
+The halves lose nothing. `Triple.time`/`Triple.space` project a full triple, and
+because the machine is deterministic the executions exhibited by a `TimeTriple` and
+a `SpaceTriple` from the same state are the *same* execution, so
+`TimeTriple.and_space` recombines separately proved bounds after the fact.
+Decoupling is not only convenience: a bound of one kind can exist while the other
+provably does not, as with `Drain` in `Examples.lean`, a loop with a
 trip-count-independent space bound but no uniform time bound. -/
 
 /-- Time-only total-correctness triple: from any state satisfying `P`, the statement
@@ -305,8 +305,8 @@ def TimeTriple (C : CostModel) (P : State w → Prop) (c : Stmt w) (Q : State w 
   ∀ s, P s → ∃ s' t d p, Exec C c s s' t d p ∧ Q s' ∧ t ≤ T
 
 /-- Space-only total-correctness triple: net live-memory change `d ≤ D` and peak
-growth `p ≤ M`. The running time is existentially forgotten — the statement still
-*terminates* (an `Exec` derivation is exhibited), there is just no bound on `t`. -/
+growth `p ≤ M`. The running time is existentially forgotten; the statement still
+terminates, an `Exec` derivation being exhibited, but `t` is unbounded. -/
 def SpaceTriple (C : CostModel) (P : State w → Prop) (c : Stmt w) (Q : State w → Prop)
     (D M : ℤ) : Prop :=
   ∀ s, P s → ∃ s' t d p, Exec C c s s' t d p ∧ Q s' ∧ d ≤ D ∧ p ≤ M
@@ -327,9 +327,9 @@ theorem Triple.space {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
 
 namespace TimeTriple
 
-/-- **Recombination.** The machine is deterministic, so the executions exhibited by a
-time-only and a space-only triple from the same state coincide — separately proved
-bounds hold of the one real execution, giving back a full `Triple`. -/
+/-- Recombination: the machine is deterministic, so the executions exhibited by a
+time-only and a space-only triple from the same state coincide, and separately
+proved bounds hold of the one real execution. -/
 theorem and_space {P Q₁ Q₂ : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
     (h₁ : TimeTriple C P c Q₁ T) (h₂ : SpaceTriple C P c Q₂ D M) :
     Triple C P c (fun s => Q₁ s ∧ Q₂ s) T D M := by
@@ -371,8 +371,8 @@ protected theorem skip {P Q : State w → Prop} (h : ∀ s, P s → Q s) :
     TimeTriple C P (.skip (w := w)) Q 0 :=
   (Triple.skip h).time
 
-/-- Sequencing time bounds is plain addition — none of `Triple.seq`'s (net, peak)
-profile algebra appears. That absence is the point of the decoupled judgment. -/
+/-- Sequencing time bounds is plain addition; none of `Triple.seq`'s (net, peak)
+profile algebra appears, which is the point of the decoupled judgment. -/
 protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂ : ℕ}
     (h₁ : TimeTriple C P c₁ R T₁) (h₂ : TimeTriple C R c₂ Q T₂) :
     TimeTriple C P (c₁ ;; c₂) Q (T₁ + T₂) := by
@@ -384,8 +384,8 @@ protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂
 
 /-! ### Instruction rules
 
-Projections of the corresponding `Triple` rules — except `memAlloc`, whose full rule
-carries a memory obligation that a time bound does not need. -/
+Projections of the corresponding `Triple` rules, except `memAlloc`, whose full rule
+carries a memory obligation a time bound does not need. -/
 
 protected theorem imm {P Q : State w → Prop} {d : Reg} {v : Word w}
     (h : ∀ s, P s → Q (s.setReg d v)) : TimeTriple C P (.imm d v) Q C.imm :=
@@ -406,9 +406,8 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
   (Triple.bin h).time
 
 /-- Reserve capacity (dynamic). Unlike the other time rules the capacity bound `N`
-does **not** disappear: the time charge `C.memAlloc + newCap * C.allocPerWord` is
-data-dependent, so bounding the requested capacity is exactly what a time bound
-needs. -/
+does not disappear: the charge `C.memAlloc + newCap * C.allocPerWord` is
+data-dependent, so bounding the requested capacity is what a time bound needs. -/
 protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
     (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ Q (s.allocBuf b (s.regs n).toNat)) :
     TimeTriple C P (.memAlloc b n) Q (C.memAlloc + N * C.allocPerWord) :=
@@ -464,8 +463,8 @@ protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T 
     exact ⟨s', C.branch + t, d, p, .ifNZ_true hr hexec, hq, Nat.add_le_add_left hT _⟩
 
 /-- The time-only loop rule: the measure-indexed structure of
-`Triple.whileNZ_measure` (the measure is what proves termination), with **no**
-memory hypotheses and no memory conclusion. Time is linear in `k` as before. -/
+`Triple.whileNZ_measure`, the measure being what proves termination, with no memory
+hypotheses and no memory conclusion. Time is linear in `k`. -/
 theorem whileNZ_measure {I J : ℕ → State w → Prop} {g body : Stmt w} {r : Reg}
     {Tg Tb : ℕ}
     (hg : ∀ k, TimeTriple C (I k) g (J k) Tg)
@@ -540,8 +539,8 @@ protected theorem skip {P Q : State w → Prop} (h : ∀ s, P s → Q s) :
     SpaceTriple C P (.skip (w := w)) Q 0 0 :=
   (Triple.skip h).space
 
-/-- Sequencing composes the memory profile exactly as in `Triple.seq` — but with no
-time arithmetic anywhere. -/
+/-- Sequencing composes the memory profile exactly as in `Triple.seq`, with no time
+arithmetic anywhere. -/
 protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {D₁ M₁ D₂ M₂ : ℤ}
     (h₁ : SpaceTriple C P c₁ R D₁ M₁) (h₂ : SpaceTriple C R c₂ Q D₂ M₂) :
     SpaceTriple C P (c₁ ;; c₂) Q (D₁ + D₂) (max M₁ (D₁ + M₂)) := by
@@ -553,7 +552,7 @@ protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {D₁ M₁
 
 /-! ### Instruction rules
 
-All projections of the corresponding `Triple` rules — the dropped time bound never
+All projections of the corresponding `Triple` rules; the dropped time bound never
 constrains anything. -/
 
 protected theorem imm {P Q : State w → Prop} {d : Reg} {v : Word w}
@@ -574,11 +573,10 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
     SpaceTriple C P (.bin op d a b) Q 0 0 :=
   (Triple.bin h).space
 
-/-- Reserve capacity (dynamic), charging at most `N`. Since no time bound is
-drawn, this rule keeps the finer *charge* bound (`newCap - oldCap ≤ N`, which may
-use knowledge of the old capacity and may even be negative) rather than
-`Triple.memAlloc`'s bound on the requested capacity itself — direct, not
-projected. -/
+/-- Reserve capacity (dynamic), charging at most `N`. With no time bound to draw,
+this rule is proved directly rather than projected, keeping the finer *charge* bound
+`newCap - oldCap ≤ N`, which may use knowledge of the old capacity and may even be
+negative, instead of `Triple.memAlloc`'s bound on the requested capacity. -/
 protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℤ}
     (h : ∀ s, P s → (((s.regs n).toNat : ℤ) - (s.caps b : ℤ) ≤ N)
       ∧ Q (s.allocBuf b (s.regs n).toNat)) :
@@ -643,10 +641,9 @@ protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {D 
     exact ⟨s', C.branch + t, d, p, .ifNZ_true hr hexec, hq, hD, hM⟩
 
 /-- The space-only loop rule: same measure-indexed structure as
-`Triple.whileNZ_measure` (the measure is still what proves termination), same memory
-bounds — `base + k * max (Dg + Db) 0`, so a memory-reusing iteration (`Dg + Db ≤ 0`)
-gives trip-count-independent bounds — but **no time bound** in the conclusion, so no
-`Tg`/`Tb` hypotheses are needed. -/
+`Triple.whileNZ_measure`, same memory bounds `base + k * max (Dg + Db) 0`, so a
+memory-reusing iteration (`Dg + Db ≤ 0`) gives trip-count-independent bounds. No
+time bound in the conclusion, hence no `Tg`/`Tb` hypotheses. -/
 theorem whileNZ_measure {I J : ℕ → State w → Prop} {g body : Stmt w} {r : Reg}
     {Dg Mg Db Mb : ℤ}
     (hg : ∀ k, SpaceTriple C (I k) g (J k) Dg Mg)

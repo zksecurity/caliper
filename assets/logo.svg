@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0.5 47 13.6" width="376" height="108.8" role="img" aria-label="Caliper">
   <title>Caliper</title>
-  <g fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter">
+  <g fill="none" stroke="#8b949e" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter">
     <path d="M 4.5 1 H 0.5 V 7 H 4.5"></path>
     <path d="M 7.5 7 V 1 H 11.5 V 7"></path>
     <path d="M 7.5 4 H 11.5"></path>

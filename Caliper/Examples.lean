@@ -7,27 +7,26 @@ import Caliper.Render
 
 The worked programs, in increasing order of interest:
 
-1. `swapCode` — straight-line code: functional spec, *exact* constant time from the
-   syntax alone, and the data-independence (constant-time) corollary.
-2. `SumBuf` — a loop reading a buffer: functional correctness (the register really
-   holds the sum), a linear *upper bound* on time, zero memory.
-3. `Iota` — a loop that allocates: net and peak memory grow linearly.
-4. `ScratchLoop` — a loop that *reuses* memory: each iteration pushes and pops, so
-   the peak is **1 word regardless of the trip count**. This is what the (net, peak)
-   memory profile buys over counting allocations.
-5. `SumTwo` — composition: two calls of the `SumBuf` subroutine glued together, where
-   the "separation" reasoning is `simp` on syntactic footprints (`Writes`/`Touches`) —
-   no separation logic.
-6. `CountUp`/`Drain` — decoupled judgments via `TimeTriple`/`SpaceTriple`: a time
+1. `swapCode`: straight-line code, with a functional spec, *exact* constant time
+   from the syntax alone, and the data-independence corollary.
+2. `SumBuf`: a loop reading a buffer, with functional correctness, a linear *upper
+   bound* on time, and zero memory.
+3. `Iota`: a loop that allocates, with net and peak memory growing linearly.
+4. `ScratchLoop`: a loop that *reuses* memory. Each iteration pushes and pops, so
+   the peak is 1 word regardless of the trip count, which is what the (net, peak)
+   profile buys over counting allocations.
+5. `SumTwo`: composition of two `SumBuf` calls, where the separation reasoning is
+   `simp` on syntactic footprints (`Writes`/`Touches`).
+6. `CountUp`/`Drain`: decoupled judgments via `TimeTriple`/`SpaceTriple`, a time
    bound proved without touching memory algebra, and a space bound for a loop whose
-   trip count admits **no** uniform time bound.
-7. `ScopedSumSq` — register temporaries dying early: a sum of squares that names
-   5 registers, of which at most **2** are ever live at once. The dynamic profile
-   sees no register at all (buffers only — here (0, 0)); the register footprint
-   is the *statically inferred* peak `Stmt.regPeak₀` pinned in `Liveness.lean`,
-   where the combined buffers + registers statement (`SpaceBound`) also lives.
+   trip count admits no uniform time bound.
+7. `ScopedSumSq`: register temporaries dying early. A sum of squares names 5
+   registers, of which at most 2 are ever live at once. The dynamic profile is
+   buffers-only, here (0, 0); the register footprint is the statically inferred peak
+   `Stmt.regPeak₀`, pinned in `Liveness.lean` alongside the combined `SpaceBound`
+   statement.
 
-At the end, the builder surface syntax is connected to the hand-written core syntax by
+At the end, the builder surface is connected to the hand-written core syntax by
 evaluation, and `#eval` runs the reference interpreter against the proved bounds.
 -/
 
@@ -60,7 +59,7 @@ private theorem cond_of_flag_ne {c : Prop} [Decidable c] {f : BitVec w}
   · rw [if_neg hc] at hf
     exact absurd hf hnz
 
-/-- A zero comparison flag refutes `c` — provided the word size can distinguish 1
+/-- A zero comparison flag refutes `c`, provided the word size can distinguish 1
 from 0 (`1 < 2 ^ w`), which each call site derives from its own bounds. -/
 private theorem not_cond_of_flag_zero {c : Prop} [Decidable c]
     (h2 : 1 < 2 ^ w) (hf : (if c then (1 : BitVec w) else 0) = 0) : ¬ c := by
@@ -95,8 +94,8 @@ theorem swapCode_spec {C : CostModel} (a b : Word w) :
   exact (h1.seq (h2.seq h3)).conseq (fun _ h => h) (fun _ h => h)
     (le_of_eq (by ring)) (by omega) (by omega)
 
-/-- The time is not merely bounded — it is *equal* to the syntactic constant, on every
-input. This is the theorem that gives "unit time per instruction" its meaning. -/
+/-- The time is not merely bounded; it is *equal* to the syntactic constant, on every
+input. This is what gives "unit time per instruction" its meaning. -/
 theorem swapCode_time {C : CostModel} {s s' : State w} {t : ℕ} {d p : ℤ}
     (h : Exec C swapCode s s' t d p) : t = 3 * C.mov := by
   have := h.straight_time_eq ⟨trivial, trivial, trivial⟩
@@ -113,12 +112,12 @@ theorem swapCode_data_independent {C : CostModel} {s₁ s₁' s₂ s₂' : State
 /-- `mulhi` sanity check: the high word of `2^63 * 4` is `2`. -/
 example : BinOp.eval .mulhi (0x8000000000000000#64) (4#64) = 2#64 := by decide
 
-/-! ## Example 2: summing a buffer — linear time, zero allocation
+/-! ## Example 2: summing a buffer, linear time, zero allocation
 
 Register conventions: `r0` accumulator, `r1` index, `r2` length, `r3` loop flag,
-`r4` element scratch, `r5` the constant 1. The buffer name `xs` is a parameter — the
-code is generic in *which* buffer it sums, and the registers are concrete numerals so
-that all framing side conditions compute. -/
+`r4` element scratch, `r5` the constant 1. The buffer name `xs` is a parameter, so
+the code is generic in *which* buffer it sums, and the registers are concrete
+numerals so that all framing side conditions compute. -/
 
 namespace SumBuf
 
@@ -161,7 +160,7 @@ def timeBound (C : CostModel) (n : ℕ) : ℕ :=
   2 * C.imm + C.memLen + (n + 1) * (C.bin .ult + C.branch)
     + n * (C.memLoad + 2 * C.bin .add + C.imm)
 
-/-- `code xs` sums the buffer `xs` into `r0`, in time `O(n)` and **zero allocation**,
+/-- `code xs` sums the buffer `xs` into `r0`, in time `O(n)` with zero allocation,
 for any cost model. The `arr.size < 2 ^ w` assumption is what makes the index
 increment wrap-free. -/
 theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
@@ -242,7 +241,7 @@ theorem spec_unit (xs : BufId) (arr : Array (Word w)) (hsz : arr.size < 2 ^ w) :
 
 end SumBuf
 
-/-! ## Example 3: filling a buffer — the allocation bound
+/-! ## Example 3: filling a buffer, the allocation bound
 
 `iota n`: reserve capacity `n`, then push `0, 1, ..., n-1`. The capacity is charged at
 `memAlloc` (net and peak `n`); every push is then memory-free and worst-case unit
@@ -367,12 +366,12 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
 
 end Iota
 
-/-! ## Example 4: memory reuse — peak 1 regardless of trip count
+/-! ## Example 4: memory reuse, peak 1 regardless of trip count
 
-A one-slot scratch buffer is allocated once, each of the `n` iterations pushes into it
-and pops again (inside the fixed capacity, so both are memory-free), and the buffer is
-freed at the end. Net memory 0, **peak 1**, for any `n` — a total-allocation counter
-would have reported `n`. `Triple.memFree'` (free with known capacity) credits the
+A one-slot scratch buffer is allocated once, each of the `n` iterations pushes into
+it and pops again inside the fixed capacity, so both are memory-free, and the buffer
+is freed at the end. Net memory 0, peak 1, for any `n`, where a total-allocation
+counter would report `n`. `Triple.memFree'`, free with known capacity, credits the
 word back so the whole program nets to zero.
 
 Registers: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1. -/
@@ -386,7 +385,7 @@ while (i < n) { s.push(i); s.pop(); i += 1; }
 free(s);
 ```
 `n` is passed in `r2`. The one-word capacity is known at generation time, so the
-allocation uses the statically priced `memAllocI` — no register setup, and the
+allocation uses the statically priced `memAllocI`: no register setup, and the
 per-word charge is the syntactic constant `1 * C.allocPerWord`. -/
 def code (sb : BufId) : Stmt w :=
   .memAllocI sb 1 ;;
@@ -412,7 +411,7 @@ def timeBound (C : CostModel) (n : ℕ) : ℕ :=
   C.memAlloc + C.allocPerWord + C.memFree + C.imm + (n + 1) * (C.bin .ult + C.branch)
     + n * (C.memPush + C.memPop + C.imm + C.bin .add)
 
-/-- Linear time — net memory 0 and **peak memory 1**, for any `n`. -/
+/-- Linear time, net memory 0 and peak memory 1, for any `n`. -/
 theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code sb)
       (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
@@ -482,7 +481,7 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
 
 end ScratchLoop
 
-/-! ## Example 5: composition — subroutine calls without separation logic
+/-! ## Example 5: composition, subroutine calls without separation logic
 
 `SumBuf.code` is used twice, on two different buffers, and the two results are added.
 The proof composes the two `SumBuf.spec` instances; the only "separation" facts are
@@ -532,15 +531,15 @@ theorem spec {C : CostModel} (xs ys : BufId)
 
 end SumTwo
 
-/-! ## Example 6: decoupled judgments — time without memory, memory without time
+/-! ## Example 6: decoupled judgments, time without memory and back
 
 `TimeTriple`/`SpaceTriple` (see `Triple.lean`) bound one resource in isolation.
 
 * `CountUp` proves a `SumBuf`-shaped loop bound as a `TimeTriple`: no net, no peak,
   no `max` profile algebra appears anywhere in the proof.
 * `Drain` pops a buffer until it is empty. Its trip count is the *runtime* buffer
-  length — unbounded over the trivial precondition — so **no uniform time bound
-  exists** (`Drain.no_time_bound`), yet the space bound net 0 / peak 0 is provable,
+  length, unbounded over the trivial precondition, so no uniform time bound exists
+  (`Drain.no_time_bound`), yet the space bound net 0 / peak 0 is provable
   independent of the trip count (`Drain.space_spec`).
 
 When both bounds do exist, determinism recombines separately proved judgments into a
@@ -569,8 +568,7 @@ def timeBound (C : CostModel) (n : ℕ) : ℕ :=
   C.imm + (n + 1) * (C.bin .ult + C.branch) + n * (C.imm + C.bin .add)
 
 /-- A pure running-time bound: the same measure-indexed loop argument as
-`SumBuf.spec`, but through `TimeTriple` — not a single memory quantity is
-mentioned, bounded, or reasoned about. -/
+`SumBuf.spec`, through `TimeTriple`, with no memory quantity mentioned anywhere. -/
 theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
     TimeTriple C (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
       (fun s => (s.regs 0).toNat = n) (timeBound C n) := by
@@ -624,7 +622,7 @@ namespace Drain
 ```c
 while (b.len != 0) { b.pop(); }
 ```
-The flag is `r1`. The trip count is the buffer's length — a *runtime* quantity with
+The flag is `r1`. The trip count is the buffer's length, a *runtime* quantity with
 no static bound. -/
 def code (b : BufId) : Stmt w :=
   .whileNZ (.memLen 1 b) 1 (.memPop b)
@@ -634,9 +632,9 @@ def Inv (b : BufId) (k : ℕ) (s : State w) : Prop := (s.bufs b).size = k
 def InvG (b : BufId) (k : ℕ) (s : State w) : Prop :=
   Inv b k s ∧ s.regs 1 = BitVec.ofNat w k
 
-/-- Space-only: net 0, peak 0, from **every** start state — including those where the
-loop runs longer than any given time bound (`no_time_bound`). The measure (the
-buffer length) still drives the induction; it just never appears in the bounds. -/
+/-- Space-only: net 0, peak 0, from every start state, including those where the
+loop runs longer than any given time bound (`no_time_bound`). The measure, the buffer
+length, still drives the induction; it never appears in the bounds. -/
 theorem space_spec {C : CostModel} (b : BufId) :
     SpaceTriple C (fun _ => True) (code (w := w) b) (fun _ => True) 0 0 := by
   have hguard : ∀ k, SpaceTriple C (Inv (w := w) b k) (.memLen 1 b)
@@ -700,10 +698,9 @@ private theorem time_lower {b : BufId} {c : Stmt w} {s s' : State w} {t : ℕ}
     omega
   | _ => simp_all
 
-/-- **No uniform time bound exists** for `Drain.code`: every candidate `T`
-(representable in a word) is beaten by starting with a buffer of length `T + 1`.
-Contrast with `space_spec`, which holds with bounds `0`/`0` for the same trivial
-precondition — the two resources genuinely decouple. -/
+/-- No uniform time bound exists for `Drain.code`: every candidate `T` representable
+in a word is beaten by starting with a buffer of length `T + 1`. Contrast
+`space_spec`, which holds with bounds `0`/`0` for the same trivial precondition. -/
 theorem no_time_bound (b : BufId) (T : ℕ) (hT : T + 1 < 2 ^ w) :
     ¬ TimeTriple .unit (fun _ => True) (code (w := w) b) (fun _ => True) T := by
   intro h
@@ -720,13 +717,12 @@ end Drain
 /-! ## The builder produces the same programs
 
 `sumB` is the buffer-summing loop written in the surface syntax: automatic register
-allocation, infix expressions, structured `while`. `freshReg` is a pure name
-counter, so the builder's output is exactly the hand-written `SumBuf.code 0`, and
-the `#eval` checks the two coincide — the sugar adds nothing to the trusted
-surface. -/
+allocation, infix expressions, structured `while`. `freshReg` is a name counter, so
+the builder's output is exactly the hand-written `SumBuf.code 0`, and the `#eval`
+checks the two coincide. -/
 
 open Build in
-/-- `SumBuf.code`, ergonomically — note the typed buffer handle `Buf w`. -/
+/-- `SumBuf.code` through the surface syntax, with the typed buffer handle `Buf w`. -/
 def sumB (xs : Buf w) : Build w Reg := do
   let acc ← var 0
   let i ← var 0
@@ -741,8 +737,8 @@ def sumB (xs : Buf w) : Build w Reg := do
 #guard_msgs in
 #eval (Build.build (sumB (w := 64) ⟨0⟩)).2 == SumBuf.code 0
 
-/- The canonical rendering (`Stmt.render`, `Render.lean`) of that program — the
-listing quoted in `doc/caliper.md`. -/
+/- The rendering (`Stmt.render`, `Render.lean`) of that program, the listing quoted
+in `doc/caliper.md`. -/
 /--
 info: imm   r0, 0
 imm   r1, 0
@@ -759,22 +755,20 @@ loop {
 #guard_msgs in
 #eval IO.println (SumBuf.code (w := 64) 0).renderString
 
-/-! ## Example 7: register temporaries die early — inferred, not declared
+/-! ## Example 7: register temporaries die early, inferred rather than declared
 
-`3² + 4²` names five registers, but each stage's literal scratch is dead the
-moment its `mul` consumes it, so at most **two** values ever need slots at
-once. No instruction declares a register lifetime, and the *dynamic* profile
-does not mention registers at all — it meters buffers only, and this program
-touches none, so its (net, peak) memory is (0, 0). The register footprint is
-the *statically inferred* peak live-register count: `Stmt.regPeak₀ code = 2`,
-pinned in `Liveness.lean`, where the canonical combined
-buffers-plus-registers statement (`SpaceBound`) for this program also lives. -/
+`3² + 4²` names five registers, but each stage's literal scratch is dead the moment
+its `mul` consumes it, so at most two values ever need slots at once. No instruction
+declares a register lifetime, and the dynamic profile meters buffers only; this
+program touches none, so its (net, peak) memory is (0, 0). The register footprint is
+the statically inferred peak `Stmt.regPeak₀ code = 2`, pinned in `Liveness.lean`
+along with the combined `SpaceBound` statement. -/
 
 namespace ScopedSumSq
 
 open Build in
-/-- `3² + 4²`, through the builder: each stage's scratch is an ordinary
-temporary — no scoping ceremony, since lifetimes are inferred, not declared. -/
+/-- `3² + 4²` through the builder: each stage's scratch is an ordinary temporary,
+with no scoping ceremony, lifetimes being inferred rather than declared. -/
 def sumSqB : Build 64 Reg := do
   let a ← do
     let x ← var 3
@@ -794,10 +788,9 @@ def code : Stmt 64 :=
 #guard_msgs in
 #eval (Build.build sumSqB).2 == code
 
-/-- The dynamic (buffers-only) profile: net 0, peak **0**, from any start state,
-in any cost model — the program allocates nothing. The register side is the
-statically inferred `regPeak₀ = 2`; the combined statement is
-`ScopedSumSq.total_space` in `Liveness.lean`. -/
+/-- The buffers-only profile: net 0, peak 0, from any start state in any cost model,
+the program allocating nothing. The register side is the inferred `regPeak₀ = 2`;
+the combined statement is `ScopedSumSq.total_space` in `Liveness.lean`. -/
 theorem space_spec {C : CostModel} :
     SpaceTriple C (fun _ => True) code (fun _ => True) 0 0 := by
   intro s _
@@ -828,11 +821,10 @@ end ScopedSumSq
 
 /-! ### A nested temporary, same story
 
-The inner squaring's scratch `r0` dies exactly at the `mul` that consumes it,
-and the stage result `r1` at the final `add`: 3 names, but each value dies at
-the instruction producing its successor, so the analysis in `Liveness.lean`
-infers a live peak of just **1** (its write-point count is survivors plus the
-destination). -/
+The inner squaring's scratch `r0` dies at the `mul` that consumes it and the stage
+result `r1` at the final `add`: 3 names, but each value dies at the instruction
+producing its successor, so `Liveness.lean` infers a live peak of 1, its write-point
+count being survivors plus the destination. -/
 
 open Build in
 /-- A squaring stage whose result is consumed by the enclosing expression. -/
@@ -864,8 +856,8 @@ def nestedDemo : Option (Word 64 × ℕ × ℤ × ℤ) :=
 The interpreter runs the same programs the theorems are about (`run_sound`), so the
 numbers below are instances of the proved bounds. Each result is
 `(value, time, net memory, peak memory)`: summing a 3-element buffer takes
-`23 = 6*3 + 5` unit-cost steps and touches no memory; `iota 5` nets and peaks at 5
-words; the scratch loop runs 100 iterations and **peaks at 1 word**. -/
+`23 = 6*3 + 5` unit-cost steps and touches no memory, `iota 5` nets and peaks at 5
+words, and the scratch loop runs 100 iterations peaking at 1 word. -/
 
 /-- Initial state with `#[3, 5, 9]` in buffer 0. -/
 def demoState : State 64 :=
@@ -882,7 +874,7 @@ def demoIota : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
   (run .unit 1000 (Iota.code 0)
       ((State.init 64).setReg 2 5)).map fun (s, t, d, p) => (s.bufs 0, t, d, p)
 
-/-- Scratch loop, 100 iterations: expect net 0, **peak 1**. -/
+/-- Scratch loop, 100 iterations: expect net 0, peak 1. -/
 def demoScratch : Option (ℕ × ℤ × ℤ) :=
   (run .unit 2000 (ScratchLoop.code 0)
       ((State.init 64).setReg 2 100)).map fun (_, t, d, p) => (t, d, p)
@@ -904,10 +896,10 @@ def demoScratch : Option (ℕ × ℤ × ℤ) :=
 `PairBuf` (see `Builder.lean`) is an array-of-structs: one buffer, stride 2. Field
 access is compiled index arithmetic, so its cost is ordinary instruction cost. The
 demo allocates room for two pairs, pushes them, reads `fst 1` (= 30) and `snd 0`
-(= 20), and returns their sum: value 50, and memory (4, 4) — the four buffer
-words charged at allocation (the pushes themselves are memory-free). The 18
-register names the straight-line expression code uses are not in the dynamic
-profile; their inferred live peak is pinned in `Liveness.lean`. -/
+(= 20), and returns their sum: value 50, memory (4, 4), the four buffer words
+charged at allocation, the pushes themselves being memory-free. The 18 register
+names the straight-line expression code uses are not in the dynamic profile; their
+inferred live peak is pinned in `Liveness.lean`. -/
 
 /-- The pair-demo program, named so `Liveness.lean` can pin its inferred
 register peak alongside the buffer numbers below. -/

@@ -4,15 +4,14 @@ import Caliper.Liveness
 /-!
 # Corpus: nested loops
 
-* `InsertionSort` — the classic in-place sort: nested `whileNZ` loops whose
-  inner trip count is data-dependent, a guard that must *itself* branch
-  (`ifNZ` inside the guard statement — testing `b[j-1] > b[j]` is only legal
-  once `j ≠ 0` is known), swaps via `memStore`. The pins run the same length-6
-  input in sorted, reverse-sorted, and shuffled order: three different times
-  for one program — data-dependence made visible.
-* `MatMul3` — 3×3 matrix multiply written through the builder surface:
-  triply nested `while_` loops, compound index expressions (`3*i + k`), and a
-  result buffer filled by `push`.
+* `InsertionSort`: in-place sort with nested `whileNZ` loops whose inner trip count
+  is data-dependent, a guard that must itself branch (`ifNZ` inside the guard
+  statement, since testing `b[j-1] > b[j]` is only legal once `j ≠ 0` is known), and
+  swaps via `memStore`. The pins run the same length-6 input sorted,
+  reverse-sorted and shuffled: three different times for one program.
+* `MatMul3`: 3×3 matrix multiply through the builder surface, with triply nested
+  `while_` loops, compound index expressions (`3*i + k`), and a result buffer filled
+  by `push`.
 -/
 
 namespace Caliper.Corpus
@@ -39,11 +38,11 @@ while (i < n) {
 Registers: `r0` = `i`, `r1` = `n`, `r2` outer flag, `r3` = `j`, `r4` the
 constant 1, `r5` = `j - 1`, `r6` = `b[j-1]`, `r7` = `b[j]`, `r8` inner flag.
 
-The inner guard is a compound statement: it tests `j ≠ 0` first and only
-*then* loads `b[j-1]` — the load's in-range obligation is what forces the
-short circuit (at `j = 0` the index `j - 1` wraps and has no `Exec` rule).
-The `ifNZ`'s else branch is `skip`, leaving the flag 0. The body reuses the
-guard's loaded elements (`r6`/`r7`) for the swap.
+The inner guard is a compound statement: it tests `j ≠ 0` first and only *then*
+loads `b[j-1]`. The load's in-range obligation is what forces the short circuit,
+since at `j = 0` the index `j - 1` wraps and has no `Exec` rule. The `ifNZ`'s else
+branch is `skip`, leaving the flag 0, and the body reuses the guard's loaded
+elements (`r6`/`r7`) for the swap.
 -/
 def code (b : BufId) : Stmt w :=
   .memLen 1 b ;;
@@ -80,12 +79,12 @@ def runOn (arr : Array (Word 64)) : Option (Array (Word 64) × ℕ × ℤ × ℤ
 #guard_msgs in
 #eval runOn #[5, 2, 4, 6, 1, 3]
 
-/- Already sorted: the inner loop never fires — the cheap case. -/
+/- Already sorted: the inner loop never fires, the cheap case. -/
 /-- info: some (#[1#64, 2#64, 3#64, 4#64, 5#64, 6#64], 69, 0, 0) -/
 #guard_msgs in
 #eval runOn #[1, 2, 3, 4, 5, 6]
 
-/- Reverse sorted: every inner iteration fires — the worst case. -/
+/- Reverse sorted: every inner iteration fires, the worst case. -/
 /-- info: some (#[1#64, 2#64, 3#64, 4#64, 5#64, 6#64], 224, 0, 0) -/
 #guard_msgs in
 #eval runOn #[6, 5, 4, 3, 2, 1]
@@ -120,8 +119,8 @@ def matmulB (a b c : Buf w) : Build w Unit := do
       j <~ (j : Exp w) + 1
     i <~ (i : Exp w) + 1
 
-/-- The full program: reserve the 9-word result buffer (buffer 2, immediate
-capacity — statically priced), then multiply buffers 0 and 1 into it. -/
+/-- The full program: reserve the 9-word result buffer (buffer 2, immediate capacity,
+statically priced), then multiply buffers 0 and 1 into it. -/
 def prog : Stmt 64 :=
   (Build.build (w := 64) do
     Build.emit (.memAllocI 2 9)
@@ -133,8 +132,8 @@ def prog : Stmt 64 :=
     ⎢4 5 6⎥ · ⎢6 5 4⎥ = ⎢ 84  69  54⎥
     ⎣7 8 9⎦   ⎣3 2 1⎦   ⎣138 114  90⎦
 ```
-`(result, time, net, peak)` — memory (9, 9): the result buffer, charged once
-at its immediate allocation. -/
+`(result, time, net, peak)`, memory (9, 9): the result buffer, charged once at its
+immediate allocation. -/
 def demo : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
   (run .unit 100000 prog
       { State.init 64 with

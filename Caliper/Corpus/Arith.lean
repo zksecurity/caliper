@@ -5,19 +5,18 @@ import Caliper.Render
 /-!
 # Corpus: arithmetic programs
 
-* `DotProduct` — two buffers folded into an accumulator; proved `Triple`:
-  functional correctness, linear time, zero memory.
-* `Gcd` — Euclid's algorithm, a loop whose trip count is data-dependent and
-  whose termination measure is the *value* of a register, not a counter;
-  proved `Triple` with functional spec `Nat.gcd` and a linear-in-`b` time
-  bound.
-* `BinExp` — binary exponentiation (square-and-multiply) over a runtime
-  exponent: loop + branch + shifts.
-* `Popcount` — shift/mask population count.
-* `DivMod` — straight-line div/mod recomposition (`udiv`/`umod`/`mulhi`/`eq`),
-  with its exact static time read off the syntax by `staticTime?`.
-* `BitTricks` — branchless `min` (`ule`/`neg`/`xor`/`and`), a power-of-two
-  test (`isZero`/`isNonZero`), and a 32-bit pack/unpack round trip
+* `DotProduct`: two buffers folded into an accumulator, with a proved `Triple` for
+  functional correctness, linear time and zero memory.
+* `Gcd`: Euclid's algorithm, a loop whose trip count is data-dependent and whose
+  termination measure is the *value* of a register rather than a counter. Proved
+  `Triple` with functional spec `Nat.gcd` and a linear-in-`b` time bound.
+* `BinExp`: binary exponentiation over a runtime exponent, i.e. loop, branch and
+  shifts.
+* `Popcount`: shift/mask population count.
+* `DivMod`: straight-line div/mod recomposition (`udiv`/`umod`/`mulhi`/`eq`), with
+  its exact static time read off the syntax by `staticTime?`.
+* `BitTricks`: branchless `min` (`ule`/`neg`/`xor`/`and`), a power-of-two test
+  (`isZero`/`isNonZero`), and a 32-bit pack/unpack round trip
   (`shl`/`or`/`shr`/`ne`/`not`), all straight-line with `staticTime?` pins.
 -/
 
@@ -37,9 +36,8 @@ acc = 0; i = 0; n = xs.len;
 while (i < n) { acc += xs[i] * ys[i]; i += 1; }
 ```
 Registers: `r0` accumulator, `r1` index, `r2` length, `r3` loop flag,
-`r4`/`r5` elements, `r6` product, `r7` the constant 1. Read-only on both
-buffers, so no separation fact is needed — the two buffer names may even
-coincide.
+`r4`/`r5` elements, `r6` product, `r7` the constant 1. Read-only on both buffers, so
+no separation fact is needed and the two buffer names may even coincide.
 -/
 def code (xs ys : BufId) : Stmt w :=
   .imm 0 0 ;;
@@ -77,9 +75,9 @@ def timeBound (C : CostModel) (n : ℕ) : ℕ :=
   2 * C.imm + C.memLen + (n + 1) * (C.bin .ult + C.branch)
     + n * (2 * C.memLoad + C.bin .mul + C.bin .add + C.imm + C.bin .add)
 
-/-- **The dot product is correct, linear-time, and allocation-free**: `r0`
-ends holding `Σᵢ xs[i] * ys[i]` (word arithmetic, wrapping), within
-`timeBound C n` and memory (0, 0), for any cost model. -/
+/-- The dot product is correct, linear-time and allocation-free: `r0` ends holding
+`Σᵢ xs[i] * ys[i]` in wrapping word arithmetic, within `timeBound C n` and memory
+(0, 0), for any cost model. -/
 theorem spec {C : CostModel} (xs ys : BufId) (aX aY : Array (Word w))
     (hsz : aX.size < 2 ^ w) (hlen : aY.size = aX.size) :
     Triple C (fun s => s.bufs xs = aX ∧ s.bufs ys = aY) (code xs ys)
@@ -157,7 +155,7 @@ theorem spec {C : CostModel} (xs ys : BufId) (aX aY : Array (Word w))
   · have hi : (s.regs 1).toNat = aX.size := by omega
     rw [hacc, hi]
 
-/-- `⟨1,2,3⟩ · ⟨4,5,6⟩ = 32`: `(value, time, net, peak)` — time
+/-- `⟨1,2,3⟩ · ⟨4,5,6⟩ = 32`: `(value, time, net, peak)`, with time
 `29 = timeBound .unit 3`, an instance of `spec`. -/
 def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
   (run .unit 1000 (code 0 1)
@@ -195,10 +193,10 @@ def code : Stmt w :=
      .mov 1 3)
 
 open Build in
-/-- The same program through the builder surface: declaring the two inputs
-(`Build.input` — the first registers declared, r0 and r1, which the caller
-preloads), then structured `while` with an expression guard. The `#eval`
-below pins that the sugar compiles to exactly the hand-written core code. -/
+/-- The same program through the builder surface: two `Build.input`s, the first
+registers declared (r0 and r1, which the caller preloads), then a structured `while`
+with an expression guard. The `#eval` below pins that the sugar compiles to exactly
+the hand-written core code. -/
 def gcdB : Build w Unit := do
   let a ← Build.input
   let b ← Build.input
@@ -222,15 +220,15 @@ def InvG (a b : Word w) (k : ℕ) (s : State w) : Prop :=
   Inv a b k s ∧
   s.regs 2 = if s.regs 1 = 0 then 0 else 1
 
-/-- Linear-in-`b` time (a sound, deliberately modest bound — the true worst
-case is logarithmic): `b + 1` guard evaluations, at most `b` bodies. -/
+/-- Linear-in-`b` time, a sound but modest bound, the true worst case being
+logarithmic: `b + 1` guard evaluations, at most `b` bodies. -/
 def timeBound (C : CostModel) (b : ℕ) : ℕ :=
   (b + 1) * (C.un .isNonZero + C.branch) + b * (C.bin .umod + 2 * C.mov)
 
-/-- **Euclid terminates with the gcd**, in time linear in `b`. The measure of
-the loop rule is instantiated with the *value* of `r1`: each iteration
-replaces it by `a % b < b`. `0 < w` keeps the flag readable (in a 0-bit word,
-1 = 0). Time-only judgment; the memory side is below. -/
+/-- Euclid terminates with the gcd, in time linear in `b`. The loop rule's measure
+is instantiated with the *value* of `r1`: each iteration replaces it by `a % b < b`.
+`0 < w` keeps the flag readable, 1 being 0 in a 0-bit word. Time-only judgment; the
+memory side is below. -/
 theorem time_spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
     TimeTriple C (fun s => s.regs 0 = a ∧ s.regs 1 = b) (code (w := w))
       (fun s => (s.regs 0).toNat = Nat.gcd a.toNat b.toNat)
@@ -290,9 +288,8 @@ theorem time_spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
     simp at hg
     rw [hg, Nat.gcd_comm]
 
-/-- The full triple: the time proof above recombined (by determinism) with
-the free space triple — the code contains no allocation, so its memory
-profile is (0, 0) outright. -/
+/-- The full triple: the time proof above recombined, by determinism, with the free
+space triple, the code containing no allocation. -/
 theorem spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
     Triple C (fun s => s.regs 0 = a ∧ s.regs 1 = b) (code (w := w))
       (fun s => (s.regs 0).toNat = Nat.gcd a.toNat b.toNat)
@@ -300,8 +297,8 @@ theorem spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
   (time_spec hw a b).and_space'
     ((time_spec hw a b).space_of_allocFree ⟨trivial, trivial, trivial, trivial⟩)
 
-/-- `gcd 252 105 = 21` in 17 unit steps: 4 guard evaluations (the last sees
-`b = 0`), 3 bodies — an instance of `spec`. -/
+/-- `gcd 252 105 = 21` in 17 unit steps: 4 guard evaluations, the last seeing
+`b = 0`, and 3 bodies. An instance of `spec`. -/
 def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
   (run .unit 1000 (code (w := 64))
       { State.init 64 with
@@ -355,8 +352,8 @@ def code : Stmt w :=
      .bin .shr 1 1 4)
 
 /-- `3 ^ 13 = 1594323` (word arithmetic): `(result, time, net, peak)`. The
-exponent 13 = 0b1101 drives 4 iterations, 3 of them through the multiply
-branch — the time is data-dependent by design. -/
+exponent 13 = 0b1101 drives 4 iterations, 3 of them through the multiply branch, so
+the time is data-dependent. -/
 def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
   (run .unit 1000 (code (w := 64))
       { State.init 64 with
@@ -393,8 +390,8 @@ def code : Stmt w :=
      .bin .add 1 1 4 ;;
      .bin .shr 0 0 3)
 
-/-- `popcount 0xDEADBEEF = 24`: `(count, time, net, peak)` — 32 iterations
-(the position of the highest set bit). -/
+/-- `popcount 0xDEADBEEF = 24`: `(count, time, net, peak)`, 32 iterations, the
+position of the highest set bit. -/
 def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
   (run .unit 1000 (code (w := 64))
       { State.init 64 with
@@ -420,10 +417,10 @@ namespace DivMod
 q = a / b; r = a % b; s = q * b + r; ok = (s == a); h = mulhi(a, b);
 ```
 Registers: `r0` = `a`, `r1` = `b`, `r2` quotient, `r3` remainder, `r4` the
-recomposition, `r5` the identity flag, `r6` the high word of the widening
-product. Branch-free, so `staticTime?` prices it exactly — including at
-`b = 0`, where Caliper defines `a / 0 = 0` and `a % 0 = a`, making the
-recomposition identity hold there too.
+recomposition, `r5` the identity flag, `r6` the high word of the widening product.
+Branch-free, so `staticTime?` prices it exactly, including at `b = 0`, where Caliper
+defines `a / 0 = 0` and `a % 0 = a`, making the recomposition identity hold there
+too.
 -/
 def code : Stmt w :=
   .bin .udiv 2 0 1 ;;
@@ -438,8 +435,8 @@ def code : Stmt w :=
 #guard_msgs in
 #eval (code (w := 64)).staticTime? .unit
 
-/-- `a = 2^64 - 1`, `b = 10`: `(q, r, ok, mulhi)` — the identity flag is 1
-and the widening product's high word is 9. -/
+/-- `a = 2^64 - 1`, `b = 10`: `(q, r, ok, mulhi)`, with the identity flag 1 and the
+widening product's high word 9. -/
 def demo : Option (Word 64 × Word 64 × Word 64 × Word 64) :=
   (run .unit 100 (code (w := 64))
       { State.init 64 with
@@ -451,8 +448,8 @@ def demo : Option (Word 64 × Word 64 × Word 64 × Word 64) :=
 #eval demo
 
 /-- Division by zero, Caliper semantics: `5 / 0 = 0`, `5 % 0 = 5`, and the
-recomposition identity still holds. (RISC-V's `DIVU` returns all-ones here —
-the lowering has to bridge that; `REMU` already matches.) -/
+recomposition identity still holds. RISC-V's `DIVU` returns all-ones here, so the
+lowering bridges that; `REMU` already matches. -/
 def demoZero : Option (Word 64 × Word 64 × Word 64) :=
   (run .unit 100 (code (w := 64))
       { State.init 64 with regs := fun r => if r = 0 then 5 else 0 }).map
@@ -488,8 +485,8 @@ def minCode : Stmt w :=
 #guard_msgs in
 #eval (minCode (w := 64)).staticTime? .unit
 
-/-- `min(1000, 37) = 37` and `min(37, 1000) = 37`: the two orders cost the
-same 5 instructions — straight-line code is constant-time by construction. -/
+/-- `min(1000, 37) = 37` and `min(37, 1000) = 37`: the two orders cost the same 5
+instructions, straight-line code being constant-time by construction. -/
 def minDemo : Option (Word 64 × Word 64) := do
   let (s₁, _, _, _) ← run .unit 100 (minCode (w := 64))
     { State.init 64 with regs := fun r => if r = 0 then 1000 else if r = 1 then 37 else 0 }

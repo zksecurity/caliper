@@ -4,23 +4,22 @@ import Caliper.Builder
 /-!
 # Caliper at word size 64
 
-The Caliper core (`Caliper/Core.lean` and friends) is generic over the word
-size `w`, but for all practical use — in particular Clean's witgen backend — the word
-size is 64. This file is the surface programs and specs should be written against:
-a thin layer of **reducible abbreviations** (`abbrev`) fixing `w := 64`, so that
+The Caliper core is generic over the word size `w`, but in practice, and in
+particular for Clean's witgen backend, the word size is 64. This file is the surface
+programs and specs should be written against: reducible `abbrev`s fixing `w := 64`,
+so that
 
 * user code never mentions `w`, and
-* every generic theorem still applies *definitionally* — nothing is redefined and no
-  theorem is restated; `Caliper64.Stmt` *is* `Caliper.Stmt 64` up to `rfl`.
+* every generic theorem still applies *definitionally*, nothing being redefined or
+  restated; `Caliper64.Stmt` *is* `Caliper.Stmt 64` up to `rfl`.
 
-Only names where a user would otherwise write `(w := 64)` or a `w`-annotated type are
-covered. Everything that infers `w` from its arguments (the `Build` combinators
-`var`/`while_`/`Mem.alloc`/the `Buf` methods/…, the `Triple` proof rules,
-`CostModel`, `Reg`, `BufId`, …)
-is used directly from the `Caliper` namespace, unchanged.
+Only names where a user would otherwise write `(w := 64)` or a `w`-annotated type
+are covered. Everything that infers `w` from its arguments (the `Build` combinators,
+the `Buf` methods, the `Triple` rules, `CostModel`, `Reg`, `BufId`) is used directly
+from the `Caliper` namespace.
 
 The demo at the end writes a small program and proves a `Triple` about it entirely
-through `Caliper64` names — the word size never appears.
+through `Caliper64` names.
 -/
 
 namespace Caliper64
@@ -75,18 +74,16 @@ abbrev build {α : Type} (m : Build α) : α × Stmt := Caliper.Build.build m
 /-! ## Demo: `w` never appears
 
 A small program through the surface syntax, its generated code, one `Triple` about
-it, and an interpreter run — all stated purely in `Caliper64` names. Because the
-abbreviations are reducible, the generic rules (`Caliper.Triple.imm`, the `Exec`
-constructors, …) apply as-is. -/
+it, and an interpreter run, all stated purely in `Caliper64` names. Because the
+abbreviations are reducible, the generic rules apply as-is. -/
 
 namespace Demo
 
 open Caliper.Build (var)
 
 /-- `x ← 3; y ← 4; r ← x + y`: the result register together with the generated
-program. `var` names its register with a pure counter — register lifetimes are
-inferred statically (`Stmt.regPeak₀`, `Liveness.lean`), never declared by
-instructions. -/
+program. `var` names its register with a counter; register lifetimes are inferred
+statically (`Stmt.regPeak₀`, `Liveness.lean`). -/
 def sum34 : ℕ × Stmt := build do
   let x ← var 3
   let y ← var 4
