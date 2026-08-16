@@ -2,7 +2,7 @@
   <img src="assets/logo.svg" alt="Caliper" width="300">
 </p>
 
-Caliper is a Lean4 DSL for measuring *precise* running time and memory usage.
+Caliper is a Lean4 DSL for reasoning about running time and memory complexity of algorithms.
 
 It arose from zkSecurity's need to model *concrete* complexities of algorithms,
 for instance, the concrete cost of witness generation, extractors, cryptographic attacks and more.
