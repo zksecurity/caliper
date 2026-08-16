@@ -1,9 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 47.5 18" width="380" height="144" role="img" aria-label="Caliper">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0.5 47 13.6" width="376" height="108.8" role="img" aria-label="Caliper">
   <title>Caliper</title>
-  <style>
-    .tool { fill: #111827; }
-    @media (prefers-color-scheme: dark) { .tool { fill: #e6edf3; } }
-  </style>
   <g fill="none" stroke="#f97316" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter">
     <path d="M 4.5 1 H 0.5 V 7 H 4.5"></path>
     <path d="M 7.5 7 V 1 H 11.5 V 7"></path>
@@ -18,17 +14,24 @@
     <path d="M 42.5 7 V 1 H 46.5 V 4 H 42.5"></path>
     <path d="M 44.0 4 L 46.5 7"></path>
   </g>
-  <g class="tool" fill="#111827">
-    <path d="M 0.6 10.6 H 2.4 V 12.3 H 46.6 V 13.9 H 2.4 V 18.6 H 0.6 Z"></path>
-    <rect x="44.8" y="10.6" width="1.8" height="8"></rect>
-    <rect x="40.5" y="11.3" width="6.1" height="3.6"></rect>
-  </g>
-  <g fill="#f97316">
-    <rect x="8" y="12.3" width="0.5" height="0.8"></rect>
-    <rect x="14" y="12.3" width="0.5" height="0.8"></rect>
-    <rect x="20" y="12.3" width="0.5" height="0.8"></rect>
-    <rect x="26" y="12.3" width="0.5" height="0.8"></rect>
-    <rect x="32" y="12.3" width="0.5" height="0.8"></rect>
-    <rect x="38" y="12.3" width="0.5" height="0.8"></rect>
+  <g fill="#111827">
+    <rect x="0" y="9.5" width="47" height="1"></rect>
+    <rect x="0.00" y="10.5" width="1" height="3.6" stroke="none"></rect>
+    <rect x="2.88" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="5.75" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="8.63" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="11.50" y="10.5" width="1" height="3.6" stroke="none"></rect>
+    <rect x="14.38" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="17.25" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="20.13" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="23.00" y="10.5" width="1" height="3.6" stroke="none"></rect>
+    <rect x="25.88" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="28.75" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="31.63" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="34.50" y="10.5" width="1" height="3.6" stroke="none"></rect>
+    <rect x="37.38" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="40.25" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="43.13" y="10.5" width="1" height="2" stroke="none"></rect>
+    <rect x="46.00" y="10.5" width="1" height="3.6" stroke="none"></rect>
   </g>
 </svg>
