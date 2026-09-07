@@ -1,4 +1,4 @@
-import Caliper.Triple
+import Caliper.ProbTriple
 import Caliper.Builder
 
 /-!
@@ -29,6 +29,9 @@ namespace Caliper64
 /-- 64-bit machine words. -/
 abbrev Word := Caliper.Word 64
 
+/-- Infinite tapes of 64-bit words. -/
+abbrev RandomTape := Caliper.RandomTape 64
+
 /-- Statements over 64-bit words. -/
 abbrev Stmt := Caliper.Stmt 64
 
@@ -40,7 +43,7 @@ abbrev State.init : State := Caliper.State.init 64
 
 /-! ## Semantics -/
 
-/-- Cost semantics at word size 64: `Exec C c s s' t d p`. -/
+/-- Cost semantics at word size 64: `Exec C tape c s s' t d p`. -/
 abbrev Exec := Caliper.Exec (w := 64)
 
 /-- The reference interpreter at word size 64. -/
@@ -56,6 +59,15 @@ abbrev TimeTriple := Caliper.TimeTriple (w := 64)
 
 /-- Space-only total-correctness triple. -/
 abbrev SpaceTriple := Caliper.SpaceTriple (w := 64)
+
+/-- Uniform measure on infinite tapes of 64-bit words. -/
+noncomputable abbrev uniformTape := Caliper.uniformTape 64
+
+/-- Unconditional runtime distribution, including mass at infinity. -/
+noncomputable abbrev runTimePMF := Caliper.runTimePMF (w := 64)
+
+/-- Almost-sure correctness with expected time and memory bounds. -/
+abbrev ProbTriple := Caliper.ProbTriple (w := 64)
 
 /-! ## Surface syntax -/
 
@@ -95,7 +107,7 @@ example : sum34.2 = (.imm 0 3 ;; .imm 1 4 ;; .bin .add 2 0 1) := rfl
 /-- The sum lands in the result register within 3 unit-cost instructions,
 touching no buffer memory (the dynamic profile is buffers-only). -/
 example :
-    Triple .unit (fun _ => True) sum34.2 (fun s => s.regs sum34.1 = 7) 3 0 0 := by
+    Triple .unit Caliper.RandomTape.zero (fun _ => True) sum34.2 (fun s => s.regs sum34.1 = 7) 3 0 0 := by
   intro s _
   refine ⟨_, _, _, _, .seq .imm (.seq .imm .bin), ?_, ?_, ?_, ?_⟩
   · simp [show sum34.1 = 2 from rfl, Caliper.State.setReg]
@@ -104,7 +116,7 @@ example :
   · simp
 
 /-- The reference interpreter agrees. -/
-example : (run .unit 20 sum34.2 State.init).map (fun r => r.1.regs sum34.1)
+example : (run .unit Caliper.RandomTape.zero 20 sum34.2 State.init).map (fun r => r.1.regs sum34.1)
     = some 7 := rfl
 
 end Demo

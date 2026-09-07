@@ -80,15 +80,15 @@ def swapCode : Stmt w := .mov 2 0 ;; .mov 0 1 ;; .mov 1 2
 /-- Functional spec with time and memory bounds. Note the time bound `3 * C.mov` holds
 for every input. -/
 theorem swapCode_spec {C : CostModel} (a b : Word w) :
-    Triple C (fun s => s.regs 0 = a ∧ s.regs 1 = b) (swapCode (w := w))
+    Triple C Caliper.RandomTape.zero (fun s => s.regs 0 = a ∧ s.regs 1 = b) (swapCode (w := w))
       (fun s => s.regs 0 = b ∧ s.regs 1 = a) (3 * C.mov) 0 0 := by
-  have h1 : Triple C (fun s => s.regs 0 = a ∧ s.regs 1 = b) (.mov 2 0)
+  have h1 : Triple C Caliper.RandomTape.zero (fun s => s.regs 0 = a ∧ s.regs 1 = b) (.mov 2 0)
       (fun s => s.regs 1 = b ∧ s.regs 2 = a) C.mov 0 0 :=
     Triple.mov fun s hs => by simp [hs.1, hs.2]
-  have h2 : Triple C (fun s => s.regs 1 = b ∧ s.regs 2 = a) (.mov 0 1)
+  have h2 : Triple C Caliper.RandomTape.zero (fun s => s.regs 1 = b ∧ s.regs 2 = a) (.mov 0 1)
       (fun s => s.regs 0 = b ∧ s.regs 2 = a) C.mov 0 0 :=
     Triple.mov fun s hs => by simp [hs.1, hs.2]
-  have h3 : Triple C (fun s => s.regs 0 = b ∧ s.regs 2 = a) (.mov 1 2)
+  have h3 : Triple C Caliper.RandomTape.zero (fun s => s.regs 0 = b ∧ s.regs 2 = a) (.mov 1 2)
       (fun s => s.regs 0 = b ∧ s.regs 1 = a) C.mov 0 0 :=
     Triple.mov fun s hs => by simp [hs.1, hs.2]
   exact (h1.seq (h2.seq h3)).conseq (fun _ h => h) (fun _ h => h)
@@ -97,7 +97,7 @@ theorem swapCode_spec {C : CostModel} (a b : Word w) :
 /-- The time is not merely bounded; it is *equal* to the syntactic constant, on every
 input. This is what gives "unit time per instruction" its meaning. -/
 theorem swapCode_time {C : CostModel} {s s' : State w} {t : ℕ} {d p : ℤ}
-    (h : Exec C swapCode s s' t d p) : t = 3 * C.mov := by
+    (h : Exec C Caliper.RandomTape.zero swapCode s s' t d p) : t = 3 * C.mov := by
   have := h.straight_time_eq ⟨trivial, trivial, trivial⟩
   simp only [swapCode, Stmt.staticTime] at this
   omega
@@ -105,8 +105,8 @@ theorem swapCode_time {C : CostModel} {s s' : State w} {t : ℕ} {d p : ℤ}
 /-- Constant-time in the side-channel sense: two runs on unrelated inputs cost the
 same. -/
 theorem swapCode_data_independent {C : CostModel} {s₁ s₁' s₂ s₂' : State w}
-    {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ} (h₁ : Exec C swapCode s₁ s₁' t₁ d₁ p₁)
-    (h₂ : Exec C swapCode s₂ s₂' t₂ d₂ p₂) : t₁ = t₂ :=
+    {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ} (h₁ : Exec C Caliper.RandomTape.zero swapCode s₁ s₁' t₁ d₁ p₁)
+    (h₂ : Exec C Caliper.RandomTape.zero swapCode s₂ s₂' t₂ d₂ p₂) : t₁ = t₂ :=
   h₁.straight_data_independent h₂ ⟨trivial, trivial, trivial⟩
 
 /-- `mulhi` sanity check: the high word of `2^63 * 4` is `2`. -/
@@ -165,11 +165,11 @@ for any cost model. The `arr.size < 2 ^ w` assumption is what makes the index
 increment wrap-free. -/
 theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
     (hsz : arr.size < 2 ^ w) :
-    Triple C (fun s => s.bufs xs = arr) (code xs)
+    Triple C Caliper.RandomTape.zero (fun s => s.bufs xs = arr) (code xs)
       (fun s => s.regs 0 = sumTo arr arr.size)
       (timeBound C arr.size) 0 0 := by
   -- the guard: one `ult`, leaving the verdict in r3
-  have hguard : ∀ k, Triple C (Inv xs arr k) (.bin .ult 3 1 2) (InvG xs arr k)
+  have hguard : ∀ k, Triple C Caliper.RandomTape.zero (Inv xs arr k) (.bin .ult 3 1 2) (InvG xs arr k)
       (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
@@ -186,7 +186,7 @@ theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
   -- the body: read, accumulate, increment
-  have hbody : ∀ k, Triple C (fun s => InvG xs arr (k + 1) s ∧ s.regs 3 ≠ 0)
+  have hbody : ∀ k, Triple C Caliper.RandomTape.zero (fun s => InvG xs arr (k + 1) s ∧ s.regs 3 ≠ 0)
       (.memLoad 4 xs 1 ;; .bin .add 0 0 4 ;; .imm 5 1 ;; .bin .add 1 1 5)
       (Inv xs arr k)
       (C.memLoad + (C.bin .add + (C.imm + C.bin .add))) 0 0 := by
@@ -204,13 +204,13 @@ theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
       rw [toNat_add_ofNat_one hlt hsz]
       simp [sumTo, hlt, hacc]
   -- prologue
-  have h1 : Triple C (fun s => s.bufs xs = arr) (.imm 0 0)
+  have h1 : Triple C Caliper.RandomTape.zero (fun s => s.bufs xs = arr) (.imm 0 0)
       (fun s => s.bufs xs = arr ∧ s.regs 0 = 0) C.imm 0 0 :=
     Triple.imm fun s hs => by simp [hs]
-  have h2 : Triple C (fun s => s.bufs xs = arr ∧ s.regs 0 = 0) (.imm 1 0)
+  have h2 : Triple C Caliper.RandomTape.zero (fun s => s.bufs xs = arr ∧ s.regs 0 = 0) (.imm 1 0)
       (fun s => s.bufs xs = arr ∧ s.regs 0 = 0 ∧ s.regs 1 = 0) C.imm 0 0 :=
     Triple.imm fun s hs => by simp [hs.1, hs.2]
-  have h3 : Triple C (fun s => s.bufs xs = arr ∧ s.regs 0 = 0 ∧ s.regs 1 = 0)
+  have h3 : Triple C Caliper.RandomTape.zero (fun s => s.bufs xs = arr ∧ s.regs 0 = 0 ∧ s.regs 1 = 0)
       (.memLen 2 xs) (Inv xs arr arr.size) C.memLen 0 0 := by
     apply Triple.memLen
     rintro s ⟨hb, h0, h1'⟩
@@ -234,7 +234,7 @@ theorem spec {C : CostModel} (xs : BufId) (arr : Array (Word w))
 
 /-- The bound specialized to the uniform cost model: `6n + 5` steps. -/
 theorem spec_unit (xs : BufId) (arr : Array (Word w)) (hsz : arr.size < 2 ^ w) :
-    Triple .unit (fun s => s.bufs xs = arr) (code xs)
+    Triple .unit Caliper.RandomTape.zero (fun s => s.bufs xs = arr) (code xs)
       (fun s => s.regs 0 = sumTo arr arr.size) (6 * arr.size + 5) 0 0 :=
   (spec xs arr hsz).weaken
     (by unfold timeBound CostModel.unit; simp; omega) (le_refl _) (le_refl _)
@@ -294,10 +294,10 @@ allocation: net and peak are both `n`. The capacity is *dynamic* (read from `r2`
 so the allocation's per-word time charge is data-dependent and enters the bound as
 `n * C.allocPerWord` through the capacity bound of `Triple.memAlloc`. -/
 theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
-    Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code b)
+    Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (code b)
       (fun s => s.bufs b = iotaTo w n)
       (timeBound C n) n n := by
-  have hguard : ∀ k, Triple C (Inv (w := w) b n k) (.bin .ult 1 0 2)
+  have hguard : ∀ k, Triple C Caliper.RandomTape.zero (Inv (w := w) b n k) (.bin .ult 1 0 2)
       (InvG (w := w) b n k) (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
@@ -312,7 +312,7 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     rintro k s ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩ hnz
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
-  have hbody : ∀ k, Triple C (fun (s : State w) => InvG b n (k + 1) s ∧ s.regs 1 ≠ 0)
+  have hbody : ∀ k, Triple C Caliper.RandomTape.zero (fun (s : State w) => InvG b n (k + 1) s ∧ s.regs 1 ≠ 0)
       (.memPush b 0 ;; .imm 3 1 ;; .bin .add 0 0 3)
       (Inv b n k)
       (C.memPush + (C.imm + C.bin .add)) 0 0 := by
@@ -331,7 +331,7 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
       rw [toNat_add_ofNat_one hlt hn]
       simp [iotaTo]
     · simp [hcap]
-  have h1 : Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (.memAlloc b 2)
+  have h1 : Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (.memAlloc b 2)
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps b = n ∧ s.bufs b = #[])
       (C.memAlloc + n * C.allocPerWord) n n := by
     apply Triple.memAlloc
@@ -343,7 +343,7 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     · simp [hs]
     · simp [hval]
     · simp
-  have h2 : Triple C
+  have h2 : Triple C Caliper.RandomTape.zero
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps b = n ∧ s.bufs b = #[])
       (.imm 0 0) (Inv b n n) C.imm 0 0 := by
     apply Triple.imm
@@ -413,10 +413,10 @@ def timeBound (C : CostModel) (n : ℕ) : ℕ :=
 
 /-- Linear time, net memory 0 and peak memory 1, for any `n`. -/
 theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
-    Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code sb)
+    Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (code sb)
       (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
       (timeBound C n) 0 1 := by
-  have hguard : ∀ k, Triple C (Inv (w := w) sb n k) (.bin .ult 1 0 2)
+  have hguard : ∀ k, Triple C Caliper.RandomTape.zero (Inv (w := w) sb n k) (.bin .ult 1 0 2)
       (InvG (w := w) sb n k) (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
@@ -431,7 +431,7 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     rintro k s ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩ hnz
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
-  have hbody : ∀ k, Triple C (fun (s : State w) => InvG sb n (k + 1) s ∧ s.regs 1 ≠ 0)
+  have hbody : ∀ k, Triple C Caliper.RandomTape.zero (fun (s : State w) => InvG sb n (k + 1) s ∧ s.regs 1 ≠ 0)
       (.memPush sb 0 ;; .memPop sb ;; .imm 3 1 ;; .bin .add 0 0 3)
       (Inv sb n k)
       (C.memPush + (C.memPop + (C.imm + C.bin .add))) 0 0 := by
@@ -448,7 +448,7 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
       omega
     · simp [hbuf]
     · simp [hcap]
-  have h1 : Triple C
+  have h1 : Triple C Caliper.RandomTape.zero
       (fun s => s.regs 2 = BitVec.ofNat w n)
       (.memAllocI sb 1)
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
@@ -459,7 +459,7 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     · simp [hlim]
     · simp
     · simp
-  have h2 : Triple C
+  have h2 : Triple C Caliper.RandomTape.zero
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
       (.imm 0 0) (Inv sb n n) C.imm 0 0 := by
     apply Triple.imm
@@ -470,7 +470,7 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     · simp [hbuf]
     · simp [hcap]
   have hW := Triple.whileNZ_measure hguard hpos hbody n
-  have hF : Triple C (fun s => ∃ k', InvG (w := w) sb n k' s ∧ s.regs 1 = 0)
+  have hF : Triple C Caliper.RandomTape.zero (fun s => ∃ k', InvG (w := w) sb n k' s ∧ s.regs 1 = 0)
       (.memFree sb) (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
       C.memFree (-(1 : ℤ)) 0 := by
     apply Triple.memFree' (K := 1)
@@ -500,7 +500,7 @@ def code (xs ys : BufId) : Stmt w :=
 theorem spec {C : CostModel} (xs ys : BufId)
     (arrX arrY : Array (Word w))
     (hx : arrX.size < 2 ^ w) (hy : arrY.size < 2 ^ w) :
-    Triple C (fun s => s.bufs xs = arrX ∧ s.bufs ys = arrY) (code xs ys)
+    Triple C Caliper.RandomTape.zero (fun s => s.bufs xs = arrX ∧ s.bufs ys = arrY) (code xs ys)
       (fun s => s.regs 0 = SumBuf.sumTo arrY arrY.size + SumBuf.sumTo arrX arrX.size)
       (SumBuf.timeBound C arrX.size + SumBuf.timeBound C arrY.size
         + C.mov + C.bin .add) 0 0 := by
@@ -508,7 +508,7 @@ theorem spec {C : CostModel} (xs ys : BufId)
   have h1 := (SumBuf.spec (C := C) xs arrX hx).frame_buf (b := ys) (arr := arrY)
     (by simp [SumBuf.code, Stmt.Touches])
   -- save the result
-  have h2 : Triple C
+  have h2 : Triple C Caliper.RandomTape.zero
       (fun s => s.regs 0 = SumBuf.sumTo arrX arrX.size ∧ s.bufs ys = arrY)
       (.mov 6 0)
       (fun s => s.bufs ys = arrY ∧ s.regs 6 = SumBuf.sumTo arrX arrX.size)
@@ -518,7 +518,7 @@ theorem spec {C : CostModel} (xs ys : BufId)
   have h3 := (SumBuf.spec (C := C) ys arrY hy).frame_reg (r := 6)
     (v := SumBuf.sumTo arrX arrX.size) (by simp [SumBuf.code, Stmt.Writes])
   -- combine
-  have h4 : Triple C
+  have h4 : Triple C Caliper.RandomTape.zero
       (fun s => s.regs 0 = SumBuf.sumTo arrY arrY.size
         ∧ s.regs 6 = SumBuf.sumTo arrX arrX.size)
       (.bin .add 0 0 6)
@@ -570,9 +570,9 @@ def timeBound (C : CostModel) (n : ℕ) : ℕ :=
 /-- A pure running-time bound: the same measure-indexed loop argument as
 `SumBuf.spec`, through `TimeTriple`, with no memory quantity mentioned anywhere. -/
 theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
-    TimeTriple C (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
+    TimeTriple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
       (fun s => (s.regs 0).toNat = n) (timeBound C n) := by
-  have hguard : ∀ k, TimeTriple C (Inv (w := w) n k) (.bin .ult 1 0 2)
+  have hguard : ∀ k, TimeTriple C Caliper.RandomTape.zero (Inv (w := w) n k) (.bin .ult 1 0 2)
       (InvG (w := w) n k) (C.bin .ult) := by
     intro k
     apply TimeTriple.bin
@@ -585,7 +585,7 @@ theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
     rintro k s ⟨⟨hlim, hik⟩, hflag⟩ hnz
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
-  have hbody : ∀ k, TimeTriple C (fun (s : State w) => InvG n (k + 1) s ∧ s.regs 1 ≠ 0)
+  have hbody : ∀ k, TimeTriple C Caliper.RandomTape.zero (fun (s : State w) => InvG n (k + 1) s ∧ s.regs 1 ≠ 0)
       (.imm 3 1 ;; .bin .add 0 0 3) (Inv n k) (C.imm + C.bin .add) := by
     rintro k s ⟨⟨⟨hlim, hik⟩, hflag⟩, hnz⟩
     have hlt : (s.regs 0).toNat < n := cond_of_flag_ne hflag hnz
@@ -594,7 +594,7 @@ theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
     · simp [-BitVec.toNat_add]
       rw [toNat_add_ofNat_one hlt hn]
       omega
-  have h1 : TimeTriple C (fun s => s.regs 2 = BitVec.ofNat w n) (.imm 0 0)
+  have h1 : TimeTriple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (.imm 0 0)
       (Inv n n) C.imm :=
     TimeTriple.imm fun s hs => ⟨by simp [hs], by simp⟩
   have hW := TimeTriple.whileNZ_measure hguard hpos hbody n
@@ -609,7 +609,7 @@ theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
 /-- Recombined: the time-only proof above, and a space triple obtained for free
 (`code` contains no `memAlloc`), glued into a full `Triple` by determinism. -/
 theorem spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
-    Triple C (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
+    Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
       (fun s => (s.regs 0).toNat = n) (timeBound C n) 0 0 :=
   (time_spec n hn).and_space'
     ((time_spec n hn).space_of_allocFree ⟨trivial, trivial, trivial, trivial⟩)
@@ -636,8 +636,8 @@ def InvG (b : BufId) (k : ℕ) (s : State w) : Prop :=
 loop runs longer than any given time bound (`no_time_bound`). The measure, the buffer
 length, still drives the induction; it never appears in the bounds. -/
 theorem space_spec {C : CostModel} (b : BufId) :
-    SpaceTriple C (fun _ => True) (code (w := w) b) (fun _ => True) 0 0 := by
-  have hguard : ∀ k, SpaceTriple C (Inv (w := w) b k) (.memLen 1 b)
+    SpaceTriple C Caliper.RandomTape.zero (fun _ => True) (code (w := w) b) (fun _ => True) 0 0 := by
+  have hguard : ∀ k, SpaceTriple C Caliper.RandomTape.zero (Inv (w := w) b k) (.memLen 1 b)
       (InvG (w := w) b k) 0 0 := by
     intro k
     apply SpaceTriple.memLen
@@ -647,7 +647,7 @@ theorem space_spec {C : CostModel} (b : BufId) :
     rintro (_ | k) s ⟨_, hflag⟩ hnz
     · exact absurd (hflag.trans (by simp)) hnz
     · exact ⟨k, rfl⟩
-  have hbody : ∀ k, SpaceTriple C (fun (s : State w) => InvG b (k + 1) s ∧ s.regs 1 ≠ 0)
+  have hbody : ∀ k, SpaceTriple C Caliper.RandomTape.zero (fun (s : State w) => InvG b (k + 1) s ∧ s.regs 1 ≠ 0)
       (.memPop b) (Inv b k) 0 0 := by
     intro k
     apply SpaceTriple.memPop
@@ -675,7 +675,7 @@ private theorem ofNat_eq_zero_iff {n : ℕ} (hn : n < 2 ^ w) :
 steps under the unit cost model. (The hypothesis keeps the length register from
 wrapping; it is preserved as the buffer shrinks.) -/
 private theorem time_lower {b : BufId} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} (h : Exec .unit c s s' t d p)
+    {d p : ℤ} (h : Exec .unit Caliper.RandomTape.zero c s s' t d p)
     (hc : c = .whileNZ (.memLen 1 b) 1 (.memPop b))
     (hsz : (s.bufs b).size < 2 ^ w) : (s.bufs b).size ≤ t := by
   induction h with
@@ -702,7 +702,7 @@ private theorem time_lower {b : BufId} {c : Stmt w} {s s' : State w} {t : ℕ}
 in a word is beaten by starting with a buffer of length `T + 1`. Contrast
 `space_spec`, which holds with bounds `0`/`0` for the same trivial precondition. -/
 theorem no_time_bound (b : BufId) (T : ℕ) (hT : T + 1 < 2 ^ w) :
-    ¬ TimeTriple .unit (fun _ => True) (code (w := w) b) (fun _ => True) T := by
+    ¬ TimeTriple .unit Caliper.RandomTape.zero (fun _ => True) (code (w := w) b) (fun _ => True) T := by
   intro h
   obtain ⟨s', t, d, p, hexec, -, ht⟩ := h
     { State.init w with
@@ -792,7 +792,7 @@ def code : Stmt 64 :=
 the program allocating nothing. The register side is the inferred `regPeak₀ = 2`;
 the combined statement is `ScopedSumSq.total_space` in `Liveness.lean`. -/
 theorem space_spec {C : CostModel} :
-    SpaceTriple C (fun _ => True) code (fun _ => True) 0 0 := by
+    SpaceTriple C Caliper.RandomTape.zero (fun _ => True) code (fun _ => True) 0 0 := by
   intro s _
   refine ⟨_, _, _, _, .seq .imm (.seq .bin (.seq .imm (.seq .bin .bin))),
     trivial, ?_, ?_⟩ <;> simp
@@ -811,7 +811,7 @@ add  r4, r1, r3
 /-- Value `3² + 4² = 25`, realized: unit time 5 (five ALU/imm instructions),
 buffers-only memory (0, 0). -/
 def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
-  (run .unit 100 code (State.init 64)).map fun (s, t, d, p) => (s.regs 4, t, d, p)
+  (run .unit Caliper.RandomTape.zero 100 code (State.init 64)).map fun (s, t, d, p) => (s.regs 4, t, d, p)
 
 /-- info: some (25#64, 5, 0, 0) -/
 #guard_msgs in
@@ -844,7 +844,7 @@ add  r2, r1, r1
 
 /-- Value `3² + 3² = 18`; unit time 3; buffers-only memory (0, 0). -/
 def nestedDemo : Option (Word 64 × ℕ × ℤ × ℤ) :=
-  (run .unit 100 (Build.build nestedB).2 (State.init 64)).map
+  (run .unit Caliper.RandomTape.zero 100 (Build.build nestedB).2 (State.init 64)).map
     fun (s, t, d, p) => (s.regs 2, t, d, p)
 
 /-- info: some (18#64, 3, 0, 0) -/
@@ -867,16 +867,16 @@ def demoState : State 64 :=
 
 /-- Sum: expect value 17, time 23, memory (0, 0). -/
 def demoSum : Option (Word 64 × ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (SumBuf.code 0) demoState).map fun (s, t, d, p) => (s.regs 0, t, d, p)
+  (run .unit Caliper.RandomTape.zero 1000 (SumBuf.code 0) demoState).map fun (s, t, d, p) => (s.regs 0, t, d, p)
 
 /-- Iota 5: expect buffer `#[0,1,2,3,4]`, memory (5, 5). -/
 def demoIota : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (Iota.code 0)
+  (run .unit Caliper.RandomTape.zero 1000 (Iota.code 0)
       ((State.init 64).setReg 2 5)).map fun (s, t, d, p) => (s.bufs 0, t, d, p)
 
 /-- Scratch loop, 100 iterations: expect net 0, peak 1. -/
 def demoScratch : Option (ℕ × ℤ × ℤ) :=
-  (run .unit 2000 (ScratchLoop.code 0)
+  (run .unit Caliper.RandomTape.zero 2000 (ScratchLoop.code 0)
       ((State.init 64).setReg 2 100)).map fun (_, t, d, p) => (t, d, p)
 
 /-- info: some (17#64, 23, 0, 0) -/
@@ -913,7 +913,7 @@ def pairProg : ℕ × Stmt 64 :=
     Build.var ((x : Exp 64) + y)
 
 def pairDemo : Option (Word 64 × ℤ × ℤ) :=
-  (run .unit 1000 pairProg.2 (State.init 64)).map
+  (run .unit Caliper.RandomTape.zero 1000 pairProg.2 (State.init 64)).map
     fun (s, _, d, p) => (s.regs pairProg.1, d, p)
 
 /-- info: some (50#64, 4, 4) -/

@@ -11,6 +11,11 @@ upper bounds on running time and on allocated memory.
 |---|---|
 | `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`, `CostModel.Admissible`), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems, the partial static clock (`staticTime?`), peak memory ≤ running time (`Exec.peak_le_time`), well-formed states and absolute live memory (`State.WellFormed`, `State.liveMem`), reference interpreter (`run`) and its soundness |
 | `Render.lean` | Pretty-printer: `Stmt.render`/`Stmt.renderString` emit the `mem.`-qualified assembly dialect used for the listings in this document |
+| `Tape.lean` | Fixed-tape locality, replay completeness, random-free programs, and independence of program behavior from the cost model |
+| `PMF.lean`, `Probability.lean` | Generic PMF expectation, uniform word tapes, unconditional result probabilities, and runtime distributions |
+| `TapeMeasure.lean`, `Outcome.lean` | Independent unread tails after variable-length subroutines and countable terminating outcomes |
+| `ProbTriple.lean` | Almost-sure resource specifications, expected-time sequencing, deterministic callee reuse, branching, and countable terminating cases |
+| `Geometric.lean`, `Retry.lean` | Unbounded retry, geometric runtime atoms, almost-sure termination, and exact expected time |
 | `Triple.lean` | Upper-bound Hoare triples (`Triple`), one rule per instruction, `seq`/`conseq`/`ifNZ`, the measure-indexed loop rule `whileNZ_measure`, frame rules; time-only and space-only judgments (`TimeTriple`/`SpaceTriple`) with the same rule set, recombinable via determinism (`TimeTriple.and_space`) |
 | `Builder.lean` | Surface syntax: builder monad with fresh register/buffer naming, expression compiler (`Exp`), structured `if_`/`while_`, typed buffer handles (`Buf`), product types (`PairR`, `PairBuf`) |
 | `Examples.lean` | Worked examples with full proofs, builder ↔ core checks, interpreter demos |
@@ -44,7 +49,7 @@ the builder allocates names automatically.
 ### What "unit time" means
 
 Costs come from a `CostModel`: a table indexed by the *instruction*, never by the
-state. `Exec C c s s' t d p` charges each instruction its table entry, so:
+state. `Exec C tape c s s' t d p` charges each instruction its table entry, so:
 
 - `Exec.straight_time_eq`: a branch-free program's running time is a syntactic
   constant. The proved statement is data-independence of the *abstract time
@@ -102,7 +107,7 @@ Consequences for the instruction set:
 
 ### Upper bounds, not exact times; memory as a (net, peak) profile
 
-`Triple C P c Q T D M` is total correctness plus `t ≤ T` (time), `d ≤ D` (net
+`Triple C tape P c Q T D M` is total correctness plus `t ≤ T` (time), `d ≤ D` (net
 live-memory change, signed) and `p ≤ M` (peak live-memory growth). Exhibiting the
 underlying `Exec` derivation also proves memory safety: out-of-range accesses have
 no derivation, since the `memLoad`/`memStore` rules demand an in-range proof.
@@ -211,7 +216,7 @@ Time and memory bounds are also independently provable: `TimeTriple` bounds only
 the running time and `SpaceTriple` only the (net, peak) pair, each with the full
 rule set, so a time proof carries no memory algebra and vice versa. The `Drain`
 example has a trip-count-independent space bound even though no uniform time bound
-exists for it. Since the machine is deterministic, separately proved judgments
+exists for it. For a fixed tape the machine is deterministic, so separately proved judgments
 recombine into a full `Triple` (`TimeTriple.and_space`).
 
 #### The static register metric, in brief
@@ -230,7 +235,7 @@ programs.
 
 ### Executable
 
-`run C fuel c s` is a fuel-based reference interpreter; `run_sound` proves anything
+`run C tape fuel c s` is a fuel-based reference interpreter; `run_sound` proves anything
 it returns is a genuine `Exec` derivation with the same costs, so `#eval` numbers
 are instances of the proved bounds (the examples check this with `#guard_msgs`).
 
@@ -419,3 +424,57 @@ their own concrete numerals. `#print axioms <theorem>` is the audit tool.
 - Registers in the examples use fixed conventions (callee-clobbered scratch); a
   register-window or parameterized-register discipline is mechanical to add
   (distinctness side conditions close by `decide`).
+
+
+## Random word tapes and composition
+
+`RandomTape w` is `ℕ → Word w`. `Stmt.rand d` copies the word at `State.tapePos`
+into register `d`, advances that cursor once, and charges `C.rand`. No other
+instruction consumes input. The tape and cursor are external input bookkeeping;
+they do not contribute to register liveness or allocated-buffer memory. Neither
+has a program instruction for inspection, seeking, or rewinding. Elapsed cost is
+also unavailable to programs: `Exec.withCostModel` proves that changing prices
+preserves safe termination, the final state, and both memory costs.
+
+All fixed-tape semantics and triples take `tape` explicitly. `RandomTape.zero`
+selects deterministic all-zero inputs without disabling the `rand` instruction.
+`Stmt.RandomFree` certifies that a program consumes no words; its executions and
+runtime law are independent of the supplied tape. Replay uses the returned
+state, including its cursor. Fuel is an interpreter limit, not an observable clock;
+`run_mono` and `run_complete` relate it to unbounded executions.
+
+`uniformTape w` is the infinite product of uniform word distributions. It is a
+measure, since infinite tapes are not a countable discrete sample space. The
+runtime *image* is countable and is exposed as `runTimePMF : PMF ℕ∞`.
+Faults and divergence both contribute to infinity, even if a fault happens after a
+finite instruction count. `resultProb` counts safe terminating outcomes without
+conditioning on success. Generic `PMF.expect`, `PMF.expect_map`, and `PMF.expect_bind`
+provide expectation and its composition laws.
+
+`Exec.withTape` proves finite-prefix locality. `uniformTape_after_exec` then proves
+that the unread tail after a safely terminating subroutine is uniform and independent
+of any predicate on its outcome, including its runtime and consumed-word count.
+For a subroutine terminating with probability `p`, an unread-tail event of mass `q`
+has joint mass `p*q`; no termination assumption is hidden in a conditional probability.
+This is essential when a callee follows a caller that consumes a variable-length
+prefix. Replaying each component from cursor zero would reuse randomness and does
+not implement sequential composition.
+
+`ProbTriple C P c Q T D M` gives almost-sure safe correctness and memory bounds,
+plus expected time at most `T`. Its sequence rule gives `T₁ + T₂`, `D₁ + D₂`, and
+`max M₁ (D₁ + M₂)`. Specifications quantify over initial states, allowing a callee to
+start at any cursor. Its input registers may carry random values returned by the
+caller: the callee's specification must hold for each state satisfying the intermediate
+postcondition. `ProbTriple.of_randomFree` lifts an existing fixed-tape deterministic
+subroutine specification into this logic. `of_countable_cases` handles unbounded computations by proving
+countably many terminating cases whose unconditional masses sum to one.
+
+`retryZero r` repeatedly samples until it sees zero. Its runtime distribution is
+geometric with success probability `2^(-w)`, zero mass at infinity, and exact
+expected cost `2^w * (C.rand + C.branch)` when per-attempt cost is positive. The
+proof also covers `w = 0`; a fixed tape without any zero can still diverge.
+
+The top-level `Examples` Lake library is a default build target and an explicit CI
+target. It checks fixed-tape replay and proves probability and resource statements.
+The RV64 differential suite continues to cover the supported deterministic lowering;
+randomized instructions report an explicit unsupported-backend error.

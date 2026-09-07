@@ -233,6 +233,7 @@ partial def lowerStmt (ctx : Ctx) : Stmt 64 → Except String (Array UInt32)
     let a ← lowerStmt ctx c₁
     let b ← lowerStmt ctx c₂
     .ok (a ++ b)
+  | .rand _ => .error "rand requires a tape-input backend"
   | .imm d v => do
     let rd ← regMap d
     .ok (li rd v.toNat)
@@ -337,5 +338,8 @@ the harness runs to. -/
 def lowerProgram (ctx : Ctx) (c : Stmt 64) : Except String (Array UInt32) := do
   let w ← lowerStmt ctx c
   .ok (w.push ebreak)
+
+-- Random instructions require an explicit tape backend.
+#guard lowerProgram (layout []) (.rand 0) == .error "rand requires a tape-input backend"
 
 end CaliperTest.RV64

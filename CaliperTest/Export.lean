@@ -85,7 +85,7 @@ def codeBase : Nat := 0x1000
 
 def exportCase (tc : TestCase) : IO Unit := do
   let s₀ := tc.state
-  let some (s', t, _, _) := run .unit tc.fuel tc.stmt s₀
+  let some (s', t, _, _) := run .unit Caliper.RandomTape.zero tc.fuel tc.stmt s₀
     | throw <| IO.userError s!"{tc.name}: interpreter failed (out of fuel or unsafe access)"
   let ctx := tc.ctx
   let words ← match lowerProgram ctx tc.stmt with

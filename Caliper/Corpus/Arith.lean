@@ -80,10 +80,10 @@ def timeBound (C : CostModel) (n : ℕ) : ℕ :=
 (0, 0), for any cost model. -/
 theorem spec {C : CostModel} (xs ys : BufId) (aX aY : Array (Word w))
     (hsz : aX.size < 2 ^ w) (hlen : aY.size = aX.size) :
-    Triple C (fun s => s.bufs xs = aX ∧ s.bufs ys = aY) (code xs ys)
+    Triple C Caliper.RandomTape.zero (fun s => s.bufs xs = aX ∧ s.bufs ys = aY) (code xs ys)
       (fun s => s.regs 0 = dotTo aX aY aX.size)
       (timeBound C aX.size) 0 0 := by
-  have hguard : ∀ k, Triple C (Inv xs ys aX aY k) (.bin .ult 3 1 2)
+  have hguard : ∀ k, Triple C Caliper.RandomTape.zero (Inv xs ys aX aY k) (.bin .ult 3 1 2)
       (InvG xs ys aX aY k) (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
@@ -99,7 +99,7 @@ theorem spec {C : CostModel} (xs ys : BufId) (aX aY : Array (Word w))
     rintro k s ⟨⟨hbx, hby, hn, hik, hacc⟩, hflag⟩ hnz
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
-  have hbody : ∀ k, Triple C (fun s => InvG xs ys aX aY (k + 1) s ∧ s.regs 3 ≠ 0)
+  have hbody : ∀ k, Triple C Caliper.RandomTape.zero (fun s => InvG xs ys aX aY (k + 1) s ∧ s.regs 3 ≠ 0)
       (.memLoad 4 xs 1 ;; .memLoad 5 ys 1 ;; .bin .mul 6 4 5 ;;
        .bin .add 0 0 6 ;; .imm 7 1 ;; .bin .add 1 1 7)
       (Inv xs ys aX aY k)
@@ -125,15 +125,15 @@ theorem spec {C : CostModel} (xs ys : BufId) (aX aY : Array (Word w))
     · simp [-BitVec.toNat_add, hbx, hby]
       rw [toNat_add_ofNat_one hlt hsz]
       simp [dotTo, hlt, hlt.trans_le hlen.ge, hacc]
-  have h1 : Triple C (fun s => s.bufs xs = aX ∧ s.bufs ys = aY) (.imm 0 0)
+  have h1 : Triple C Caliper.RandomTape.zero (fun s => s.bufs xs = aX ∧ s.bufs ys = aY) (.imm 0 0)
       (fun s => s.bufs xs = aX ∧ s.bufs ys = aY ∧ s.regs 0 = 0) C.imm 0 0 :=
     Triple.imm fun s hs => by simp [hs.1, hs.2]
-  have h2 : Triple C (fun s => s.bufs xs = aX ∧ s.bufs ys = aY ∧ s.regs 0 = 0)
+  have h2 : Triple C Caliper.RandomTape.zero (fun s => s.bufs xs = aX ∧ s.bufs ys = aY ∧ s.regs 0 = 0)
       (.imm 1 0)
       (fun s => s.bufs xs = aX ∧ s.bufs ys = aY ∧ s.regs 0 = 0 ∧ s.regs 1 = 0)
       C.imm 0 0 :=
     Triple.imm fun s hs => by simp [hs.1, hs.2.1, hs.2.2]
-  have h3 : Triple C
+  have h3 : Triple C Caliper.RandomTape.zero
       (fun s => s.bufs xs = aX ∧ s.bufs ys = aY ∧ s.regs 0 = 0 ∧ s.regs 1 = 0)
       (.memLen 2 xs) (Inv xs ys aX aY aX.size) C.memLen 0 0 := by
     apply Triple.memLen
@@ -158,7 +158,7 @@ theorem spec {C : CostModel} (xs ys : BufId) (aX aY : Array (Word w))
 /-- `⟨1,2,3⟩ · ⟨4,5,6⟩ = 32`: `(value, time, net, peak)`, with time
 `29 = timeBound .unit 3`, an instance of `spec`. -/
 def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (code 0 1)
+  (run .unit Caliper.RandomTape.zero 1000 (code 0 1)
       { State.init 64 with
         bufs := fun b => if b = 0 then #[1, 2, 3] else if b = 1 then #[4, 5, 6] else #[]
         caps := fun b => if b = 0 ∨ b = 1 then 3 else 0 }).map
@@ -230,10 +230,10 @@ is instantiated with the *value* of `r1`: each iteration replaces it by `a % b <
 `0 < w` keeps the flag readable, 1 being 0 in a 0-bit word. Time-only judgment; the
 memory side is below. -/
 theorem time_spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
-    TimeTriple C (fun s => s.regs 0 = a ∧ s.regs 1 = b) (code (w := w))
+    TimeTriple C Caliper.RandomTape.zero (fun s => s.regs 0 = a ∧ s.regs 1 = b) (code (w := w))
       (fun s => (s.regs 0).toNat = Nat.gcd a.toNat b.toNat)
       (timeBound C b.toNat) := by
-  have hguard : ∀ k, TimeTriple C (Inv a b k) (.un .isNonZero 2 1)
+  have hguard : ∀ k, TimeTriple C Caliper.RandomTape.zero (Inv a b k) (.un .isNonZero 2 1)
       (InvG a b k) (C.un .isNonZero) := by
     intro k
     apply TimeTriple.un
@@ -249,7 +249,7 @@ theorem time_spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
       exact hnz hflag
     have := toNat_ne_zero hb
     exact ⟨k - 1, by omega⟩
-  have hbody : ∀ k, TimeTriple C (fun (s : State w) => InvG a b (k + 1) s ∧ s.regs 2 ≠ 0)
+  have hbody : ∀ k, TimeTriple C Caliper.RandomTape.zero (fun (s : State w) => InvG a b (k + 1) s ∧ s.regs 2 ≠ 0)
       (.bin .umod 3 0 1 ;; .mov 0 1 ;; .mov 1 3)
       (Inv a b k) (C.bin .umod + (C.mov + C.mov)) := by
     rintro k s ⟨⟨⟨hg, hk⟩, hflag⟩, hnz⟩
@@ -291,7 +291,7 @@ theorem time_spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
 /-- The full triple: the time proof above recombined, by determinism, with the free
 space triple, the code containing no allocation. -/
 theorem spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
-    Triple C (fun s => s.regs 0 = a ∧ s.regs 1 = b) (code (w := w))
+    Triple C Caliper.RandomTape.zero (fun s => s.regs 0 = a ∧ s.regs 1 = b) (code (w := w))
       (fun s => (s.regs 0).toNat = Nat.gcd a.toNat b.toNat)
       (timeBound C b.toNat) 0 0 :=
   (time_spec hw a b).and_space'
@@ -300,7 +300,7 @@ theorem spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
 /-- `gcd 252 105 = 21` in 17 unit steps: 4 guard evaluations, the last seeing
 `b = 0`, and 3 bodies. An instance of `spec`. -/
 def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (code (w := 64))
+  (run .unit Caliper.RandomTape.zero 1000 (code (w := 64))
       { State.init 64 with
         regs := fun r => if r = 0 then 252 else if r = 1 then 105 else 0 }).map
     fun (s, t, d, p) => (s.regs 0, t, d, p)
@@ -355,7 +355,7 @@ def code : Stmt w :=
 exponent 13 = 0b1101 drives 4 iterations, 3 of them through the multiply branch, so
 the time is data-dependent. -/
 def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (code (w := 64))
+  (run .unit Caliper.RandomTape.zero 1000 (code (w := 64))
       { State.init 64 with
         regs := fun r => if r = 0 then 3 else if r = 1 then 13 else 0 }).map
     fun (s, t, d, p) => (s.regs 2, t, d, p)
@@ -393,7 +393,7 @@ def code : Stmt w :=
 /-- `popcount 0xDEADBEEF = 24`: `(count, time, net, peak)`, 32 iterations, the
 position of the highest set bit. -/
 def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (code (w := 64))
+  (run .unit Caliper.RandomTape.zero 1000 (code (w := 64))
       { State.init 64 with
         regs := fun r => if r = 0 then 0xDEADBEEF else 0 }).map
     fun (s, t, d, p) => (s.regs 1, t, d, p)
@@ -438,7 +438,7 @@ def code : Stmt w :=
 /-- `a = 2^64 - 1`, `b = 10`: `(q, r, ok, mulhi)`, with the identity flag 1 and the
 widening product's high word 9. -/
 def demo : Option (Word 64 × Word 64 × Word 64 × Word 64) :=
-  (run .unit 100 (code (w := 64))
+  (run .unit Caliper.RandomTape.zero 100 (code (w := 64))
       { State.init 64 with
         regs := fun r => if r = 0 then 0xFFFFFFFFFFFFFFFF else if r = 1 then 10 else 0 }).map
     fun (s, _, _, _) => (s.regs 2, s.regs 3, s.regs 5, s.regs 6)
@@ -451,7 +451,7 @@ def demo : Option (Word 64 × Word 64 × Word 64 × Word 64) :=
 recomposition identity still holds. RISC-V's `DIVU` returns all-ones here, so the
 lowering bridges that; `REMU` already matches. -/
 def demoZero : Option (Word 64 × Word 64 × Word 64) :=
-  (run .unit 100 (code (w := 64))
+  (run .unit Caliper.RandomTape.zero 100 (code (w := 64))
       { State.init 64 with regs := fun r => if r = 0 then 5 else 0 }).map
     fun (s, _, _, _) => (s.regs 2, s.regs 3, s.regs 5)
 
@@ -488,9 +488,9 @@ def minCode : Stmt w :=
 /-- `min(1000, 37) = 37` and `min(37, 1000) = 37`: the two orders cost the same 5
 instructions, straight-line code being constant-time by construction. -/
 def minDemo : Option (Word 64 × Word 64) := do
-  let (s₁, _, _, _) ← run .unit 100 (minCode (w := 64))
+  let (s₁, _, _, _) ← run .unit Caliper.RandomTape.zero 100 (minCode (w := 64))
     { State.init 64 with regs := fun r => if r = 0 then 1000 else if r = 1 then 37 else 0 }
-  let (s₂, _, _, _) ← run .unit 100 (minCode (w := 64))
+  let (s₂, _, _, _) ← run .unit Caliper.RandomTape.zero 100 (minCode (w := 64))
     { State.init 64 with regs := fun r => if r = 0 then 37 else if r = 1 then 1000 else 0 }
   return (s₁.regs 5, s₂.regs 5)
 
@@ -514,7 +514,7 @@ def isPow2Code : Stmt w :=
 /-- `(isPow2 64, isPow2 96, isPow2 0)` = `(1, 0, 0)`. -/
 def isPow2Demo : Option (Word 64 × Word 64 × Word 64) := do
   let go (x : Word 64) : Option (Word 64) :=
-    (run .unit 100 (isPow2Code (w := 64))
+    (run .unit Caliper.RandomTape.zero 100 (isPow2Code (w := 64))
       { State.init 64 with regs := fun r => if r = 0 then x else 0 }).map
       fun (s, _, _, _) => s.regs 5
   return (← go 64, ← go 96, ← go 0)
@@ -540,7 +540,7 @@ def packCode : Stmt w :=
 
 /-- `(packed, ok')` for `hi = 0xDEAD`, `lo = 0xBEEF`. -/
 def packDemo : Option (Word 64 × Word 64) :=
-  (run .unit 100 (packCode (w := 64))
+  (run .unit Caliper.RandomTape.zero 100 (packCode (w := 64))
       { State.init 64 with
         regs := fun r => if r = 0 then 0xDEAD else if r = 1 then 0xBEEF else 0 }).map
     fun (s, _, _, _) => (s.regs 4, s.regs 7)

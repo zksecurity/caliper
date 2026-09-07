@@ -10,6 +10,10 @@ package caliper where
 @[default_target]
 lean_lib Caliper where
 
+/-- Executable examples and their proofs; built in CI. -/
+@[default_target]
+lean_lib Examples where
+
 /-- Test-only: RV64 lowering + differential-vector exporter. Not imported by
 `Caliper`; users running `lake build Caliper` never build it. -/
 lean_lib CaliperTest where

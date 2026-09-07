@@ -68,7 +68,7 @@ def code (b : BufId) : Stmt w :=
 
 /-- Sort a length-6 buffer, returning `(contents, time, net, peak)`. -/
 def runOn (arr : Array (Word 64)) : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
-  (run .unit 100000 (code 0)
+  (run .unit Caliper.RandomTape.zero 100000 (code 0)
       { State.init 64 with
         bufs := fun b => if b = 0 then arr else #[]
         caps := fun b => if b = 0 then arr.size else 0 }).map
@@ -135,7 +135,7 @@ def prog : Stmt 64 :=
 `(result, time, net, peak)`, memory (9, 9): the result buffer, charged once at its
 immediate allocation. -/
 def demo : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
-  (run .unit 100000 prog
+  (run .unit Caliper.RandomTape.zero 100000 prog
       { State.init 64 with
         bufs := fun b =>
           if b = 0 then #[1, 2, 3, 4, 5, 6, 7, 8, 9]
