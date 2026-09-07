@@ -19,27 +19,13 @@ The only datatype in Caliper is words of a fixed size, usually 64 bits.
 
 We hope for Caliper to become the "yardstick" by which we can compare "real world" complexity in Lean.
 
-## Randomized computation
+## Randomized Computation
 
-`Stmt.rand r` reads the next word from an explicit `RandomTape w := ℕ → Word w`.
-`run C tape fuel program state` is deterministic for every supplied tape. Use
-`RandomTape.zero` for an all-zero tape, or supply a tape to replay a run. The returned
-state carries the next unread position, so sequential programs share the tape.
+Caliper supports randomized computation, the `rand` instruction samples a uniformly random word.
+Using randomized computation means that the running time is now modelled as a probability mass function (PMF),
+mapping each running time (a natrual) to it's probability.
+Deterministic Caliper programs are simply Caliper programs with a fixed (all-zero) random tape and the PMF is then just a point distribution.
 
-`uniformTape w` is the probability measure of independent uniform words.
-`runTimePMF C program state : PMF ℕ∞` assigns finite costs to safe termination
-and infinity to divergence or faults. Expected time is the generic expression
-`(runTimePMF C program state).expect ENat.toENNReal`; probabilities are
-unconditional. `ProbTriple.seq` adds expected costs and composes memory bounds,
-including for subroutines that consume a variable number of words.
-
-Programs cannot read elapsed time or the tape cursor. Costs are semantic outputs;
-changing the cost model cannot affect program behavior (`Exec.withCostModel`).
-Randomness is an immutable input tape with explicit state threading, rather than a
-probabilistic execution monad. The existing `Build` monad constructs programs.
-
-See [`Examples/`](Examples/) for replay, distribution, retry, and composition
-examples. Their executable checks and Lean proofs are built in CI.
 
 ## Correspondence to RISC-V
 
