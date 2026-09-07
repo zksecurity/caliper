@@ -39,7 +39,7 @@ register slots (register-writing leaves) are disjoint.
 
 namespace Caliper
 
-variable {w : ℕ}
+variable {w : ℕ} {tape : RandomTape w}
 
 /-! ## Per-instruction register footprints -/
 
@@ -49,6 +49,7 @@ backward dataflow only consults it at leaves. -/
 def Stmt.readsSet : Stmt w → Finset ℕ
   | .skip => ∅
   | .seq c₁ c₂ => c₁.readsSet ∪ c₂.readsSet
+  | .rand _ => ∅
   | .imm _ _ => ∅
   | .mov _ a => {a}
   | .un _ _ a => {a}
@@ -70,6 +71,7 @@ dataflow only consults leaves. -/
 def Stmt.writesSet : Stmt w → Finset ℕ
   | .skip => ∅
   | .seq c₁ c₂ => c₁.writesSet ∪ c₂.writesSet
+  | .rand d => {d}
   | .imm d _ => {d}
   | .mov d _ => {d}
   | .un _ d _ => {d}
@@ -262,6 +264,7 @@ no register and are not counted, which is what lets the straight-line corollary
 survive 0-cost instructions like `memAllocI _ 0`. -/
 def Stmt.writesTotal : Stmt w → ℕ
   | .seq c₁ c₂ => c₁.writesTotal + c₂.writesTotal
+  | .rand .. => 1
   | .imm .. => 1
   | .mov .. => 1
   | .un .. => 1
@@ -397,19 +400,19 @@ register liveness is static information, not because they are free. `SpaceBound`
 packages the sum as the number a space claim should quote, so a buffers-only figure
 cannot masquerade as "the memory". -/
 
-/-- `SpaceBound C P c Q M`: from any state satisfying `P`, `c` terminates in a state
+/-- `SpaceBound C tape P c Q M`: from any state satisfying `P`, `c` terminates in a state
 satisfying `Q` with total peak footprint at most `M`, dynamic buffer peak plus the
 inferred register peak `c.regPeak₀`. The buffer side is an ordinary `SpaceTriple`,
 the register side a compile-time constant of the code. -/
-def SpaceBound (C : CostModel) (P : State w → Prop) (c : Stmt w)
+def SpaceBound (C : CostModel) (tape : RandomTape w) (P : State w → Prop) (c : Stmt w)
     (Q : State w → Prop) (M : ℤ) : Prop :=
-  ∃ D Mbuf : ℤ, SpaceTriple C P c Q D Mbuf ∧ Mbuf + (c.regPeak₀ : ℤ) ≤ M
+  ∃ D Mbuf : ℤ, SpaceTriple C tape P c Q D Mbuf ∧ Mbuf + (c.regPeak₀ : ℤ) ≤ M
 
 /-- Intro rule for `SpaceBound`: a buffer-side `SpaceTriple` plus the register
 peak, summed. -/
 theorem SpaceTriple.spaceBound {C : CostModel} {P Q : State w → Prop}
-    {c : Stmt w} {D Mbuf M : ℤ} (h : SpaceTriple C P c Q D Mbuf)
-    (hM : Mbuf + (c.regPeak₀ : ℤ) ≤ M) : SpaceBound C P c Q M :=
+    {c : Stmt w} {D Mbuf M : ℤ} (h : SpaceTriple C tape P c Q D Mbuf)
+    (hM : Mbuf + (c.regPeak₀ : ℤ) ≤ M) : SpaceBound C tape P c Q M :=
   ⟨D, Mbuf, h, hM⟩
 
 /-! ### Time ≥ total memory, on the straight fragment
@@ -433,7 +436,7 @@ def Stmt.allocTotal : Stmt w → ℕ
 /-- On straight-line code the buffer peak never exceeds the total immediate
 allocation capacity: a syntactic bound, in any cost model. -/
 theorem Exec.straight_peak_le_allocTotal {C : CostModel} {c : Stmt w}
-    {s s' : State w} {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p)
+    {s s' : State w} {t : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p)
     (hs : c.Straight) : p ≤ (c.allocTotal : ℤ) := by
   induction h with
   | seq h₁ h₂ ih₁ ih₂ =>
@@ -471,7 +474,7 @@ live-ins by their first-write instructions
 are disjoint (`Stmt.Straight.allocTotal_add_writesTotal_le_staticTime_unit`), so the
 sum fits in `t`, not `2t`. -/
 theorem Exec.straight_total_footprint_le {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} (hexec : Exec CostModel.unit c s s' t d p) (h : c.Straight) :
+    {d p : ℤ} (hexec : Exec CostModel.unit tape c s s' t d p) (h : c.Straight) :
     p + (c.regPeak₀ : ℤ) ≤ ((c.liveBefore ∅).card + t : ℤ) := by
   have h1 := hexec.straight_peak_le_allocTotal h
   have h2 := c.regPeak_le_card_liveBefore_add_writesTotal ∅
@@ -530,14 +533,14 @@ register peak: the total a space claim should quote. -/
 
 /-- `ScopedSumSq`: buffer peak 0 + register peak 2 = total 2. -/
 theorem ScopedSumSq.total_space {C : CostModel} :
-    SpaceBound C (fun _ => True) Examples.ScopedSumSq.code (fun _ => True) 2 :=
+    SpaceBound C RandomTape.zero (fun _ => True) Examples.ScopedSumSq.code (fun _ => True) 2 :=
   Examples.ScopedSumSq.space_spec.spaceBound (by decide)
 
 /-- `SumBuf` (on buffer 0): buffer peak 0 + register peak 6 = total 6, alongside its
 linear time bound. -/
 theorem SumBuf.total_space {C : CostModel} (arr : Array (Word 64))
     (hsz : arr.size < 2 ^ 64) :
-    SpaceBound C (fun s => s.bufs 0 = arr) (Examples.SumBuf.code 0)
+    SpaceBound C RandomTape.zero (fun s => s.bufs 0 = arr) (Examples.SumBuf.code 0)
       (fun s => s.regs 0 = Examples.SumBuf.sumTo arr arr.size) 6 :=
   (Examples.SumBuf.spec 0 arr hsz).space.spaceBound (by decide)
 
@@ -545,7 +548,7 @@ theorem SumBuf.total_space {C : CostModel} (arr : Array (Word 64))
 independent of the trip count: memory reuse in the buffer summand, static inference
 in the register summand. -/
 theorem ScratchLoop.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
-    SpaceBound C (fun s => s.regs 2 = BitVec.ofNat 64 n)
+    SpaceBound C RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat 64 n)
       (Examples.ScratchLoop.code 0)
       (fun s => s.bufs 0 = #[] ∧ s.caps 0 = 0) 5 :=
   (Examples.ScratchLoop.spec 0 n hn).space.spaceBound (by decide)
@@ -553,7 +556,7 @@ theorem ScratchLoop.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
 /-- `Iota` (on buffer 0): buffer peak `n` + register peak 4 = total `n + 4`, the one
 genuinely linear-space example. -/
 theorem Iota.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
-    SpaceBound C (fun s => s.regs 2 = BitVec.ofNat 64 n)
+    SpaceBound C RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat 64 n)
       (Examples.Iota.code 0)
       (fun s => s.bufs 0 = Examples.Iota.iotaTo 64 n) ((n : ℤ) + 4) :=
   (Examples.Iota.spec 0 n hn).space.spaceBound

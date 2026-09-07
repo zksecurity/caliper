@@ -5,12 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build Caliper
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install elan
         run: |
@@ -20,15 +25,17 @@ jobs:
       - name: Fetch mathlib build cache
         run: lake exe cache get
 
-      - name: Build the Caliper library
-        run: lake build Caliper
+      - name: Build Caliper and examples
+        run: lake build --wfail Caliper Examples
 
   unicorn-tests:
     name: Differential RV64 tests (Unicorn)
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install elan
         run: |
@@ -36,13 +43,13 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
 
       - name: Fetch mathlib build cache
         run: lake exe cache get
 
       - name: Build Caliper and the test lowering
-        run: lake build Caliper CaliperTest
+        run: lake build --wfail Caliper CaliperTest Examples
 
       - name: Export differential vectors
         run: lake env lean --run CaliperTest/Export.lean

@@ -68,6 +68,12 @@ def freshBuf : Build w BufId :=
 def emit (c : Stmt w) : Build w Unit :=
   fun s => ((), { s with code := c :: s.code })
 
+/-- Consume one tape word at runtime, placing it in a fresh register. -/
+def rand : Build w Reg := do
+  let d ← freshReg
+  emit (.rand d)
+  return d
+
 /-- Right-nested sequencing of a code list (no trailing `skip`). -/
 def seqAll : List (Stmt w) → Stmt w
   | [] => .skip

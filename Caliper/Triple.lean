@@ -1,9 +1,9 @@
-import Caliper.Core
+import Caliper.Tape
 
 /-!
 # Upper-bound Hoare triples
 
-`Triple C P c Q T D M` is total correctness with resource *upper bounds*: from any
+`Triple C tape P c Q T D M` is total correctness with resource *upper bounds*: from any
 state satisfying `P`, the statement terminates and is memory-safe, an `Exec`
 derivation existing, the result satisfies `Q`, and
 
@@ -36,39 +36,47 @@ deterministic the two judgments recombine into a full `Triple`
 
 namespace Caliper
 
-variable {w : ℕ} {C : CostModel}
+variable {w : ℕ} {tape : RandomTape w} {C : CostModel}
 
 /-- Total-correctness triple with time bound `T`, net-memory bound `D` and
 peak-memory bound `M`. -/
-def Triple (C : CostModel) (P : State w → Prop) (c : Stmt w) (Q : State w → Prop)
+def Triple (C : CostModel) (tape : RandomTape w) (P : State w → Prop) (c : Stmt w) (Q : State w → Prop)
     (T : ℕ) (D M : ℤ) : Prop :=
-  ∀ s, P s → ∃ s' t d p, Exec C c s s' t d p ∧ Q s' ∧ t ≤ T ∧ d ≤ D ∧ p ≤ M
+  ∀ s, P s → ∃ s' t d p, Exec C tape c s s' t d p ∧ Q s' ∧ t ≤ T ∧ d ≤ D ∧ p ≤ M
 
 namespace Triple
+
+/-- Reuse a random-free subroutine's fixed-tape specification on any caller tape. -/
+theorem withTape_of_randomFree {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
+    (h : Triple C tape P c Q T D M) (hc : c.RandomFree) (other : RandomTape w) :
+    Triple C other P c Q T D M := by
+  intro s hs
+  obtain ⟨s', t, d, p, he, hq, ht, hd, hp⟩ := h s hs
+  exact ⟨s', t, d, p, he.withTape_of_randomFree hc other, hq, ht, hd, hp⟩
 
 /-- Consequence: strengthen the precondition, weaken the postcondition, raise the
 bounds. This is why proving `≤` bounds beats proving exact costs: bounds compose
 without case splits. -/
 theorem conseq {P P' Q Q' : State w → Prop} {c : Stmt w} {T T' : ℕ} {D D' M M' : ℤ}
-    (h : Triple C P c Q T D M) (hP : ∀ s, P' s → P s) (hQ : ∀ s, Q s → Q' s)
-    (hT : T ≤ T') (hD : D ≤ D') (hM : M ≤ M') : Triple C P' c Q' T' D' M' := by
+    (h : Triple C tape P c Q T D M) (hP : ∀ s, P' s → P s) (hQ : ∀ s, Q s → Q' s)
+    (hT : T ≤ T') (hD : D ≤ D') (hM : M ≤ M') : Triple C tape P' c Q' T' D' M' := by
   intro s hs
   obtain ⟨s', t, d, p, hexec, hq, ht, hd, hp⟩ := h s (hP s hs)
   exact ⟨s', t, d, p, hexec, hQ s' hq, ht.trans hT, hd.trans hD, hp.trans hM⟩
 
 theorem weaken {P Q : State w → Prop} {c : Stmt w} {T T' : ℕ} {D D' M M' : ℤ}
-    (h : Triple C P c Q T D M) (hT : T ≤ T') (hD : D ≤ D') (hM : M ≤ M') :
-    Triple C P c Q T' D' M' :=
+    (h : Triple C tape P c Q T D M) (hT : T ≤ T') (hD : D ≤ D') (hM : M ≤ M') :
+    Triple C tape P c Q T' D' M' :=
   h.conseq (fun _ => id) (fun _ => id) hT hD hM
 
 protected theorem skip {P Q : State w → Prop} (h : ∀ s, P s → Q s) :
-    Triple C P (.skip (w := w)) Q 0 0 0 :=
+    Triple C tape P (.skip (w := w)) Q 0 0 0 :=
   fun s hs => ⟨s, 0, 0, 0, .skip, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂ : ℕ}
     {D₁ M₁ D₂ M₂ : ℤ}
-    (h₁ : Triple C P c₁ R T₁ D₁ M₁) (h₂ : Triple C R c₂ Q T₂ D₂ M₂) :
-    Triple C P (c₁ ;; c₂) Q (T₁ + T₂) (D₁ + D₂) (max M₁ (D₁ + M₂)) := by
+    (h₁ : Triple C tape P c₁ R T₁ D₁ M₁) (h₂ : Triple C tape R c₂ Q T₂ D₂ M₂) :
+    Triple C tape P (c₁ ;; c₂) Q (T₁ + T₂) (D₁ + D₂) (max M₁ (D₁ + M₂)) := by
   intro s hs
   obtain ⟨s₁, t₁, d₁, p₁, he₁, hr, ht₁, hd₁, hp₁⟩ := h₁ s hs
   obtain ⟨s₂, t₂, d₂, p₂, he₂, hq, ht₂, hd₂, hp₂⟩ := h₂ s₁ hr
@@ -81,21 +89,27 @@ Each takes the "forward" form: the precondition must imply the postcondition of 
 updated state. Chained with `seq` these give a weakest-precondition-style calculation. -/
 
 protected theorem imm {P Q : State w → Prop} {d : Reg} {v : Word w}
-    (h : ∀ s, P s → Q (s.setReg d v)) : Triple C P (.imm d v) Q C.imm 0 0 :=
+    (h : ∀ s, P s → Q (s.setReg d v)) : Triple C tape P (.imm d v) Q C.imm 0 0 :=
   fun s hs => ⟨_, _, _, _, .imm, h s hs, le_refl _, le_refl _, le_refl _⟩
 
+/-- The postcondition is checked against the word at the current tape cursor. -/
+protected theorem rand {P Q : State w → Prop} {d : Reg}
+    (h : ∀ s, P s → Q (s.readRandom tape d)) :
+    Triple C tape P (.rand d) Q C.rand 0 0 :=
+  fun s hs => ⟨_, _, _, _, .rand, h s hs, le_refl _, le_refl _, le_refl _⟩
+
 protected theorem mov {P Q : State w → Prop} {d a : Reg}
-    (h : ∀ s, P s → Q (s.setReg d (s.regs a))) : Triple C P (.mov d a) Q C.mov 0 0 :=
+    (h : ∀ s, P s → Q (s.setReg d (s.regs a))) : Triple C tape P (.mov d a) Q C.mov 0 0 :=
   fun s hs => ⟨_, _, _, _, .mov, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 protected theorem un {P Q : State w → Prop} {op : UnOp} {d a : Reg}
     (h : ∀ s, P s → Q (s.setReg d (op.eval (s.regs a)))) :
-    Triple C P (.un op d a) Q (C.un op) 0 0 :=
+    Triple C tape P (.un op d a) Q (C.un op) 0 0 :=
   fun s hs => ⟨_, _, _, _, .un, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
     (h : ∀ s, P s → Q (s.setReg d (op.eval (s.regs a) (s.regs b)))) :
-    Triple C P (.bin op d a b) Q (C.bin op) 0 0 :=
+    Triple C tape P (.bin op d a b) Q (C.bin op) 0 0 :=
   fun s hs => ⟨_, _, _, _, .bin, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 /-- Reserve capacity (dynamic). The caller supplies an upper bound `N` on the
@@ -105,7 +119,7 @@ data-dependent time charge `C.memAlloc + newCap * C.allocPerWord ≤
 C.memAlloc + N * C.allocPerWord`. -/
 protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
     (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ Q (s.allocBuf b (s.regs n).toNat)) :
-    Triple C P (.memAlloc b n) Q (C.memAlloc + N * C.allocPerWord) N N := by
+    Triple C tape P (.memAlloc b n) Q (C.memAlloc + N * C.allocPerWord) N N := by
   intro s hs
   obtain ⟨hN, hq⟩ := h s hs
   refine ⟨_, _, _, _, .memAlloc, hq, ?_, by omega, by omega⟩
@@ -117,26 +131,26 @@ protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : �
 nonnegative). -/
 protected theorem memAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
     (h : ∀ s, P s → Q (s.allocBuf b n)) :
-    Triple C P (.memAllocI b n) Q (C.memAlloc + n * C.allocPerWord) n n :=
+    Triple C tape P (.memAllocI b n) Q (C.memAlloc + n * C.allocPerWord) n n :=
   fun s hs => ⟨_, _, _, _, .memAllocI, h s hs, le_refl _, by omega, by omega⟩
 
 /-- Free a buffer: never charges memory. -/
 protected theorem memFree {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → Q (s.allocBuf b 0)) : Triple C P (.memFree b) Q C.memFree 0 0 :=
+    (h : ∀ s, P s → Q (s.allocBuf b 0)) : Triple C tape P (.memFree b) Q C.memFree 0 0 :=
   fun s hs => ⟨_, _, _, _, .memFree, h s hs, le_refl _, by omega, le_refl _⟩
 
 /-- Free with a known lower bound `K` on the capacity being released: credits `-K`.
 This is the rule that makes an alloc…free block's net vanish. -/
 protected theorem memFree' {P Q : State w → Prop} {b : BufId} {K : ℕ}
     (h : ∀ s, P s → K ≤ s.caps b ∧ Q (s.allocBuf b 0)) :
-    Triple C P (.memFree b) Q C.memFree (-(K : ℤ)) 0 := by
+    Triple C tape P (.memFree b) Q C.memFree (-(K : ℤ)) 0 := by
   intro s hs
   obtain ⟨hK, hq⟩ := h s hs
   exact ⟨_, _, _, _, .memFree, hq, le_refl _, by omega, le_refl _⟩
 
 protected theorem memLen {P Q : State w → Prop} {d : Reg} {b : BufId}
     (h : ∀ s, P s → Q (s.setReg d (BitVec.ofNat w (s.bufs b).size))) :
-    Triple C P (.memLen d b) Q C.memLen 0 0 :=
+    Triple C tape P (.memLen d b) Q C.memLen 0 0 :=
   fun s hs => ⟨_, _, _, _, .memLen, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 /-- The in-range obligation `hlt` is the memory-safety proof; there is no rule for the
@@ -144,7 +158,7 @@ out-of-range case, so a completed triple entails safety. -/
 protected theorem memLoad {P Q : State w → Prop} {d : Reg} {b : BufId} {i : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setReg d (s.bufs b)[(s.regs i).toNat])) :
-    Triple C P (.memLoad d b i) Q C.memLoad 0 0 := by
+    Triple C tape P (.memLoad d b i) Q C.memLoad 0 0 := by
   intro s hs
   obtain ⟨hlt, hq⟩ := h s hs
   exact ⟨_, _, _, _, .memLoad hlt, hq, le_refl _, le_refl _, le_refl _⟩
@@ -152,7 +166,7 @@ protected theorem memLoad {P Q : State w → Prop} {d : Reg} {b : BufId} {i : Re
 protected theorem memStore {P Q : State w → Prop} {b : BufId} {i src : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) hlt))) :
-    Triple C P (.memStore b i src) Q C.memStore 0 0 := by
+    Triple C tape P (.memStore b i src) Q C.memStore 0 0 := by
   intro s hs
   obtain ⟨hlt, hq⟩ := h s hs
   exact ⟨_, _, _, _, .memStore hlt, hq, le_refl _, le_refl _, le_refl _⟩
@@ -163,7 +177,7 @@ and what makes push worst-case unit time. Memory-neutral: the word was charged a
 protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
     (h : ∀ s, P s → (s.bufs b).size < s.caps b
       ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
-    Triple C P (.memPush b src) Q C.memPush 0 0 := by
+    Triple C tape P (.memPush b src) Q C.memPush 0 0 := by
   intro s hs
   obtain ⟨hcap, hq⟩ := h s hs
   exact ⟨_, _, _, _, .memPush hcap, hq, le_refl _, le_refl _, le_refl _⟩
@@ -171,14 +185,14 @@ protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
 /-- Pop keeps the capacity: memory-neutral. -/
 protected theorem memPop {P Q : State w → Prop} {b : BufId}
     (h : ∀ s, P s → Q (s.setBuf b (s.bufs b).pop)) :
-    Triple C P (.memPop b) Q C.memPop 0 0 :=
+    Triple C tape P (.memPop b) Q C.memPop 0 0 :=
   fun s hs => ⟨_, _, _, _, .memPop, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T : ℕ}
     {D M : ℤ}
-    (ht : Triple C (fun s => P s ∧ s.regs r ≠ 0) thn Q T D M)
-    (he : Triple C (fun s => P s ∧ s.regs r = 0) els Q T D M) :
-    Triple C P (.ifNZ r thn els) Q (C.branch + T) D M := by
+    (ht : Triple C tape (fun s => P s ∧ s.regs r ≠ 0) thn Q T D M)
+    (he : Triple C tape (fun s => P s ∧ s.regs r = 0) els Q T D M) :
+    Triple C tape P (.ifNZ r thn els) Q (C.branch + T) D M := by
   intro s hs
   by_cases hr : s.regs r = 0
   · obtain ⟨s', t, d, p, hexec, hq, hT, hD, hM⟩ := he s ⟨hs, hr⟩
@@ -201,10 +215,10 @@ when each iteration's net `Dg + Db` is `≤ 0`, memory being reused, neither net
 peak grows with `k`. -/
 theorem whileNZ_measure {I J : ℕ → State w → Prop} {g body : Stmt w} {r : Reg}
     {Tg Tb : ℕ} {Dg Mg Db Mb : ℤ}
-    (hg : ∀ k, Triple C (I k) g (J k) Tg Dg Mg)
+    (hg : ∀ k, Triple C tape (I k) g (J k) Tg Dg Mg)
     (hpos : ∀ k s, J k s → s.regs r ≠ 0 → ∃ k', k = k' + 1)
-    (hb : ∀ k, Triple C (fun s => J (k + 1) s ∧ s.regs r ≠ 0) body (I k) Tb Db Mb) :
-    ∀ k, Triple C (I k) (.whileNZ g r body)
+    (hb : ∀ k, Triple C tape (fun s => J (k + 1) s ∧ s.regs r ≠ 0) body (I k) Tb Db Mb) :
+    ∀ k, Triple C tape (I k) (.whileNZ g r body)
       (fun s => ∃ k', J k' s ∧ s.regs r = 0)
       ((k + 1) * (Tg + C.branch) + k * Tb)
       (Dg + k * max (Dg + Db) 0)
@@ -258,23 +272,23 @@ carried across its triple for free. -/
 triple. Instantiate `R` with e.g. `fun s => s.regs 3 = x ∧ s.bufs 0 = arr`; the
 `hR` hypothesis is discharged by `Exec.frame_reg`/`Exec.frame_buf` + `decide`. -/
 theorem frame_post {P Q R : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
-    (h : Triple C P c Q T D M)
-    (hR : ∀ s s' t d p, Exec C c s s' t d p → R s → R s') :
-    Triple C (fun s => P s ∧ R s) c (fun s => Q s ∧ R s) T D M := by
+    (h : Triple C tape P c Q T D M)
+    (hR : ∀ s s' t d p, Exec C tape c s s' t d p → R s → R s') :
+    Triple C tape (fun s => P s ∧ R s) c (fun s => Q s ∧ R s) T D M := by
   intro s ⟨hp, hr⟩
   obtain ⟨s', t, d, p, hexec, hq, hT, hD, hM⟩ := h s hp
   exact ⟨s', t, d, p, hexec, ⟨hq, hR s s' t d p hexec hr⟩, hT, hD, hM⟩
 
 /-- Specialization: a register the statement never writes keeps its value. -/
 theorem frame_reg {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ} {r : Reg}
-    {v : Word w} (h : Triple C P c Q T D M) (hw : ¬ c.Writes r) :
-    Triple C (fun s => P s ∧ s.regs r = v) c (fun s => Q s ∧ s.regs r = v) T D M :=
+    {v : Word w} (h : Triple C tape P c Q T D M) (hw : ¬ c.Writes r) :
+    Triple C tape (fun s => P s ∧ s.regs r = v) c (fun s => Q s ∧ s.regs r = v) T D M :=
   h.frame_post fun _ _ _ _ _ hexec hr => (hexec.frame_reg hw).trans hr
 
 /-- Specialization: a buffer the statement never touches keeps its contents. -/
 theorem frame_buf {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ} {b : BufId}
-    {arr : Array (Word w)} (h : Triple C P c Q T D M) (ht : ¬ c.Touches b) :
-    Triple C (fun s => P s ∧ s.bufs b = arr) c (fun s => Q s ∧ s.bufs b = arr) T D M :=
+    {arr : Array (Word w)} (h : Triple C tape P c Q T D M) (ht : ¬ c.Touches b) :
+    Triple C tape (fun s => P s ∧ s.bufs b = arr) c (fun s => Q s ∧ s.bufs b = arr) T D M :=
   h.frame_post fun _ _ _ _ _ hexec hb => (hexec.frame_buf ht).trans hb
 
 end Triple
@@ -300,27 +314,27 @@ trip-count-independent space bound but no uniform time bound. -/
 /-- Time-only total-correctness triple: from any state satisfying `P`, the statement
 terminates (memory-safely) in a state satisfying `Q` within `t ≤ T` time units. The
 execution's memory profile is existentially forgotten. -/
-def TimeTriple (C : CostModel) (P : State w → Prop) (c : Stmt w) (Q : State w → Prop)
+def TimeTriple (C : CostModel) (tape : RandomTape w) (P : State w → Prop) (c : Stmt w) (Q : State w → Prop)
     (T : ℕ) : Prop :=
-  ∀ s, P s → ∃ s' t d p, Exec C c s s' t d p ∧ Q s' ∧ t ≤ T
+  ∀ s, P s → ∃ s' t d p, Exec C tape c s s' t d p ∧ Q s' ∧ t ≤ T
 
 /-- Space-only total-correctness triple: net live-memory change `d ≤ D` and peak
 growth `p ≤ M`. The running time is existentially forgotten; the statement still
 terminates, an `Exec` derivation being exhibited, but `t` is unbounded. -/
-def SpaceTriple (C : CostModel) (P : State w → Prop) (c : Stmt w) (Q : State w → Prop)
+def SpaceTriple (C : CostModel) (tape : RandomTape w) (P : State w → Prop) (c : Stmt w) (Q : State w → Prop)
     (D M : ℤ) : Prop :=
-  ∀ s, P s → ∃ s' t d p, Exec C c s s' t d p ∧ Q s' ∧ d ≤ D ∧ p ≤ M
+  ∀ s, P s → ∃ s' t d p, Exec C tape c s s' t d p ∧ Q s' ∧ d ≤ D ∧ p ≤ M
 
 /-- Forget the memory bounds of a full triple. -/
 theorem Triple.time {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
-    (h : Triple C P c Q T D M) : TimeTriple C P c Q T := by
+    (h : Triple C tape P c Q T D M) : TimeTriple C tape P c Q T := by
   intro s hs
   obtain ⟨s', t, d, p, hexec, hq, hT, _, _⟩ := h s hs
   exact ⟨s', t, d, p, hexec, hq, hT⟩
 
 /-- Forget the time bound of a full triple. -/
 theorem Triple.space {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
-    (h : Triple C P c Q T D M) : SpaceTriple C P c Q D M := by
+    (h : Triple C tape P c Q T D M) : SpaceTriple C tape P c Q D M := by
   intro s hs
   obtain ⟨s', t, d, p, hexec, hq, _, hD, hM⟩ := h s hs
   exact ⟨s', t, d, p, hexec, hq, hD, hM⟩
@@ -331,8 +345,8 @@ namespace TimeTriple
 time-only and a space-only triple from the same state coincide, and separately
 proved bounds hold of the one real execution. -/
 theorem and_space {P Q₁ Q₂ : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
-    (h₁ : TimeTriple C P c Q₁ T) (h₂ : SpaceTriple C P c Q₂ D M) :
-    Triple C P c (fun s => Q₁ s ∧ Q₂ s) T D M := by
+    (h₁ : TimeTriple C tape P c Q₁ T) (h₂ : SpaceTriple C tape P c Q₂ D M) :
+    Triple C tape P c (fun s => Q₁ s ∧ Q₂ s) T D M := by
   intro s hs
   obtain ⟨s', t, d, p, hexec, hq₁, hT⟩ := h₁ s hs
   obtain ⟨s'', t', d', p', hexec', hq₂, hD, hM⟩ := h₂ s hs
@@ -341,8 +355,8 @@ theorem and_space {P Q₁ Q₂ : State w → Prop} {c : Stmt w} {T : ℕ} {D M :
 
 /-- Recombination when the two judgments share a postcondition. -/
 theorem and_space' {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
-    (h₁ : TimeTriple C P c Q T) (h₂ : SpaceTriple C P c Q D M) :
-    Triple C P c Q T D M :=
+    (h₁ : TimeTriple C tape P c Q T) (h₂ : SpaceTriple C tape P c Q D M) :
+    Triple C tape P c Q T D M :=
   (h₁.and_space h₂).conseq (fun _ => id) (fun _ h => h.1) (le_refl _) (le_refl _)
     (le_refl _)
 
@@ -350,32 +364,32 @@ theorem and_space' {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
 the execution the time triple already exhibits satisfies `d ≤ 0 ∧ p ≤ 0` outright
 (`Exec.allocFree_space`). -/
 theorem space_of_allocFree {P Q : State w → Prop} {c : Stmt w} {T : ℕ}
-    (h : TimeTriple C P c Q T) (ha : c.AllocFree) : SpaceTriple C P c Q 0 0 := by
+    (h : TimeTriple C tape P c Q T) (ha : c.AllocFree) : SpaceTriple C tape P c Q 0 0 := by
   intro s hs
   obtain ⟨s', t, d, p, hexec, hq, _⟩ := h s hs
   obtain ⟨hd, hp⟩ := hexec.allocFree_space ha
   exact ⟨s', t, d, p, hexec, hq, hd, hp⟩
 
 theorem conseq {P P' Q Q' : State w → Prop} {c : Stmt w} {T T' : ℕ}
-    (h : TimeTriple C P c Q T) (hP : ∀ s, P' s → P s) (hQ : ∀ s, Q s → Q' s)
-    (hT : T ≤ T') : TimeTriple C P' c Q' T' := by
+    (h : TimeTriple C tape P c Q T) (hP : ∀ s, P' s → P s) (hQ : ∀ s, Q s → Q' s)
+    (hT : T ≤ T') : TimeTriple C tape P' c Q' T' := by
   intro s hs
   obtain ⟨s', t, d, p, hexec, hq, ht⟩ := h s (hP s hs)
   exact ⟨s', t, d, p, hexec, hQ s' hq, ht.trans hT⟩
 
 theorem weaken {P Q : State w → Prop} {c : Stmt w} {T T' : ℕ}
-    (h : TimeTriple C P c Q T) (hT : T ≤ T') : TimeTriple C P c Q T' :=
+    (h : TimeTriple C tape P c Q T) (hT : T ≤ T') : TimeTriple C tape P c Q T' :=
   h.conseq (fun _ => id) (fun _ => id) hT
 
 protected theorem skip {P Q : State w → Prop} (h : ∀ s, P s → Q s) :
-    TimeTriple C P (.skip (w := w)) Q 0 :=
+    TimeTriple C tape P (.skip (w := w)) Q 0 :=
   (Triple.skip h).time
 
 /-- Sequencing time bounds is plain addition; none of `Triple.seq`'s (net, peak)
 profile algebra appears, which is the point of the decoupled judgment. -/
 protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂ : ℕ}
-    (h₁ : TimeTriple C P c₁ R T₁) (h₂ : TimeTriple C R c₂ Q T₂) :
-    TimeTriple C P (c₁ ;; c₂) Q (T₁ + T₂) := by
+    (h₁ : TimeTriple C tape P c₁ R T₁) (h₂ : TimeTriple C tape R c₂ Q T₂) :
+    TimeTriple C tape P (c₁ ;; c₂) Q (T₁ + T₂) := by
   intro s hs
   obtain ⟨s₁, t₁, d₁, p₁, he₁, hr, ht₁⟩ := h₁ s hs
   obtain ⟨s₂, t₂, d₂, p₂, he₂, hq, ht₂⟩ := h₂ s₁ hr
@@ -388,21 +402,26 @@ Projections of the corresponding `Triple` rules, except `memAlloc`, whose full r
 carries a memory obligation a time bound does not need. -/
 
 protected theorem imm {P Q : State w → Prop} {d : Reg} {v : Word w}
-    (h : ∀ s, P s → Q (s.setReg d v)) : TimeTriple C P (.imm d v) Q C.imm :=
+    (h : ∀ s, P s → Q (s.setReg d v)) : TimeTriple C tape P (.imm d v) Q C.imm :=
   (Triple.imm h).time
 
+protected theorem rand {P Q : State w → Prop} {d : Reg}
+    (h : ∀ s, P s → Q (s.readRandom tape d)) :
+    TimeTriple C tape P (.rand d) Q C.rand :=
+  (Triple.rand h).time
+
 protected theorem mov {P Q : State w → Prop} {d a : Reg}
-    (h : ∀ s, P s → Q (s.setReg d (s.regs a))) : TimeTriple C P (.mov d a) Q C.mov :=
+    (h : ∀ s, P s → Q (s.setReg d (s.regs a))) : TimeTriple C tape P (.mov d a) Q C.mov :=
   (Triple.mov h).time
 
 protected theorem un {P Q : State w → Prop} {op : UnOp} {d a : Reg}
     (h : ∀ s, P s → Q (s.setReg d (op.eval (s.regs a)))) :
-    TimeTriple C P (.un op d a) Q (C.un op) :=
+    TimeTriple C tape P (.un op d a) Q (C.un op) :=
   (Triple.un h).time
 
 protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
     (h : ∀ s, P s → Q (s.setReg d (op.eval (s.regs a) (s.regs b)))) :
-    TimeTriple C P (.bin op d a b) Q (C.bin op) :=
+    TimeTriple C tape P (.bin op d a b) Q (C.bin op) :=
   (Triple.bin h).time
 
 /-- Reserve capacity (dynamic). Unlike the other time rules the capacity bound `N`
@@ -410,51 +429,51 @@ does not disappear: the charge `C.memAlloc + newCap * C.allocPerWord` is
 data-dependent, so bounding the requested capacity is what a time bound needs. -/
 protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
     (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ Q (s.allocBuf b (s.regs n).toNat)) :
-    TimeTriple C P (.memAlloc b n) Q (C.memAlloc + N * C.allocPerWord) :=
+    TimeTriple C tape P (.memAlloc b n) Q (C.memAlloc + N * C.allocPerWord) :=
   (Triple.memAlloc h).time
 
 /-- Reserve capacity (immediate): statically priced, no side obligation. -/
 protected theorem memAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
     (h : ∀ s, P s → Q (s.allocBuf b n)) :
-    TimeTriple C P (.memAllocI b n) Q (C.memAlloc + n * C.allocPerWord) :=
+    TimeTriple C tape P (.memAllocI b n) Q (C.memAlloc + n * C.allocPerWord) :=
   (Triple.memAllocI h).time
 
 protected theorem memFree {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → Q (s.allocBuf b 0)) : TimeTriple C P (.memFree b) Q C.memFree :=
+    (h : ∀ s, P s → Q (s.allocBuf b 0)) : TimeTriple C tape P (.memFree b) Q C.memFree :=
   (Triple.memFree h).time
 
 protected theorem memLen {P Q : State w → Prop} {d : Reg} {b : BufId}
     (h : ∀ s, P s → Q (s.setReg d (BitVec.ofNat w (s.bufs b).size))) :
-    TimeTriple C P (.memLen d b) Q C.memLen :=
+    TimeTriple C tape P (.memLen d b) Q C.memLen :=
   (Triple.memLen h).time
 
 protected theorem memLoad {P Q : State w → Prop} {d : Reg} {b : BufId} {i : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setReg d (s.bufs b)[(s.regs i).toNat])) :
-    TimeTriple C P (.memLoad d b i) Q C.memLoad :=
+    TimeTriple C tape P (.memLoad d b i) Q C.memLoad :=
   (Triple.memLoad h).time
 
 protected theorem memStore {P Q : State w → Prop} {b : BufId} {i src : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) hlt))) :
-    TimeTriple C P (.memStore b i src) Q C.memStore :=
+    TimeTriple C tape P (.memStore b i src) Q C.memStore :=
   (Triple.memStore h).time
 
 protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
     (h : ∀ s, P s → (s.bufs b).size < s.caps b
       ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
-    TimeTriple C P (.memPush b src) Q C.memPush :=
+    TimeTriple C tape P (.memPush b src) Q C.memPush :=
   (Triple.memPush h).time
 
 protected theorem memPop {P Q : State w → Prop} {b : BufId}
     (h : ∀ s, P s → Q (s.setBuf b (s.bufs b).pop)) :
-    TimeTriple C P (.memPop b) Q C.memPop :=
+    TimeTriple C tape P (.memPop b) Q C.memPop :=
   (Triple.memPop h).time
 
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T : ℕ}
-    (ht : TimeTriple C (fun s => P s ∧ s.regs r ≠ 0) thn Q T)
-    (he : TimeTriple C (fun s => P s ∧ s.regs r = 0) els Q T) :
-    TimeTriple C P (.ifNZ r thn els) Q (C.branch + T) := by
+    (ht : TimeTriple C tape (fun s => P s ∧ s.regs r ≠ 0) thn Q T)
+    (he : TimeTriple C tape (fun s => P s ∧ s.regs r = 0) els Q T) :
+    TimeTriple C tape P (.ifNZ r thn els) Q (C.branch + T) := by
   intro s hs
   by_cases hr : s.regs r = 0
   · obtain ⟨s', t, d, p, hexec, hq, hT⟩ := he s ⟨hs, hr⟩
@@ -467,10 +486,10 @@ protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T 
 hypotheses and no memory conclusion. Time is linear in `k`. -/
 theorem whileNZ_measure {I J : ℕ → State w → Prop} {g body : Stmt w} {r : Reg}
     {Tg Tb : ℕ}
-    (hg : ∀ k, TimeTriple C (I k) g (J k) Tg)
+    (hg : ∀ k, TimeTriple C tape (I k) g (J k) Tg)
     (hpos : ∀ k s, J k s → s.regs r ≠ 0 → ∃ k', k = k' + 1)
-    (hb : ∀ k, TimeTriple C (fun s => J (k + 1) s ∧ s.regs r ≠ 0) body (I k) Tb) :
-    ∀ k, TimeTriple C (I k) (.whileNZ g r body)
+    (hb : ∀ k, TimeTriple C tape (fun s => J (k + 1) s ∧ s.regs r ≠ 0) body (I k) Tb) :
+    ∀ k, TimeTriple C tape (I k) (.whileNZ g r body)
       (fun s => ∃ k', J k' s ∧ s.regs r = 0)
       ((k + 1) * (Tg + C.branch) + k * Tb) := by
   intro k
@@ -500,23 +519,23 @@ theorem whileNZ_measure {I J : ℕ → State w → Prop} {g body : Stmt w} {r : 
 /-! ### Framing -/
 
 theorem frame_post {P Q R : State w → Prop} {c : Stmt w} {T : ℕ}
-    (h : TimeTriple C P c Q T)
-    (hR : ∀ s s' t d p, Exec C c s s' t d p → R s → R s') :
-    TimeTriple C (fun s => P s ∧ R s) c (fun s => Q s ∧ R s) T := by
+    (h : TimeTriple C tape P c Q T)
+    (hR : ∀ s s' t d p, Exec C tape c s s' t d p → R s → R s') :
+    TimeTriple C tape (fun s => P s ∧ R s) c (fun s => Q s ∧ R s) T := by
   intro s ⟨hp, hr⟩
   obtain ⟨s', t, d, p, hexec, hq, hT⟩ := h s hp
   exact ⟨s', t, d, p, hexec, ⟨hq, hR s s' t d p hexec hr⟩, hT⟩
 
 /-- A register the statement never writes keeps its value. -/
 theorem frame_reg {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {r : Reg}
-    {v : Word w} (h : TimeTriple C P c Q T) (hw : ¬ c.Writes r) :
-    TimeTriple C (fun s => P s ∧ s.regs r = v) c (fun s => Q s ∧ s.regs r = v) T :=
+    {v : Word w} (h : TimeTriple C tape P c Q T) (hw : ¬ c.Writes r) :
+    TimeTriple C tape (fun s => P s ∧ s.regs r = v) c (fun s => Q s ∧ s.regs r = v) T :=
   h.frame_post fun _ _ _ _ _ hexec hr => (hexec.frame_reg hw).trans hr
 
 /-- A buffer the statement never touches keeps its contents. -/
 theorem frame_buf {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {b : BufId}
-    {arr : Array (Word w)} (h : TimeTriple C P c Q T) (ht : ¬ c.Touches b) :
-    TimeTriple C (fun s => P s ∧ s.bufs b = arr) c (fun s => Q s ∧ s.bufs b = arr) T :=
+    {arr : Array (Word w)} (h : TimeTriple C tape P c Q T) (ht : ¬ c.Touches b) :
+    TimeTriple C tape (fun s => P s ∧ s.bufs b = arr) c (fun s => Q s ∧ s.bufs b = arr) T :=
   h.frame_post fun _ _ _ _ _ hexec hb => (hexec.frame_buf ht).trans hb
 
 end TimeTriple
@@ -524,26 +543,26 @@ end TimeTriple
 namespace SpaceTriple
 
 theorem conseq {P P' Q Q' : State w → Prop} {c : Stmt w} {D D' M M' : ℤ}
-    (h : SpaceTriple C P c Q D M) (hP : ∀ s, P' s → P s) (hQ : ∀ s, Q s → Q' s)
-    (hD : D ≤ D') (hM : M ≤ M') : SpaceTriple C P' c Q' D' M' := by
+    (h : SpaceTriple C tape P c Q D M) (hP : ∀ s, P' s → P s) (hQ : ∀ s, Q s → Q' s)
+    (hD : D ≤ D') (hM : M ≤ M') : SpaceTriple C tape P' c Q' D' M' := by
   intro s hs
   obtain ⟨s', t, d, p, hexec, hq, hd, hp⟩ := h s (hP s hs)
   exact ⟨s', t, d, p, hexec, hQ s' hq, hd.trans hD, hp.trans hM⟩
 
 theorem weaken {P Q : State w → Prop} {c : Stmt w} {D D' M M' : ℤ}
-    (h : SpaceTriple C P c Q D M) (hD : D ≤ D') (hM : M ≤ M') :
-    SpaceTriple C P c Q D' M' :=
+    (h : SpaceTriple C tape P c Q D M) (hD : D ≤ D') (hM : M ≤ M') :
+    SpaceTriple C tape P c Q D' M' :=
   h.conseq (fun _ => id) (fun _ => id) hD hM
 
 protected theorem skip {P Q : State w → Prop} (h : ∀ s, P s → Q s) :
-    SpaceTriple C P (.skip (w := w)) Q 0 0 :=
+    SpaceTriple C tape P (.skip (w := w)) Q 0 0 :=
   (Triple.skip h).space
 
 /-- Sequencing composes the memory profile exactly as in `Triple.seq`, with no time
 arithmetic anywhere. -/
 protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {D₁ M₁ D₂ M₂ : ℤ}
-    (h₁ : SpaceTriple C P c₁ R D₁ M₁) (h₂ : SpaceTriple C R c₂ Q D₂ M₂) :
-    SpaceTriple C P (c₁ ;; c₂) Q (D₁ + D₂) (max M₁ (D₁ + M₂)) := by
+    (h₁ : SpaceTriple C tape P c₁ R D₁ M₁) (h₂ : SpaceTriple C tape R c₂ Q D₂ M₂) :
+    SpaceTriple C tape P (c₁ ;; c₂) Q (D₁ + D₂) (max M₁ (D₁ + M₂)) := by
   intro s hs
   obtain ⟨s₁, t₁, d₁, p₁, he₁, hr, hd₁, hp₁⟩ := h₁ s hs
   obtain ⟨s₂, t₂, d₂, p₂, he₂, hq, hd₂, hp₂⟩ := h₂ s₁ hr
@@ -556,21 +575,26 @@ All projections of the corresponding `Triple` rules; the dropped time bound neve
 constrains anything. -/
 
 protected theorem imm {P Q : State w → Prop} {d : Reg} {v : Word w}
-    (h : ∀ s, P s → Q (s.setReg d v)) : SpaceTriple C P (.imm d v) Q 0 0 :=
+    (h : ∀ s, P s → Q (s.setReg d v)) : SpaceTriple C tape P (.imm d v) Q 0 0 :=
   (Triple.imm h).space
 
+protected theorem rand {P Q : State w → Prop} {d : Reg}
+    (h : ∀ s, P s → Q (s.readRandom tape d)) :
+    SpaceTriple C tape P (.rand d) Q 0 0 :=
+  (Triple.rand h).space
+
 protected theorem mov {P Q : State w → Prop} {d a : Reg}
-    (h : ∀ s, P s → Q (s.setReg d (s.regs a))) : SpaceTriple C P (.mov d a) Q 0 0 :=
+    (h : ∀ s, P s → Q (s.setReg d (s.regs a))) : SpaceTriple C tape P (.mov d a) Q 0 0 :=
   (Triple.mov h).space
 
 protected theorem un {P Q : State w → Prop} {op : UnOp} {d a : Reg}
     (h : ∀ s, P s → Q (s.setReg d (op.eval (s.regs a)))) :
-    SpaceTriple C P (.un op d a) Q 0 0 :=
+    SpaceTriple C tape P (.un op d a) Q 0 0 :=
   (Triple.un h).space
 
 protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
     (h : ∀ s, P s → Q (s.setReg d (op.eval (s.regs a) (s.regs b)))) :
-    SpaceTriple C P (.bin op d a b) Q 0 0 :=
+    SpaceTriple C tape P (.bin op d a b) Q 0 0 :=
   (Triple.bin h).space
 
 /-- Reserve capacity (dynamic), charging at most `N`. With no time bound to draw,
@@ -580,7 +604,7 @@ negative, instead of `Triple.memAlloc`'s bound on the requested capacity. -/
 protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℤ}
     (h : ∀ s, P s → (((s.regs n).toNat : ℤ) - (s.caps b : ℤ) ≤ N)
       ∧ Q (s.allocBuf b (s.regs n).toNat)) :
-    SpaceTriple C P (.memAlloc b n) Q N (max N 0) := by
+    SpaceTriple C tape P (.memAlloc b n) Q N (max N 0) := by
   intro s hs
   obtain ⟨hN, hq⟩ := h s hs
   exact ⟨_, _, _, _, .memAlloc, hq, hN, by omega⟩
@@ -588,51 +612,51 @@ protected theorem memAlloc {P Q : State w → Prop} {b : BufId} {n : Reg} {N : �
 /-- Reserve capacity (immediate), charging at most the syntactic capacity `n`. -/
 protected theorem memAllocI {P Q : State w → Prop} {b : BufId} {n : ℕ}
     (h : ∀ s, P s → Q (s.allocBuf b n)) :
-    SpaceTriple C P (.memAllocI b n) Q n n :=
+    SpaceTriple C tape P (.memAllocI b n) Q n n :=
   (Triple.memAllocI h).space
 
 protected theorem memFree {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → Q (s.allocBuf b 0)) : SpaceTriple C P (.memFree b) Q 0 0 :=
+    (h : ∀ s, P s → Q (s.allocBuf b 0)) : SpaceTriple C tape P (.memFree b) Q 0 0 :=
   (Triple.memFree h).space
 
 /-- Free with a known lower bound `K` on the released capacity: credits `-K`. -/
 protected theorem memFree' {P Q : State w → Prop} {b : BufId} {K : ℕ}
     (h : ∀ s, P s → K ≤ s.caps b ∧ Q (s.allocBuf b 0)) :
-    SpaceTriple C P (.memFree b) Q (-(K : ℤ)) 0 :=
+    SpaceTriple C tape P (.memFree b) Q (-(K : ℤ)) 0 :=
   (Triple.memFree' h).space
 
 protected theorem memLen {P Q : State w → Prop} {d : Reg} {b : BufId}
     (h : ∀ s, P s → Q (s.setReg d (BitVec.ofNat w (s.bufs b).size))) :
-    SpaceTriple C P (.memLen d b) Q 0 0 :=
+    SpaceTriple C tape P (.memLen d b) Q 0 0 :=
   (Triple.memLen h).space
 
 protected theorem memLoad {P Q : State w → Prop} {d : Reg} {b : BufId} {i : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setReg d (s.bufs b)[(s.regs i).toNat])) :
-    SpaceTriple C P (.memLoad d b i) Q 0 0 :=
+    SpaceTriple C tape P (.memLoad d b i) Q 0 0 :=
   (Triple.memLoad h).space
 
 protected theorem memStore {P Q : State w → Prop} {b : BufId} {i src : Reg}
     (h : ∀ s, P s → ∃ hlt : (s.regs i).toNat < (s.bufs b).size,
       Q (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) hlt))) :
-    SpaceTriple C P (.memStore b i src) Q 0 0 :=
+    SpaceTriple C tape P (.memStore b i src) Q 0 0 :=
   (Triple.memStore h).space
 
 protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
     (h : ∀ s, P s → (s.bufs b).size < s.caps b
       ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
-    SpaceTriple C P (.memPush b src) Q 0 0 :=
+    SpaceTriple C tape P (.memPush b src) Q 0 0 :=
   (Triple.memPush h).space
 
 protected theorem memPop {P Q : State w → Prop} {b : BufId}
     (h : ∀ s, P s → Q (s.setBuf b (s.bufs b).pop)) :
-    SpaceTriple C P (.memPop b) Q 0 0 :=
+    SpaceTriple C tape P (.memPop b) Q 0 0 :=
   (Triple.memPop h).space
 
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {D M : ℤ}
-    (ht : SpaceTriple C (fun s => P s ∧ s.regs r ≠ 0) thn Q D M)
-    (he : SpaceTriple C (fun s => P s ∧ s.regs r = 0) els Q D M) :
-    SpaceTriple C P (.ifNZ r thn els) Q D M := by
+    (ht : SpaceTriple C tape (fun s => P s ∧ s.regs r ≠ 0) thn Q D M)
+    (he : SpaceTriple C tape (fun s => P s ∧ s.regs r = 0) els Q D M) :
+    SpaceTriple C tape P (.ifNZ r thn els) Q D M := by
   intro s hs
   by_cases hr : s.regs r = 0
   · obtain ⟨s', t, d, p, hexec, hq, hD, hM⟩ := he s ⟨hs, hr⟩
@@ -646,10 +670,10 @@ memory-reusing iteration (`Dg + Db ≤ 0`) gives trip-count-independent bounds. 
 time bound in the conclusion, hence no `Tg`/`Tb` hypotheses. -/
 theorem whileNZ_measure {I J : ℕ → State w → Prop} {g body : Stmt w} {r : Reg}
     {Dg Mg Db Mb : ℤ}
-    (hg : ∀ k, SpaceTriple C (I k) g (J k) Dg Mg)
+    (hg : ∀ k, SpaceTriple C tape (I k) g (J k) Dg Mg)
     (hpos : ∀ k s, J k s → s.regs r ≠ 0 → ∃ k', k = k' + 1)
-    (hb : ∀ k, SpaceTriple C (fun s => J (k + 1) s ∧ s.regs r ≠ 0) body (I k) Db Mb) :
-    ∀ k, SpaceTriple C (I k) (.whileNZ g r body)
+    (hb : ∀ k, SpaceTriple C tape (fun s => J (k + 1) s ∧ s.regs r ≠ 0) body (I k) Db Mb) :
+    ∀ k, SpaceTriple C tape (I k) (.whileNZ g r body)
       (fun s => ∃ k', J k' s ∧ s.regs r = 0)
       (Dg + k * max (Dg + Db) 0)
       (max Mg (Dg + Mb) + k * max (Dg + Db) 0) := by
@@ -687,23 +711,23 @@ theorem whileNZ_measure {I J : ℕ → State w → Prop} {g body : Stmt w} {r : 
 /-! ### Framing -/
 
 theorem frame_post {P Q R : State w → Prop} {c : Stmt w} {D M : ℤ}
-    (h : SpaceTriple C P c Q D M)
-    (hR : ∀ s s' t d p, Exec C c s s' t d p → R s → R s') :
-    SpaceTriple C (fun s => P s ∧ R s) c (fun s => Q s ∧ R s) D M := by
+    (h : SpaceTriple C tape P c Q D M)
+    (hR : ∀ s s' t d p, Exec C tape c s s' t d p → R s → R s') :
+    SpaceTriple C tape (fun s => P s ∧ R s) c (fun s => Q s ∧ R s) D M := by
   intro s ⟨hp, hr⟩
   obtain ⟨s', t, d, p, hexec, hq, hD, hM⟩ := h s hp
   exact ⟨s', t, d, p, hexec, ⟨hq, hR s s' t d p hexec hr⟩, hD, hM⟩
 
 /-- A register the statement never writes keeps its value. -/
 theorem frame_reg {P Q : State w → Prop} {c : Stmt w} {D M : ℤ} {r : Reg}
-    {v : Word w} (h : SpaceTriple C P c Q D M) (hw : ¬ c.Writes r) :
-    SpaceTriple C (fun s => P s ∧ s.regs r = v) c (fun s => Q s ∧ s.regs r = v) D M :=
+    {v : Word w} (h : SpaceTriple C tape P c Q D M) (hw : ¬ c.Writes r) :
+    SpaceTriple C tape (fun s => P s ∧ s.regs r = v) c (fun s => Q s ∧ s.regs r = v) D M :=
   h.frame_post fun _ _ _ _ _ hexec hr => (hexec.frame_reg hw).trans hr
 
 /-- A buffer the statement never touches keeps its contents. -/
 theorem frame_buf {P Q : State w → Prop} {c : Stmt w} {D M : ℤ} {b : BufId}
-    {arr : Array (Word w)} (h : SpaceTriple C P c Q D M) (ht : ¬ c.Touches b) :
-    SpaceTriple C (fun s => P s ∧ s.bufs b = arr) c (fun s => Q s ∧ s.bufs b = arr)
+    {arr : Array (Word w)} (h : SpaceTriple C tape P c Q D M) (ht : ¬ c.Touches b) :
+    SpaceTriple C tape (fun s => P s ∧ s.bufs b = arr) c (fun s => Q s ∧ s.bufs b = arr)
       D M :=
   h.frame_post fun _ _ _ _ _ hexec hb => (hexec.frame_buf ht).trans hb
 

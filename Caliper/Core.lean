@@ -30,7 +30,7 @@ time is a syntactic constant. Two consequences for the instruction set:
   obligation), hence is worst-case unit time: no doubling, no amortisation
   anywhere in the machine. A growable vector is a library on top.
 
-`Exec C c s s' t d p`: from `s`, `c` terminates in `s'` spending `t` time units,
+`Exec C tape c s s' t d p`: from `s`, `c` terminates in `s'` spending `t` time units,
 with net live-memory change `d` (signed words) and peak growth `p` above the
 starting level. Live memory is the sum of reserved buffer capacities, so push and
 pop are memory-neutral. Registers are outside the dynamic profile: their lifetimes
@@ -59,7 +59,13 @@ abbrev BufId := ℕ
 /-- Machine words. Fixed at `w = 64` by the `Caliper64` surface. -/
 abbrev Word (w : ℕ) := BitVec w
 
-variable {w : ℕ}
+/-- An immutable, infinite input tape of words. -/
+abbrev RandomTape (w : ℕ) := ℕ → Word w
+
+/-- A fixed tape for deterministic examples. -/
+def RandomTape.zero {w : ℕ} : RandomTape w := fun _ => 0
+
+variable {w : ℕ} {tape : RandomTape w}
 
 /-! ## Operations -/
 
@@ -115,6 +121,8 @@ inductive Stmt (w : ℕ) where
   | seq (c₁ c₂ : Stmt w)
   /-- `d ← v` -/
   | imm (d : Reg) (v : Word w)
+  /-- Read the next word of the supplied tape into `d`, advancing the tape cursor. -/
+  | rand (d : Reg)
   /-- `d ← a` -/
   | mov (d a : Reg)
   /-- `d ← op a` -/
@@ -176,6 +184,8 @@ Skylake-ish latency table, and any bound proved generically over `C` instantiate
 both. -/
 structure CostModel where
   imm : ℕ := 1
+  /-- Abstract cost of consuming one input-tape word. -/
+  rand : ℕ := 1
   mov : ℕ := 1
   un : UnOp → ℕ := fun _ => 1
   bin : BinOp → ℕ := fun _ => 1
@@ -242,6 +252,7 @@ the acquisition that created the buffer, and the alloc *base* `memAlloc`, since
 zero-time allocation is the zero-capacity one, which acquires nothing. -/
 structure CostModel.Admissible (C : CostModel) : Prop where
   imm : 1 ≤ C.imm
+  rand : 1 ≤ C.rand
   mov : 1 ≤ C.mov
   un : ∀ op, 1 ≤ C.un op
   bin : ∀ op, 1 ≤ C.bin op
@@ -272,6 +283,8 @@ reserved capacity. All indexed by `ℕ` and represented as functions, which make
 separation lemmas below one-liners. Buffers are real `Array`s so that the interpreter
 does not walk a closure chain per element. -/
 structure State (w : ℕ) where
+  /-- Input-tape cursor; bookkeeping outside the program memory metric. -/
+  tapePos : ℕ := 0
   regs : Reg → Word w
   bufs : BufId → Array (Word w)
   /-- Reserved capacity in words; live memory is the sum of capacities. -/
@@ -285,6 +298,22 @@ def State.init (w : ℕ) : State w where
 
 def State.setReg (s : State w) (d : Reg) (v : Word w) : State w :=
   { s with regs := fun r => if r = d then v else s.regs r }
+
+/-- Consume exactly one word without changing buffers or capacities. -/
+def State.readRandom (s : State w) (tape : RandomTape w) (d : Reg) : State w :=
+  { s.setReg d (tape s.tapePos) with tapePos := s.tapePos + 1 }
+
+@[simp] theorem tapePos_readRandom (s : State w) (tape : RandomTape w) (d : Reg) :
+    (s.readRandom tape d).tapePos = s.tapePos + 1 := rfl
+
+@[simp] theorem regs_readRandom (s : State w) (tape : RandomTape w) (d : Reg) :
+    (s.readRandom tape d).regs = (s.setReg d (tape s.tapePos)).regs := rfl
+
+@[simp] theorem bufs_readRandom (s : State w) (tape : RandomTape w) (d : Reg) :
+    (s.readRandom tape d).bufs = s.bufs := rfl
+
+@[simp] theorem caps_readRandom (s : State w) (tape : RandomTape w) (d : Reg) :
+    (s.readRandom tape d).caps = s.caps := rfl
 
 /-- Update the filled contents of `b` (capacity unchanged). -/
 def State.setBuf (s : State w) (b : BufId) (a : Array (Word w)) : State w :=
@@ -339,78 +368,79 @@ a side condition decidable over two `ℕ`s. -/
 
 /-! ## Semantics
 
-`Exec C c s s' t d p`: statement `c` takes state `s` to `s'`, spending `t` time units,
+`Exec C tape c s s' t d p`: statement `c` takes state `s` to `s'`, spending `t` time units,
 changing live memory by `d` words (net, signed) with peak growth `p`.
 
 Out-of-range `memLoad`/`memStore` have no rule, so a derivation witnesses memory
 safety. -/
-inductive Exec (C : CostModel) : Stmt w → State w → State w → ℕ → ℤ → ℤ → Prop where
-  | skip {s} : Exec C .skip s s 0 0 0
+inductive Exec (C : CostModel) (tape : RandomTape w) : Stmt w → State w → State w → ℕ → ℤ → ℤ → Prop where
+  | skip {s} : Exec C tape .skip s s 0 0 0
   | seq {c₁ c₂ s s₁ s₂ t₁ d₁ p₁ t₂ d₂ p₂} :
-      Exec C c₁ s s₁ t₁ d₁ p₁ → Exec C c₂ s₁ s₂ t₂ d₂ p₂ →
-      Exec C (c₁ ;; c₂) s s₂ (t₁ + t₂) (d₁ + d₂) (max p₁ (d₁ + p₂))
-  | imm {d v s} : Exec C (.imm d v) s (s.setReg d v) C.imm 0 0
-  | mov {d a s} : Exec C (.mov d a) s (s.setReg d (s.regs a)) C.mov 0 0
+      Exec C tape c₁ s s₁ t₁ d₁ p₁ → Exec C tape c₂ s₁ s₂ t₂ d₂ p₂ →
+      Exec C tape (c₁ ;; c₂) s s₂ (t₁ + t₂) (d₁ + d₂) (max p₁ (d₁ + p₂))
+  | imm {d v s} : Exec C tape (.imm d v) s (s.setReg d v) C.imm 0 0
+  | rand {d s} : Exec C tape (.rand d) s (s.readRandom tape d) C.rand 0 0
+  | mov {d a s} : Exec C tape (.mov d a) s (s.setReg d (s.regs a)) C.mov 0 0
   | un {op d a s} :
-      Exec C (.un op d a) s (s.setReg d (op.eval (s.regs a))) (C.un op) 0 0
+      Exec C tape (.un op d a) s (s.setReg d (op.eval (s.regs a))) (C.un op) 0 0
   | bin {op d a b s} :
-      Exec C (.bin op d a b) s (s.setReg d (op.eval (s.regs a) (s.regs b)))
+      Exec C tape (.bin op d a b) s (s.setReg d (op.eval (s.regs a) (s.regs b)))
         (C.bin op) 0 0
   /-- Reserve capacity (dynamic, from a register): charges the new capacity, credits
   the old. Time is `C.memAlloc + cap * C.allocPerWord`, state-dependent, since the
   capacity is read from a register at runtime. -/
   | memAlloc {b n s} :
-      Exec C (.memAlloc b n) s (s.allocBuf b (s.regs n).toNat)
+      Exec C tape (.memAlloc b n) s (s.allocBuf b (s.regs n).toNat)
         (C.memAlloc + (s.regs n).toNat * C.allocPerWord)
         (((s.regs n).toNat : ℤ) - (s.caps b : ℤ))
         (max (((s.regs n).toNat : ℤ) - (s.caps b : ℤ)) 0)
   /-- Reserve capacity (immediate): identical semantics at capacity `n`, with the
   per-word time charge a pure function of the instruction. -/
   | memAllocI {b n s} :
-      Exec C (.memAllocI b n) s (s.allocBuf b n)
+      Exec C tape (.memAllocI b n) s (s.allocBuf b n)
         (C.memAlloc + n * C.allocPerWord)
         ((n : ℤ) - (s.caps b : ℤ))
         (max ((n : ℤ) - (s.caps b : ℤ)) 0)
   /-- Free: credits the whole capacity, at time `C.memFree`, 0 in both shipped
   tables (release was priced at acquisition). -/
   | memFree {b s} :
-      Exec C (.memFree b) s (s.allocBuf b 0) C.memFree (-(s.caps b : ℤ)) 0
+      Exec C tape (.memFree b) s (s.allocBuf b 0) C.memFree (-(s.caps b : ℤ)) 0
   | memLen {d b s} :
-      Exec C (.memLen d b) s (s.setReg d (BitVec.ofNat w (s.bufs b).size)) C.memLen 0 0
+      Exec C tape (.memLen d b) s (s.setReg d (BitVec.ofNat w (s.bufs b).size)) C.memLen 0 0
   | memLoad {d b i s} (h : (s.regs i).toNat < (s.bufs b).size) :
-      Exec C (.memLoad d b i) s (s.setReg d (s.bufs b)[(s.regs i).toNat]) C.memLoad 0 0
+      Exec C tape (.memLoad d b i) s (s.setReg d (s.bufs b)[(s.regs i).toNat]) C.memLoad 0 0
   | memStore {b i src s} (h : (s.regs i).toNat < (s.bufs b).size) :
-      Exec C (.memStore b i src) s
+      Exec C tape (.memStore b i src) s
         (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) h)) C.memStore 0 0
   /-- Push requires free capacity: no rule otherwise, so a derivation proves the
   program stays within what it reserved. Memory-neutral. -/
   | memPush {b src s} (h : (s.bufs b).size < s.caps b) :
-      Exec C (.memPush b src) s (s.setBuf b ((s.bufs b).push (s.regs src)))
+      Exec C tape (.memPush b src) s (s.setBuf b ((s.bufs b).push (s.regs src)))
         C.memPush 0 0
   /-- Pop keeps the capacity: memory-neutral. -/
   | memPop {b s} :
-      Exec C (.memPop b) s (s.setBuf b (s.bufs b).pop) C.memPop 0 0
+      Exec C tape (.memPop b) s (s.setBuf b (s.bufs b).pop) C.memPop 0 0
   | ifNZ_true {c thn els s s' t d p} (h : s.regs c ≠ 0) :
-      Exec C thn s s' t d p → Exec C (.ifNZ c thn els) s s' (C.branch + t) d p
+      Exec C tape thn s s' t d p → Exec C tape (.ifNZ c thn els) s s' (C.branch + t) d p
   | ifNZ_false {c thn els s s' t d p} (h : s.regs c = 0) :
-      Exec C els s s' t d p → Exec C (.ifNZ c thn els) s s' (C.branch + t) d p
+      Exec C tape els s s' t d p → Exec C tape (.ifNZ c thn els) s s' (C.branch + t) d p
   | while_done {g c b s s₁ tg dg pg} :
-      Exec C g s s₁ tg dg pg → s₁.regs c = 0 →
-      Exec C (.whileNZ g c b) s s₁ (tg + C.branch) dg pg
+      Exec C tape g s s₁ tg dg pg → s₁.regs c = 0 →
+      Exec C tape (.whileNZ g c b) s s₁ (tg + C.branch) dg pg
   | while_step {g c b s s₁ s₂ s₃ tg dg pg tb db pb tl dl pl} :
-      Exec C g s s₁ tg dg pg → s₁.regs c ≠ 0 → Exec C b s₁ s₂ tb db pb →
-      Exec C (.whileNZ g c b) s₂ s₃ tl dl pl →
-      Exec C (.whileNZ g c b) s s₃ (tg + C.branch + tb + tl) (dg + db + dl)
+      Exec C tape g s s₁ tg dg pg → s₁.regs c ≠ 0 → Exec C tape b s₁ s₂ tb db pb →
+      Exec C tape (.whileNZ g c b) s₂ s₃ tl dl pl →
+      Exec C tape (.whileNZ g c b) s s₃ (tg + C.branch + tb + tl) (dg + db + dl)
         (max pg (dg + max pb (db + pl)))
 
 /-! ## Basic metatheory -/
 
-/-- The machine is deterministic: a statement has at most one outcome, hence at most
+/-- For a fixed tape the machine is deterministic: a statement has at most one outcome, hence at most
 one cost, so "the" running time is well defined and a bound proved for one execution
 bounds all of them. -/
 theorem Exec.deterministic {C : CostModel} {c : Stmt w} {s s₁ s₂ : State w}
     {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
-    (h₁ : Exec C c s s₁ t₁ d₁ p₁) (h₂ : Exec C c s s₂ t₂ d₂ p₂) :
+    (h₁ : Exec C tape c s s₁ t₁ d₁ p₁) (h₂ : Exec C tape c s s₂ t₂ d₂ p₂) :
     s₁ = s₂ ∧ t₁ = t₂ ∧ d₁ = d₂ ∧ p₁ = p₂ := by
   induction h₁ generalizing s₂ t₂ d₂ p₂ with
   | seq _ _ ih₁ ih₂ =>
@@ -446,19 +476,19 @@ theorem Exec.deterministic {C : CostModel} {c : Stmt w} {s s₁ s₂ : State w}
 
 /-- The peak never dips below the start level. -/
 theorem Exec.peak_nonneg {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} (h : Exec C c s s' t d p) : 0 ≤ p := by
+    {d p : ℤ} (h : Exec C tape c s s' t d p) : 0 ≤ p := by
   induction h <;> omega
 
 /-- The net change is bounded by the peak. -/
 theorem Exec.net_le_peak {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} (h : Exec C c s s' t d p) : d ≤ p := by
+    {d p : ℤ} (h : Exec C tape c s s' t d p) : d ≤ p := by
   induction h <;> omega
 
 /-- The induction core of `Exec.peak_le_time`: both memory indices bounded by the
 running time in one induction, since the `seq`/`whileNZ` peak algebra needs the net
 bound of the prefix to bound the peak of the whole. -/
 theorem Exec.net_and_peak_le_time {C : CostModel} {c : Stmt w} {s s' : State w}
-    {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hC : 1 ≤ C.allocPerWord) :
+    {t : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p) (hC : 1 ≤ C.allocPerWord) :
     d ≤ (t : ℤ) ∧ p ≤ (t : ℤ) := by
   induction h with
   | @memAlloc b n s =>
@@ -484,25 +514,25 @@ execution's live-memory peak exceeds its running time, so one certificate covers
 both resources. The register-side counterpart is `Stmt.Straight.regPeak₀_le`
 (`Liveness.lean`). -/
 theorem Exec.peak_le_time {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} (h : Exec C c s s' t d p) (hC : 1 ≤ C.allocPerWord) : p ≤ (t : ℤ) :=
+    {d p : ℤ} (h : Exec C tape c s s' t d p) (hC : 1 ≤ C.allocPerWord) : p ≤ (t : ℤ) :=
   (h.net_and_peak_le_time hC).2
 
 /-- Corollary of `Exec.peak_le_time`: the net live-memory change is bounded by the
 running time as well. -/
 theorem Exec.net_le_time {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} (h : Exec C c s s' t d p) (hC : 1 ≤ C.allocPerWord) : d ≤ (t : ℤ) :=
+    {d p : ℤ} (h : Exec C tape c s s' t d p) (hC : 1 ≤ C.allocPerWord) : d ≤ (t : ℤ) :=
   (h.net_and_peak_le_time hC).1
 
 /-- `Exec.peak_le_time` under the packaged `CostModel.Admissible` hypothesis
 (satisfied by both shipped tables: `CostModel.unit.admissible`,
 `CostModel.cycles.admissible`). -/
 theorem Exec.peak_le_time_admissible {C : CostModel} {c : Stmt w} {s s' : State w}
-    {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hC : C.Admissible) : p ≤ (t : ℤ) :=
+    {t : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p) (hC : C.Admissible) : p ≤ (t : ℤ) :=
   h.peak_le_time hC.allocPerWord
 
 /-- `Exec.net_le_time` under the packaged `CostModel.Admissible` hypothesis. -/
 theorem Exec.net_le_time_admissible {C : CostModel} {c : Stmt w} {s s' : State w}
-    {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hC : C.Admissible) : d ≤ (t : ℤ) :=
+    {t : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p) (hC : C.Admissible) : d ≤ (t : ℤ) :=
   h.net_le_time hC.allocPerWord
 
 /-! ### Framing: which registers and buffers a statement can touch
@@ -514,6 +544,7 @@ decidable, hence dischargeable by `simp`/`decide` on concrete code. -/
 def Stmt.Writes : Stmt w → Reg → Prop
   | .skip, _ => False
   | .seq c₁ c₂, r => c₁.Writes r ∨ c₂.Writes r
+  | .rand d, r => r = d
   | .imm d _, r => r = d
   | .mov d _, r => r = d
   | .un _ d _, r => r = d
@@ -549,6 +580,7 @@ instance instDecidableWrites : ∀ (c : Stmt w) (r : Reg), Decidable (c.Writes r
     have := instDecidableWrites c₁ r
     have := instDecidableWrites c₂ r
     inferInstanceAs (Decidable (_ ∨ _))
+  | .rand d, r => inferInstanceAs (Decidable (r = d))
   | .imm d _, r => inferInstanceAs (Decidable (r = d))
   | .mov d _, r => inferInstanceAs (Decidable (r = d))
   | .un _ d _, r => inferInstanceAs (Decidable (r = d))
@@ -576,6 +608,7 @@ instance instDecidableTouches : ∀ (c : Stmt w) (b : BufId), Decidable (c.Touch
     have := instDecidableTouches c₁ b
     have := instDecidableTouches c₂ b
     inferInstanceAs (Decidable (_ ∨ _))
+  | .rand .., _ => inferInstanceAs (Decidable False)
   | .imm .., _ => inferInstanceAs (Decidable False)
   | .mov .., _ => inferInstanceAs (Decidable False)
   | .un .., _ => inferInstanceAs (Decidable False)
@@ -615,13 +648,13 @@ private theorem Writes_Touches_eq_lemmas_realized : True := by
 /-- Register frame rule. -/
 theorem Exec.frame_reg {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} {r : Reg}
-    (h : Exec C c s s' t d p) (hr : ¬ c.Writes r) : s'.regs r = s.regs r := by
+    (h : Exec C tape c s s' t d p) (hr : ¬ c.Writes r) : s'.regs r = s.regs r := by
   induction h with
   | skip => rfl
   | seq _ _ ih₁ ih₂ =>
     simp only [Writes_seq, not_or] at hr
     rw [ih₂ hr.2, ih₁ hr.1]
-  | imm | mov | un | bin | memLen | memLoad =>
+  | rand | imm | mov | un | bin | memLen | memLoad =>
     exact regs_setReg_ne _ _ hr
   | memAlloc | memAllocI | memFree | memStore | memPush | memPop => rfl
   | ifNZ_true _ _ ih => exact ih fun hh => hr (Or.inl hh)
@@ -634,13 +667,13 @@ theorem Exec.frame_reg {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
 instead of an entailment. -/
 theorem Exec.frame_buf {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} {b : BufId}
-    (h : Exec C c s s' t d p) (hb : ¬ c.Touches b) : s'.bufs b = s.bufs b := by
+    (h : Exec C tape c s s' t d p) (hb : ¬ c.Touches b) : s'.bufs b = s.bufs b := by
   induction h with
   | skip => rfl
   | seq _ _ ih₁ ih₂ =>
     simp only [Touches_seq, not_or] at hb
     rw [ih₂ hb.2, ih₁ hb.1]
-  | imm | mov | un | bin | memLen | memLoad => rfl
+  | rand | imm | mov | un | bin | memLen | memLoad => rfl
   | memStore | memPush | memPop => exact bufs_setBuf_ne _ _ hb
   | memAlloc | memAllocI | memFree => exact bufs_allocBuf_ne _ _ hb
   | ifNZ_true _ _ ih => exact ih fun hh => hb (Or.inl hh)
@@ -652,13 +685,13 @@ theorem Exec.frame_buf {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
 /-- Capacity frame rule: an untouched buffer keeps its reserved capacity too. -/
 theorem Exec.frame_cap {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} {b : BufId}
-    (h : Exec C c s s' t d p) (hb : ¬ c.Touches b) : s'.caps b = s.caps b := by
+    (h : Exec C tape c s s' t d p) (hb : ¬ c.Touches b) : s'.caps b = s.caps b := by
   induction h with
   | skip => rfl
   | seq _ _ ih₁ ih₂ =>
     simp only [Touches_seq, not_or] at hb
     rw [ih₂ hb.2, ih₁ hb.1]
-  | imm | mov | un | bin | memLen | memLoad => rfl
+  | rand | imm | mov | un | bin | memLen | memLoad => rfl
   | memStore | memPush | memPop => rfl
   | memAlloc | memAllocI | memFree => exact caps_allocBuf_ne _ _ hb
   | ifNZ_true _ _ ih => exact ih fun hh => hb (Or.inl hh)
@@ -715,6 +748,7 @@ or dynamically-allocating code come from the `Triple` logic. -/
 def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .skip => 0
   | .seq c₁ c₂ => c₁.staticTime C + c₂.staticTime C
+  | .rand .. => C.rand
   | .imm .. => C.imm
   | .mov .. => C.mov
   | .un op .. => C.un op
@@ -744,7 +778,7 @@ def Stmt.AllocFree : Stmt w → Prop
 /-- Branch-free code runs in constant time: the running time is a function of the
 syntax alone, never of the state. -/
 theorem Exec.straight_time_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} (h : Exec C c s s' t d p) (hs : c.Straight) : t = c.staticTime C := by
+    {d p : ℤ} (h : Exec C tape c s s' t d p) (hs : c.Straight) : t = c.staticTime C := by
   induction h with
   | seq _ _ ih₁ ih₂ => exact congrArg₂ (· + ·) (ih₁ hs.1) (ih₂ hs.2)
   | memAlloc | ifNZ_true | ifNZ_false | while_done | while_step => exact hs.elim
@@ -754,7 +788,7 @@ theorem Exec.straight_time_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t :
 longer exact, since the branches may cost different amounts, but `staticTime`'s
 `branch + max` shape bounds every execution. -/
 theorem Exec.time_le_staticTime_of_loopFree {C : CostModel} {c : Stmt w}
-    {s s' : State w} {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p)
+    {s s' : State w} {t : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p)
     (hl : c.LoopFree) : t ≤ c.staticTime C := by
   induction h with
   | seq _ _ ih₁ ih₂ => exact Nat.add_le_add (ih₁ hl.1) (ih₂ hl.2)
@@ -769,7 +803,7 @@ theorem Exec.time_le_staticTime_of_loopFree {C : CostModel} {c : Stmt w}
 straight-line or not, has non-positive net and zero peak growth. `memFree` may make
 the net strictly negative. -/
 theorem Exec.allocFree_space {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} (h : Exec C c s s' t d p) (ha : c.AllocFree) :
+    {d p : ℤ} (h : Exec C tape c s s' t d p) (ha : c.AllocFree) :
     d ≤ 0 ∧ p ≤ 0 := by
   induction h with
   | seq _ _ ih₁ ih₂ =>
@@ -792,7 +826,7 @@ their inputs. This is data-independence of the abstract time counter, an ingredi
 of a constant-time argument, not by itself a side-channel guarantee. -/
 theorem Exec.straight_data_independent {C : CostModel} {c : Stmt w}
     {s₁ s₁' s₂ s₂' : State w} {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
-    (h₁ : Exec C c s₁ s₁' t₁ d₁ p₁) (h₂ : Exec C c s₂ s₂' t₂ d₂ p₂)
+    (h₁ : Exec C tape c s₁ s₁' t₁ d₁ p₁) (h₂ : Exec C tape c s₂ s₂' t₂ d₂ p₂)
     (hs : c.Straight) : t₁ = t₂ :=
   (h₁.straight_time_eq hs).trans (h₂.straight_time_eq hs).symm
 
@@ -852,7 +886,7 @@ theorem Stmt.Straight.staticTime?_eq {c : Stmt w} (hs : c.Straight) (C : CostMod
 every execution, on every input. The `Option`-valued API needs no side condition:
 `some` already certifies straightness. -/
 theorem Exec.staticTime?_time_eq {C : CostModel} {c : Stmt w} {s s' : State w}
-    {t n : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hn : c.staticTime? C = some n) :
+    {t n : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p) (hn : c.staticTime? C = some n) :
     t = n := by
   obtain ⟨hs, rfl⟩ := Stmt.staticTime?_eq_some.mp hn
   exact h.straight_time_eq hs
@@ -910,7 +944,7 @@ theorem State.init_wellFormed : (State.init w).WellFormed where
 syntax, so this is a static quantity; in particular `c` cannot touch a buffer at or
 above `c.memBound` (`Stmt.touches_lt_memBound`). -/
 def Stmt.memBound : Stmt w → ℕ
-  | .skip | .imm .. | .mov .. | .un .. | .bin .. => 0
+  | .skip | .rand .. | .imm .. | .mov .. | .un .. | .bin .. => 0
   | .seq c₁ c₂ => max c₁.memBound c₂.memBound
   | .memAlloc b _ => b + 1
   | .memAllocI b _ => b + 1
@@ -954,12 +988,12 @@ theorem Stmt.touches_lt_of_memBound_le {c : Stmt w} {B : ℕ} (hB : c.memBound �
 hypothesis is exactly what keeps the invariant alive), `memAlloc`/`memFree` install an
 empty array along with the new capacity, and no other instruction grows a buffer. -/
 theorem Exec.sizes_le_caps {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} (h : Exec C c s s' t d p) (hs : ∀ b, (s.bufs b).size ≤ s.caps b) :
+    {d p : ℤ} (h : Exec C tape c s s' t d p) (hs : ∀ b, (s.bufs b).size ≤ s.caps b) :
     ∀ b, (s'.bufs b).size ≤ s'.caps b := by
   induction h with
   | skip => exact hs
   | seq _ _ ih₁ ih₂ => exact ih₂ (ih₁ hs)
-  | imm | mov | un | bin | memLen | memLoad => exact hs
+  | rand | imm | mov | un | bin | memLen | memLoad => exact hs
   | @memAlloc b n s =>
     intro b'
     by_cases hb : b' = b
@@ -1001,7 +1035,7 @@ theorem Exec.sizes_le_caps {C : CostModel} {c : Stmt w} {s s' : State w} {t : �
 /-- A support bound survives execution: capacities only change at buffers named in
 `c`, all of which lie below the bound. -/
 theorem Exec.supportBound_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
-    {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
+    {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C tape c s s' t d p)
     (hc : ∀ b, c.Touches b → b < B)
     (hs : s.SupportBound B) : s'.SupportBound B := by
   intro b hb
@@ -1013,7 +1047,7 @@ reachable from the initial state is well-formed, so the memory profile of an
 execution from an honest start reads as physical memory (`Exec.liveMem_eq`,
 `Exec.reaches_liveMem_le_peak`). -/
 theorem Exec.wellFormed_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
-    {t : ℕ} {d p : ℤ} (h : Exec C c s s' t d p) (hwf : s.WellFormed) :
+    {t : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p) (hwf : s.WellFormed) :
     s'.WellFormed where
   size_le_cap := h.sizes_le_caps hwf.size_le_cap
   finite := by
@@ -1030,6 +1064,12 @@ than a `Finset` sum) so that the update lemmas prove by `induction`/`omega`. -/
 def State.liveMem (s : State w) : ℕ → ℕ
   | 0 => 0
   | B + 1 => s.liveMem B + s.caps B
+
+@[simp] theorem liveMem_readRandom (s : State w) (tape : RandomTape w) (r : Reg)
+    (B : ℕ) : (s.readRandom tape r).liveMem B = s.liveMem B := by
+  induction B with
+  | zero => rfl
+  | succ B ih => simp only [State.liveMem, caps_readRandom, ih]
 
 @[simp] theorem liveMem_setReg (s : State w) (r : Reg) (v : Word w) (B : ℕ) :
     (s.setReg r v).liveMem B = s.liveMem B := by
@@ -1096,7 +1136,7 @@ theorem liveMem_eq_of_supportBound {s : State w} {B B' : ℕ} (hs : s.SupportBou
 absolute footprint moves by exactly `d`, not merely by at most `d`. A `Triple` still
 only certifies `d ≤ D`; the exactness is between `d` and the state. -/
 theorem Exec.liveMem_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
+    {d p : ℤ} {B : ℕ} (h : Exec C tape c s s' t d p)
     (hc : ∀ b, c.Touches b → b < B) :
     (s'.liveMem B : ℤ) = s.liveMem B + d := by
   induction h with
@@ -1104,7 +1144,7 @@ theorem Exec.liveMem_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
   | seq _ _ ih₁ ih₂ =>
     rw [ih₂ (fun b hb => hc b (Or.inr hb)), ih₁ (fun b hb => hc b (Or.inl hb))]
     ring
-  | imm | mov | un | bin | memLen | memLoad => simp
+  | rand | imm | mov | un | bin | memLen | memLoad => simp
   | memAlloc => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
   | memAllocI => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
   | memFree => rw [liveMem_allocBuf _ _ (hc _ rfl)]; omega
@@ -1119,43 +1159,43 @@ theorem Exec.liveMem_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
 
 /-- The final footprint stays within the peak: `liveMem s' ≤ liveMem s + p`. -/
 theorem Exec.liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p)
+    {d p : ℤ} {B : ℕ} (h : Exec C tape c s s' t d p)
     (hc : ∀ b, c.Touches b → b < B) :
     (s'.liveMem B : ℤ) ≤ s.liveMem B + p := by
   have h₁ := h.liveMem_eq hc
   have h₂ := h.net_le_peak
   omega
 
-/-- `Reaches C c s m`: an execution of `c` from `s` passes through state `m`, either
+/-- `Reaches C tape c s m`: an execution of `c` from `s` passes through state `m`, either
 the start state or a state at an instruction boundary strictly inside the execution;
 the branch conditions keep every constructor on the path actually taken. The final
 state is covered separately by `Exec.liveMem_le_peak`, so together the two enumerate
 every state an execution visits. -/
-inductive Reaches (C : CostModel) : Stmt w → State w → State w → Prop where
-  | start {c : Stmt w} {s : State w} : Reaches C c s s
+inductive Reaches (C : CostModel) (tape : RandomTape w) : Stmt w → State w → State w → Prop where
+  | start {c : Stmt w} {s : State w} : Reaches C tape c s s
   | seq_left {c₁ c₂ : Stmt w} {s m : State w} :
-      Reaches C c₁ s m → Reaches C (c₁ ;; c₂) s m
+      Reaches C tape c₁ s m → Reaches C tape (c₁ ;; c₂) s m
   | seq_right {c₁ c₂ : Stmt w} {s s₁ m : State w} {t₁ : ℕ} {d₁ p₁ : ℤ} :
-      Exec C c₁ s s₁ t₁ d₁ p₁ → Reaches C c₂ s₁ m → Reaches C (c₁ ;; c₂) s m
+      Exec C tape c₁ s s₁ t₁ d₁ p₁ → Reaches C tape c₂ s₁ m → Reaches C tape (c₁ ;; c₂) s m
   | ifNZ_true {r : Reg} {thn els : Stmt w} {s m : State w} :
-      s.regs r ≠ 0 → Reaches C thn s m → Reaches C (.ifNZ r thn els) s m
+      s.regs r ≠ 0 → Reaches C tape thn s m → Reaches C tape (.ifNZ r thn els) s m
   | ifNZ_false {r : Reg} {thn els : Stmt w} {s m : State w} :
-      s.regs r = 0 → Reaches C els s m → Reaches C (.ifNZ r thn els) s m
+      s.regs r = 0 → Reaches C tape els s m → Reaches C tape (.ifNZ r thn els) s m
   | while_guard {g body : Stmt w} {r : Reg} {s m : State w} :
-      Reaches C g s m → Reaches C (.whileNZ g r body) s m
+      Reaches C tape g s m → Reaches C tape (.whileNZ g r body) s m
   | while_body {g body : Stmt w} {r : Reg} {s s₁ m : State w} {tg : ℕ} {dg pg : ℤ} :
-      Exec C g s s₁ tg dg pg → s₁.regs r ≠ 0 → Reaches C body s₁ m →
-      Reaches C (.whileNZ g r body) s m
+      Exec C tape g s s₁ tg dg pg → s₁.regs r ≠ 0 → Reaches C tape body s₁ m →
+      Reaches C tape (.whileNZ g r body) s m
   | while_loop {g body : Stmt w} {r : Reg} {s s₁ s₂ m : State w} {tg tb : ℕ}
       {dg pg db pb : ℤ} :
-      Exec C g s s₁ tg dg pg → s₁.regs r ≠ 0 → Exec C body s₁ s₂ tb db pb →
-      Reaches C (.whileNZ g r body) s₂ m → Reaches C (.whileNZ g r body) s m
+      Exec C tape g s s₁ tg dg pg → s₁.regs r ≠ 0 → Exec C tape body s₁ s₂ tb db pb →
+      Reaches C tape (.whileNZ g r body) s₂ m → Reaches C tape (.whileNZ g r body) s m
 
 /-- The peak bounds every intermediate state: any state an execution passes through
 (`Reaches`) has absolute footprint at most `p` above the start, so `p` is the
 high-water mark of the whole execution, not a statement about its endpoints. -/
 theorem Exec.reaches_liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' m : State w}
-    {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C c s s' t d p) (hm : Reaches C c s m)
+    {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C tape c s s' t d p) (hm : Reaches C tape c s m)
     (hc : ∀ b, c.Touches b → b < B) :
     (m.liveMem B : ℤ) ≤ s.liveMem B + p := by
   induction hm generalizing s' t d p with
@@ -1215,7 +1255,7 @@ exceeds `liveMem`. A free can neither drive the footprint negative nor fund an
 allocation the profile did not pay for; by `Exec.liveMem_eq` the footprint after
 `memFree b ;; memAlloc b' n` is `liveMem s - s.caps b + n`, all charged. -/
 theorem Exec.memFree_credit_le {C : CostModel} {b : BufId} {s s' : State w} {t : ℕ}
-    {d p : ℤ} {B : ℕ} (h : Exec C (.memFree b) s s' t d p) (hb : b < B) :
+    {d p : ℤ} {B : ℕ} (h : Exec C tape (.memFree b) s s' t d p) (hb : b < B) :
     -d ≤ (s.liveMem B : ℤ) := by
   cases h
   have := caps_le_liveMem s hb
@@ -1228,15 +1268,16 @@ recursive call consumes one unit, so any `fuel ≥` statement depth × loop trip
 suffices); `none` means "ran out of fuel, or hit an out-of-range buffer access". Fuel
 is an interpreter artifact; no cost is derived from it. -/
 
-def run (C : CostModel) : ℕ → Stmt w → State w → Option (State w × ℕ × ℤ × ℤ)
+def run (C : CostModel) (tape : RandomTape w) : ℕ → Stmt w → State w → Option (State w × ℕ × ℤ × ℤ)
   | 0, _, _ => none
   | f + 1, c, s =>
     match c with
     | .skip => some (s, 0, 0, 0)
     | .seq c₁ c₂ => do
-        let (s₁, t₁, d₁, p₁) ← run C f c₁ s
-        let (s₂, t₂, d₂, p₂) ← run C f c₂ s₁
+        let (s₁, t₁, d₁, p₁) ← run C tape f c₁ s
+        let (s₂, t₂, d₂, p₂) ← run C tape f c₂ s₁
         some (s₂, t₁ + t₂, d₁ + d₂, max p₁ (d₁ + p₂))
+    | .rand d => some (s.readRandom tape d, C.rand, 0, 0)
     | .imm d v => some (s.setReg d v, C.imm, 0, 0)
     | .mov d a => some (s.setReg d (s.regs a), C.mov, 0, 0)
     | .un op d a => some (s.setReg d (op.eval (s.regs a)), C.un op, 0, 0)
@@ -1270,18 +1311,18 @@ def run (C : CostModel) : ℕ → Stmt w → State w → Option (State w × ℕ 
     | .memPop b => some (s.setBuf b (s.bufs b).pop, C.memPop, 0, 0)
     | .ifNZ c thn els =>
         if s.regs c = 0 then do
-          let (s', t, d, p) ← run C f els s
+          let (s', t, d, p) ← run C tape f els s
           some (s', C.branch + t, d, p)
         else do
-          let (s', t, d, p) ← run C f thn s
+          let (s', t, d, p) ← run C tape f thn s
           some (s', C.branch + t, d, p)
     | .whileNZ g cc b => do
-        let (s₁, tg, dg, pg) ← run C f g s
+        let (s₁, tg, dg, pg) ← run C tape f g s
         if s₁.regs cc = 0 then
           some (s₁, tg + C.branch, dg, pg)
         else do
-          let (s₂, tb, db, pb) ← run C f b s₁
-          let (s₃, tl, dl, pl) ← run C f (.whileNZ g cc b) s₂
+          let (s₂, tb, db, pb) ← run C tape f b s₁
+          let (s₃, tl, dl, pl) ← run C tape f (.whileNZ g cc b) s₂
           some (s₃, tg + C.branch + tb + tl, dg + db + dl,
             max pg (dg + max pb (db + pl)))
 
@@ -1289,7 +1330,7 @@ def run (C : CostModel) : ℕ → Stmt w → State w → Option (State w × ℕ 
 the costs it reports. So `#eval`-ing a program gives numbers that the `Exec`-level
 theorems are about. -/
 theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} {t : ℕ} {d p : ℤ},
-    run C f c s = some (s', t, d, p) → Exec C c s s' t d p := by
+    run C tape f c s = some (s', t, d, p) → Exec C tape c s s' t d p := by
   intro f
   induction f with
   | zero => intro c s s' t d p h; cases h
@@ -1301,14 +1342,14 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
       obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .skip
     | .seq c₁ c₂ =>
       simp only [run] at h
-      cases h₁ : run C f c₁ s with
+      cases h₁ : run C tape f c₁ s with
       | none =>
         simp only [h₁, Option.bind_eq_bind, Option.bind_none] at h
         cases h
       | some r₁ =>
         obtain ⟨s₁, t₁, d₁, p₁⟩ := r₁
         simp only [h₁, Option.bind_eq_bind, Option.bind_some] at h
-        cases h₂ : run C f c₂ s₁ with
+        cases h₂ : run C tape f c₂ s₁ with
         | none =>
           simp only [h₂, Option.bind_none] at h
           cases h
@@ -1317,6 +1358,9 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
           simp only [h₂, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
           obtain ⟨rfl, rfl, rfl, rfl⟩ := h
           exact .seq (ih _ h₁) (ih _ h₂)
+    | .rand d =>
+      simp only [run, Option.some.injEq] at h
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .rand
     | .imm d v =>
       simp only [run, Option.some.injEq] at h
       obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .imm
@@ -1369,7 +1413,7 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
       simp only [run] at h
       by_cases hc : s.regs c = 0
       · rw [if_pos hc] at h
-        cases h₁ : run C f els s with
+        cases h₁ : run C tape f els s with
         | none =>
           simp only [h₁, Option.bind_eq_bind, Option.bind_none] at h
           cases h
@@ -1379,7 +1423,7 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
           obtain ⟨rfl, rfl, rfl, rfl⟩ := h
           exact .ifNZ_false hc (ih _ h₁)
       · rw [if_neg hc] at h
-        cases h₁ : run C f thn s with
+        cases h₁ : run C tape f thn s with
         | none =>
           simp only [h₁, Option.bind_eq_bind, Option.bind_none] at h
           cases h
@@ -1390,7 +1434,7 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
           exact .ifNZ_true hc (ih _ h₁)
     | .whileNZ g cc b =>
       simp only [run] at h
-      cases hg : run C f g s with
+      cases hg : run C tape f g s with
       | none =>
         simp only [hg, Option.bind_eq_bind, Option.bind_none] at h
         cases h
@@ -1403,14 +1447,14 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
           obtain ⟨rfl, rfl, rfl, rfl⟩ := h
           exact .while_done (ih _ hg) hz
         · rw [if_neg hz] at h
-          cases hb : run C f b s₁ with
+          cases hb : run C tape f b s₁ with
           | none =>
             simp only [hb, Option.bind_none] at h
             cases h
           | some rb =>
             obtain ⟨s₂, tb, db, pb⟩ := rb
             simp only [hb, Option.bind_some] at h
-            cases hl : run C f (.whileNZ g cc b) s₂ with
+            cases hl : run C tape f (.whileNZ g cc b) s₂ with
             | none =>
               simp only [hl, Option.bind_none] at h
               cases h

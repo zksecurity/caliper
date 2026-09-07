@@ -108,12 +108,12 @@ untouched, in time `timeBound C arr.size`, with net and peak live-memory growth
 `dst ≠ src` is the one separation fact, a statement about buffer *names*. -/
 theorem spec {C : CostModel} (src dst : BufId) (hne : dst ≠ src)
     (arr : Array (Word w)) (hsz : arr.size < 2 ^ w) :
-    Triple C (fun s => s.bufs src = arr) (code src dst)
+    Triple C Caliper.RandomTape.zero (fun s => s.bufs src = arr) (code src dst)
       (fun s => s.bufs dst = arr ∧ s.bufs src = arr)
       (timeBound C arr.size) arr.size arr.size := by
   have hne' : src ≠ dst := fun h => hne h.symm
   -- the guard: one `ult`, verdict in r2
-  have hguard : ∀ k, Triple C (Inv src dst arr k) (.bin .ult 2 0 1)
+  have hguard : ∀ k, Triple C Caliper.RandomTape.zero (Inv src dst arr k) (.bin .ult 2 0 1)
       (InvG src dst arr k) (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
@@ -131,7 +131,7 @@ theorem spec {C : CostModel} (src dst : BufId) (hne : dst ≠ src)
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
   -- the body: load, push, increment
-  have hbody : ∀ k, Triple C (fun s => InvG src dst arr (k + 1) s ∧ s.regs 2 ≠ 0)
+  have hbody : ∀ k, Triple C Caliper.RandomTape.zero (fun s => InvG src dst arr (k + 1) s ∧ s.regs 2 ≠ 0)
       (.memLoad 3 src 0 ;; .memPush dst 3 ;; .imm 4 1 ;; .bin .add 0 0 4)
       (Inv src dst arr k)
       (C.memLoad + (C.memPush + (C.imm + C.bin .add))) 0 0 := by
@@ -154,11 +154,11 @@ theorem spec {C : CostModel} (src dst : BufId) (hne : dst ≠ src)
       simp [prefixOf, hlt, hsrc]
     · simp [hcap]
   -- prologue: read the length, allocate, zero the index
-  have h1 : Triple C (fun s => s.bufs src = arr) (.memLen 1 src)
+  have h1 : Triple C Caliper.RandomTape.zero (fun s => s.bufs src = arr) (.memLen 1 src)
       (fun s => s.bufs src = arr ∧ s.regs 1 = BitVec.ofNat w arr.size)
       C.memLen 0 0 :=
     Triple.memLen fun s hs => by simp [hs]
-  have h2 : Triple C
+  have h2 : Triple C Caliper.RandomTape.zero
       (fun s => s.bufs src = arr ∧ s.regs 1 = BitVec.ofNat w arr.size)
       (.memAlloc dst 1)
       (fun s => s.bufs src = arr ∧ s.regs 1 = BitVec.ofNat w arr.size
@@ -174,7 +174,7 @@ theorem spec {C : CostModel} (src dst : BufId) (hne : dst ≠ src)
     · simp [hlen]
     · simp [hval]
     · simp
-  have h3 : Triple C
+  have h3 : Triple C Caliper.RandomTape.zero
       (fun s => s.bufs src = arr ∧ s.regs 1 = BitVec.ofNat w arr.size
         ∧ s.caps dst = arr.size ∧ s.bufs dst = #[])
       (.imm 0 0) (Inv src dst arr arr.size) C.imm 0 0 := by
@@ -204,7 +204,7 @@ theorem spec {C : CostModel} (src dst : BufId) (hne : dst ≠ src)
 `(dst contents, time, net, peak)`, with time `25 = timeBound .unit 3` and memory
 `(3, 3)`, instances of `spec`. -/
 def demo : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (code 0 1)
+  (run .unit Caliper.RandomTape.zero 1000 (code 0 1)
       { State.init 64 with
         bufs := fun b => if b = 0 then #[7, 11, 13] else #[]
         caps := fun b => if b = 0 then 3 else 0 }).map
@@ -244,7 +244,7 @@ def code (b : BufId) : Stmt w :=
 /-- Overwrite `#[1, 2, 3, 4]` with the value 9 from `r5`:
 `(contents, time, net, peak)`: zero memory, in place. -/
 def demo : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (code 0)
+  (run .unit Caliper.RandomTape.zero 1000 (code 0)
       { State.init 64 with
         regs := fun r => if r = 5 then 9 else 0
         bufs := fun b => if b = 0 then #[1, 2, 3, 4] else #[]
@@ -289,7 +289,7 @@ def code (b : BufId) : Stmt w :=
 
 /-- Reverse `#[1, 2, 3, 4, 5]` in place: `(contents, time, net, peak)`. -/
 def demo : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (code 0)
+  (run .unit Caliper.RandomTape.zero 1000 (code 0)
       { State.init 64 with
         bufs := fun b => if b = 0 then #[1, 2, 3, 4, 5] else #[]
         caps := fun b => if b = 0 then 5 else 0 }).map
@@ -334,7 +334,7 @@ def code (b : BufId) : Stmt w :=
 sum is 17 and the buffer ends empty with its 3-word capacity credited back
 (net −3). -/
 def demo : Option (Word 64 × ℕ × ℕ × ℕ × ℤ × ℤ) :=
-  (run .unit 1000 (code 0)
+  (run .unit Caliper.RandomTape.zero 1000 (code 0)
       { State.init 64 with
         bufs := fun b => if b = 0 then #[3, 5, 9] else #[]
         caps := fun b => if b = 0 then 3 else 0 }).map

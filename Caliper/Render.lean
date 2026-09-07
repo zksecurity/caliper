@@ -44,6 +44,7 @@ for the dialect). Blocks indent their bodies by two spaces per nesting level. -/
 def Stmt.render : Stmt w → List String
   | .skip => ["skip"]
   | .seq c₁ c₂ => c₁.render ++ c₂.render
+  | .rand d => [s!"{pad "rand" 6}r{d}"]
   | .imm d v => [s!"{pad "imm" 6}r{d}, {v.toNat}"]
   | .mov d a => [s!"{pad "mov" 6}r{d}, r{a}"]
   | .un op d a => [s!"{pad op.mnemonic 5}r{d}, r{a}"]
