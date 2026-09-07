@@ -6,7 +6,7 @@ import Mathlib.Tactic
 A small imperative language whose every instruction runs in constant time, intended
 as a compilation target for languages that want certified resource bounds. Programs
 carry machine-checked upper bounds on running time and memory. Design rationale, the
-lowering contract and the trust boundary are in `doc/caliper.md`; this module is the
+lowering contract and the trust boundary are in `docs/00-overview.md`; this module is the
 machine.
 
 Buffers, not a RAM: the machine has an unbounded supply of independent, named

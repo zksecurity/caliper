@@ -66,6 +66,10 @@ and hence, Caliper performance is not 1-to-1 with runtime performance:
 for instance, Caliper does not model caches, branch prediction, out-of-order execution, pipeline stalls or intrinsics available on some CPUs.
 We think that modelling these, for theoretic purposes, would needlessly complicate the model and make comparison harder.
 
+## Documentation
+
+See the [documentation](docs/00-overview.md) for the machine definitions, resource bounds, and worked Lean examples.
+
 ## Building
 
 ```

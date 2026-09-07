@@ -738,7 +738,7 @@ def sumB (xs : Buf w) : Build w Reg := do
 #eval (Build.build (sumB (w := 64) ⟨0⟩)).2 == SumBuf.code 0
 
 /- The rendering (`Stmt.render`, `Render.lean`) of that program, the listing quoted
-in `doc/caliper.md`. -/
+in `docs/03-programming.md`. -/
 /--
 info: imm   r0, 0
 imm   r1, 0
