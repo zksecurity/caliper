@@ -5,7 +5,7 @@ import Caliper.Triple
 # Probabilistic resource triples
 
 The postcondition and buffer bounds hold on almost every uniform tape. Time is
-bounded in expectation using the termination-time PMF. Fixed-tape triples remain
+bounded in expectation using the runtime PMF. Fixed-tape triples remain
 available for proofs that cover every supplied tape.
 -/
 
@@ -22,19 +22,19 @@ def ProbTriple (C : CostModel) (P : State w → Prop) (c : Stmt w) (Q : State w 
   ∀ s, P s →
     (∀ᵐ tape ∂uniformTape w, ∃ s' t d p,
       Exec C tape c s s' t d p ∧ Q s' ∧ d ≤ D ∧ p ≤ M) ∧
-    (terminationTimePMF C c s).expect ENat.toENNReal ≤ T
+    (runTimePMF C c s).expect ENat.toENNReal ≤ T
 
 /-- Bound a PMF expectation by an almost-everywhere bound on witnessed executions. -/
-theorem terminationTimePMF_expect_le {c : Stmt w} {s : State w}
+theorem runTimePMF_expect_le {c : Stmt w} {s : State w}
     (f : RandomTape w → ℝ≥0∞)
     (h : ∀ᵐ tape ∂uniformTape w, ∃ s' t d p,
       Exec C tape c s s' t d p ∧ (t : ℝ≥0∞) ≤ f tape) :
-    (terminationTimePMF C c s).expect ENat.toENNReal ≤ ∫⁻ tape, f tape ∂uniformTape w := by
-  rw [terminationTimePMF_expect_eq]
+    (runTimePMF C c s).expect ENat.toENNReal ≤ ∫⁻ tape, f tape ∂uniformTape w := by
+  rw [runTimePMF_expect_eq]
   apply lintegral_mono_ae
   filter_upwards [h] with tape ht
   obtain ⟨s', t, d, p, he, ht⟩ := ht
-  simpa only [terminationTime_of_exec he, ENat.toENNReal_coe] using ht
+  simpa only [runTime_of_exec he, ENat.toENNReal_coe] using ht
 
 namespace ProbTriple
 
@@ -61,7 +61,7 @@ theorem of_forall_triple {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : 
     exact ⟨s', t, d, p, he, hq, hd, hp⟩
   · calc
       _ ≤ ∫⁻ _ : RandomTape w, (T : ℝ≥0∞) ∂uniformTape w :=
-        terminationTimePMF_expect_le _ (Filter.Eventually.of_forall fun tape => by
+        runTimePMF_expect_le _ (Filter.Eventually.of_forall fun tape => by
           obtain ⟨s', t, d, p, he, _, ht, _, _⟩ := h tape s hs
           exact ⟨s', t, d, p, he, by exact_mod_cast ht⟩)
       _ = T := by simp
@@ -98,12 +98,12 @@ protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂
   letI : Countable good := hc.to_subtype
   let E (a : good) : Set (RandomTape w) := {tape | HasOutcome C tape c₁ s a.val}
   let f (a : good) (tape : RandomTape w) :=
-    ENat.toENNReal (terminationTime C c₂ a.val.1 tape)
+    ENat.toENNReal (runTime C c₂ a.val.1 tape)
   have hE a : MeasurableSet[RandomTape.prefixSigma a.val.1.tapePos] (E a) :=
     HasOutcome.measurableSet C c₁ s a.val
   have hm a : MeasurableSet (E a) := RandomTape.prefixSigma_le _ _ (hE a)
   have hf a : Measurable[RandomTape.tailSigma a.val.1.tapePos] (f a) :=
-    (measurable_of_countable ENat.toENNReal).comp (terminationTime_tail_measurable C c₂ a.val.1)
+    (measurable_of_countable ENat.toENNReal).comp (runTime_tail_measurable C c₂ a.val.1)
   have hfm a : Measurable (f a) := (hf a).mono (RandomTape.tailSigma_le _) le_rfl
   have hd : Pairwise (fun a b => Disjoint (E a) (E b)) := by
     intro a b hab
@@ -139,27 +139,27 @@ protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂
       calc
         _ ≤ ∑' a : good, uniformTape w (E a) * T₂ := ENNReal.tsum_le_tsum fun a => by
           apply mul_le_mul_right
-          rw [← terminationTimePMF_expect_eq]
+          rw [← runTimePMF_expect_eq]
           exact (h₂ a.val.1 a.property.2.1).2
         _ = (∑' a : good, uniformTape w (E a)) * T₂ := ENNReal.tsum_mul_right
         _ ≤ 1 * T₂ := mul_le_mul_left hmass T₂
         _ = T₂ := one_mul _
     calc
-      _ ≤ ∫⁻ tape, ENat.toENNReal (terminationTime C c₁ s tape) + future tape
-          ∂uniformTape w := terminationTimePMF_expect_le _ (by
+      _ ≤ ∫⁻ tape, ENat.toENNReal (runTime C c₁ s tape) + future tape
+          ∂uniformTape w := runTimePMF_expect_le _ (by
         filter_upwards [ha] with tape ht
         obtain ⟨a, s', t, d, p, he₁, he₂, _, _, _⟩ := ht
         refine ⟨s', a.val.2.1 + t, _, _, .seq he₁ he₂, ?_⟩
-        rw [terminationTime_of_exec he₁, ENat.toENNReal_coe, Nat.cast_add]
+        rw [runTime_of_exec he₁, ENat.toENNReal_coe, Nat.cast_add]
         apply add_le_add_right
         have hterm := ENNReal.le_tsum (f := fun a : good => (E a).indicator (f a) tape) a
         simpa only [Set.indicator_of_mem (show tape ∈ E a from he₁), f,
-          terminationTime_of_exec he₂, ENat.toENNReal_coe] using hterm)
-      _ = (terminationTimePMF C c₁ s).expect ENat.toENNReal +
+          runTime_of_exec he₂, ENat.toENNReal_coe] using hterm)
+      _ = (runTimePMF C c₁ s).expect ENat.toENNReal +
           ∫⁻ tape, future tape ∂uniformTape w := by
-        have hm₁ : Measurable (fun tape => ENat.toENNReal (terminationTime C c₁ s tape)) :=
-          (measurable_of_countable ENat.toENNReal).comp (measurable_terminationTime C c₁ s)
-        rw [lintegral_add_left hm₁, terminationTimePMF_expect_eq]
+        have hm₁ : Measurable (fun tape => ENat.toENNReal (runTime C c₁ s tape)) :=
+          (measurable_of_countable ENat.toENNReal).comp (measurable_runTime C c₁ s)
+        rw [lintegral_add_left hm₁, runTimePMF_expect_eq]
       _ ≤ T₁ + T₂ := add_le_add ht₁ hfuture
 
 /-- Branch on a register value; branch selection cannot inspect semantic costs. -/
@@ -176,14 +176,14 @@ protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {a b : Stmt w}
       obtain ⟨s', t, d, p, he, hq, hd, hp⟩ := he
       exact ⟨s', C.branch + t, d, p, .ifNZ_false hz he, hq, hd, hp⟩
     · calc
-        _ ≤ ∫⁻ tape, (C.branch : ℝ≥0∞) + ENat.toENNReal (terminationTime C b s tape)
-            ∂uniformTape w := terminationTimePMF_expect_le _ (by
+        _ ≤ ∫⁻ tape, (C.branch : ℝ≥0∞) + ENat.toENNReal (runTime C b s tape)
+            ∂uniformTape w := runTimePMF_expect_le _ (by
           filter_upwards [hc] with tape he
           obtain ⟨s', t, d, p, he, _, _, _⟩ := he
           refine ⟨s', C.branch + t, d, p, .ifNZ_false hz he, ?_⟩
-          simp only [terminationTime_of_exec he, ENat.toENNReal_coe, Nat.cast_add, le_refl])
-        _ = C.branch + (terminationTimePMF C b s).expect ENat.toENNReal := by
-          rw [lintegral_add_left measurable_const, terminationTimePMF_expect_eq]
+          simp only [runTime_of_exec he, ENat.toENNReal_coe, Nat.cast_add, le_refl])
+        _ = C.branch + (runTimePMF C b s).expect ENat.toENNReal := by
+          rw [lintegral_add_left measurable_const, runTimePMF_expect_eq]
           simp
         _ ≤ C.branch + T := add_le_add_right ht _
   · obtain ⟨hc, ht⟩ := ha s ⟨hs, hz⟩
@@ -192,14 +192,14 @@ protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {a b : Stmt w}
       obtain ⟨s', t, d, p, he, hq, hd, hp⟩ := he
       exact ⟨s', C.branch + t, d, p, .ifNZ_true hz he, hq, hd, hp⟩
     · calc
-        _ ≤ ∫⁻ tape, (C.branch : ℝ≥0∞) + ENat.toENNReal (terminationTime C a s tape)
-            ∂uniformTape w := terminationTimePMF_expect_le _ (by
+        _ ≤ ∫⁻ tape, (C.branch : ℝ≥0∞) + ENat.toENNReal (runTime C a s tape)
+            ∂uniformTape w := runTimePMF_expect_le _ (by
           filter_upwards [hc] with tape he
           obtain ⟨s', t, d, p, he, _, _, _⟩ := he
           refine ⟨s', C.branch + t, d, p, .ifNZ_true hz he, ?_⟩
-          simp only [terminationTime_of_exec he, ENat.toENNReal_coe, Nat.cast_add, le_refl])
-        _ = C.branch + (terminationTimePMF C a s).expect ENat.toENNReal := by
-          rw [lintegral_add_left measurable_const, terminationTimePMF_expect_eq]
+          simp only [runTime_of_exec he, ENat.toENNReal_coe, Nat.cast_add, le_refl])
+        _ = C.branch + (runTimePMF C a s).expect ENat.toENNReal := by
+          rw [lintegral_add_left measurable_const, runTimePMF_expect_eq]
           simp
         _ ≤ C.branch + T := add_le_add_right ht _
 
@@ -228,7 +228,7 @@ theorem of_countable_cases {α : Type*} [Countable α] {P Q : State w → Prop}
     exact ⟨s', t, d, p, he, hq, hD, hM⟩
   · calc
       _ ≤ ∫⁻ tape, ∑' a, (E s a).indicator (fun _ => (cost a : ℝ≥0∞)) tape
-          ∂uniformTape w := terminationTimePMF_expect_le _ (by
+          ∂uniformTape w := runTimePMF_expect_le _ (by
         filter_upwards [hcover] with tape ht
         obtain ⟨a, ha⟩ := Set.mem_iUnion.mp ht
         obtain ⟨s', t, d, p, he, _, hc, _, _⟩ := hexec s hs a tape ha

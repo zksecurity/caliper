@@ -63,8 +63,8 @@ abbrev SpaceTriple := Caliper.SpaceTriple (w := 64)
 /-- Uniform measure on infinite tapes of 64-bit words. -/
 noncomputable abbrev uniformTape := Caliper.uniformTape 64
 
-/-- Unconditional termination-time distribution, including mass at infinity. -/
-noncomputable abbrev terminationTimePMF := Caliper.terminationTimePMF (w := 64)
+/-- Unconditional runtime distribution, including mass at infinity. -/
+noncomputable abbrev runTimePMF := Caliper.runTimePMF (w := 64)
 
 /-- Almost-sure correctness with expected time and memory bounds. -/
 abbrev ProbTriple := Caliper.ProbTriple (w := 64)

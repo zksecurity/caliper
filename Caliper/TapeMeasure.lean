@@ -111,23 +111,23 @@ theorem exec_restore_drop_iff (C : CostModel) (c : Stmt w) (s s' : State w)
     exact he.withTape _ (fun i hi _ => ha i hi)
 
 /-- Termination time depends measurably only on the unread suffix. -/
-theorem terminationTime_tail_measurable (C : CostModel) (c : Stmt w) (s : State w) :
-    Measurable[RandomTape.tailSigma s.tapePos] (terminationTime C c s) := by
-  have heq : terminationTime C c s =
-      (terminationTime C c s ∘ RandomTape.restore s.tapePos) ∘ RandomTape.drop s.tapePos := by
+theorem runTime_tail_measurable (C : CostModel) (c : Stmt w) (s : State w) :
+    Measurable[RandomTape.tailSigma s.tapePos] (runTime C c s) := by
+  have heq : runTime C c s =
+      (runTime C c s ∘ RandomTape.restore s.tapePos) ∘ RandomTape.drop s.tapePos := by
     funext tape
     dsimp only [Function.comp_apply]
     by_cases h : ∃ s' t d p, Exec C tape c s s' t d p
     · obtain ⟨s', t, d, p, he⟩ := h
-      rw [terminationTime_of_exec he,
-        terminationTime_of_exec ((exec_restore_drop_iff C c s s' t d p tape).mpr he)]
+      rw [runTime_of_exec he,
+        runTime_of_exec ((exec_restore_drop_iff C c s s' t d p tape).mpr he)]
     · have h' : ¬ ∃ s' t d p,
           Exec C (RandomTape.restore s.tapePos (RandomTape.drop s.tapePos tape)) c s s' t d p := by
         simpa only [exec_restore_drop_iff] using h
-      rw [(terminationTime_eq_top_iff tape).mpr h,
-        (terminationTime_eq_top_iff _).mpr h']
+      rw [(runTime_eq_top_iff tape).mpr h,
+        (runTime_eq_top_iff _).mpr h']
   rw [heq]
-  exact ((measurable_terminationTime C c s).comp
+  exact ((measurable_runTime C c s).comp
     (RandomTape.measurable_restore s.tapePos)).comp (RandomTape.drop_measurable_tail s.tapePos)
 
 /-- Integrating a future observable over a prefix event factors into mass and expectation. -/

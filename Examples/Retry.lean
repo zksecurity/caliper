@@ -12,25 +12,25 @@ open scoped ENNReal
 namespace CaliperExamples.Retry
 
 example (n : ℕ) :
-    terminationTimePMF .unit (retryZero 0) (State.init 1) ((2 * (n + 1) : ℕ) : ℕ∞) =
+    runTimePMF .unit (retryZero 0) (State.init 1) ((2 * (n + 1) : ℕ) : ℕ∞) =
       (2⁻¹ : ℝ≥0∞) ^ (n + 1) := by
   have h := retryZero_timePMF .unit 0 (State.init 1) (by decide) n
   norm_num [CostModel.unit, pow_succ, Nat.mul_comm] at h ⊢
   exact h
 
-example : terminationTimePMF .unit (retryZero 0) (State.init 1) ⊤ = 0 :=
+example : runTimePMF .unit (retryZero 0) (State.init 1) ⊤ = 0 :=
   retryZero_almostSure _ _ _
 
-example : (terminationTimePMF .unit (retryZero 0) (State.init 1)).expect ENat.toENNReal = 4 := by
+example : (runTimePMF .unit (retryZero 0) (State.init 1)).expect ENat.toENNReal = 4 := by
   rw [retryZero_expect _ _ _ (by decide)]
   norm_num [CostModel.unit]
 
 /-- The degenerate zero-bit word always succeeds on the first attempt. -/
-example : (terminationTimePMF .unit (retryZero 0) (State.init 0)).expect ENat.toENNReal = 2 := by
+example : (runTimePMF .unit (retryZero 0) (State.init 0)).expect ENat.toENNReal = 2 := by
   rw [retryZero_expect _ _ _ (by decide)]
   norm_num [CostModel.unit]
 
-example : terminationTime .unit (retryZero 0) (State.init 1) (fun _ => 1) = ⊤ :=
+example : runTime .unit (retryZero 0) (State.init 1) (fun _ => 1) = ⊤ :=
   retryZero_no_zero (fun _ => by decide)
 
 /-- Replay three failures and a success: four attempts, eight cost units. -/

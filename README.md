@@ -27,9 +27,9 @@ We hope for Caliper to become the "yardstick" by which we can compare "real worl
 state carries the next unread position, so sequential programs share the tape.
 
 `uniformTape w` is the probability measure of independent uniform words.
-`terminationTimePMF C program state : PMF ℕ∞` assigns finite costs to safe termination
+`runTimePMF C program state : PMF ℕ∞` assigns finite costs to safe termination
 and infinity to divergence or faults. Expected time is the generic expression
-`(terminationTimePMF C program state).expect ENat.toENNReal`; probabilities are
+`(runTimePMF C program state).expect ENat.toENNReal`; probabilities are
 unconditional. `ProbTriple.seq` adds expected costs and composes memory bounds,
 including for subroutines that consume a variable number of words.
 

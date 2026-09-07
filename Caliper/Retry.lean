@@ -155,14 +155,14 @@ theorem retryZero_exec_firstZero {C : CostModel} {r : Reg} {s s' : State w}
 counts distinguishable in the time PMF. -/
 theorem retryZero_timePMF (C : CostModel) (r : Reg) (s : State w)
     (hC : 0 < C.rand + C.branch) (n : ℕ) :
-    terminationTimePMF C (retryZero r) s (((n + 1) * (C.rand + C.branch) : ℕ) : ℕ∞) =
+    runTimePMF C (retryZero r) s (((n + 1) * (C.rand + C.branch) : ℕ) : ℕ∞) =
       (1 - ((2 ^ w : ℕ) : ℝ≥0∞)⁻¹) ^ n * ((2 ^ w : ℕ) : ℝ≥0∞)⁻¹ := by
-  rw [terminationTimePMF_apply]
-  have he : {tape | terminationTime C (retryZero r) s tape =
+  rw [runTimePMF_apply]
+  have he : {tape | runTime C (retryZero r) s tape =
       (((n + 1) * (C.rand + C.branch) : ℕ) : ℕ∞)} =
       RandomTape.drop s.tapePos ⁻¹' RandomTape.firstZero n := by
     ext tape
-    rw [Set.mem_setOf_eq, terminationTime_eq_coe_iff]
+    rw [Set.mem_setOf_eq, runTime_eq_coe_iff]
     constructor
     · rintro ⟨s', d, p, hexec⟩
       obtain ⟨m, hm, ht⟩ := retryZero_exec_firstZero hexec
@@ -203,16 +203,16 @@ theorem retryZero_spec (C : CostModel) (r : Reg) :
 
 /-- In particular, the infinity atom is zero; this is not an assumption of the model. -/
 theorem retryZero_almostSure (C : CostModel) (r : Reg) (s : State w) :
-    terminationTimePMF C (retryZero r) s ⊤ = 0 := by
-  apply (terminationTimePMF_top_eq_zero_iff C (retryZero r) s).mpr
+    runTimePMF C (retryZero r) s ⊤ = 0 := by
+  apply (runTimePMF_top_eq_zero_iff C (retryZero r) s).mpr
   filter_upwards [(retryZero_spec C r s trivial).1] with tape ht
   obtain ⟨s', t, d, p, he, _, _, _⟩ := ht
   exact ⟨s', t, d, p, he⟩
 
-/-- Exact expected runtime, derived from the termination-time PMF. -/
+/-- Exact expected runtime, derived from the runtime PMF. -/
 theorem retryZero_expect (C : CostModel) (r : Reg) (s : State w)
     (hC : 0 < C.rand + C.branch) :
-    (terminationTimePMF C (retryZero r) s).expect ENat.toENNReal =
+    (runTimePMF C (retryZero r) s).expect ENat.toENNReal =
       ((2 ^ w : ℕ) : ℝ≥0∞) * (C.rand + C.branch) := by
   apply le_antisymm
   · exact (retryZero_spec C r s trivial).2
@@ -224,7 +224,7 @@ theorem retryZero_expect (C : CostModel) (r : Reg) (s : State w)
         exact_mod_cast h
       nlinarith
     have h := ENNReal.tsum_comp_le_tsum_of_injective hinj
-      (fun t => terminationTimePMF C (retryZero r) s t * ENat.toENNReal t)
+      (fun t => runTimePMF C (retryZero r) s t * ENat.toENNReal t)
     simp only [time, retryZero_timePMF C r s hC, ENat.toENNReal_coe] at h
     rw [geometric_cost (2 ^ w) (C.rand + C.branch) (by positivity)] at h
     simpa only [Nat.cast_add, PMF.expect] using h
@@ -232,8 +232,8 @@ theorem retryZero_expect (C : CostModel) (r : Reg) (s : State w)
 /-- A tape with no zero never safely terminates, despite almost-sure termination
 under the uniform tape measure. -/
 theorem retryZero_no_zero {C : CostModel} {r : Reg} {s : State w} {tape : RandomTape w}
-    (h : ∀ i, tape i ≠ 0) : terminationTime C (retryZero r) s tape = ⊤ := by
-  apply (terminationTime_eq_top_iff tape).mpr
+    (h : ∀ i, tape i ≠ 0) : runTime C (retryZero r) s tape = ⊤ := by
+  apply (runTime_eq_top_iff tape).mpr
   rintro ⟨s', t, d, p, he⟩
   obtain ⟨n, hn, _⟩ := retryZero_exec_firstZero he
   exact h (s.tapePos + n) hn.2

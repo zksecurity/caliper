@@ -6,10 +6,10 @@ import Mathlib.MeasureTheory.MeasurableSpace.Instances
 import Mathlib.Data.ENat.Lattice
 
 /-!
-# Uniform tapes and termination-time distributions
+# Uniform tapes and runtime distributions
 
 Execution remains deterministic. Probability is the product measure on input words.
-The induced termination-time PMF retains unsuccessful executions as mass at `∞`.
+The induced runtime PMF retains unsuccessful executions as mass at `∞`.
 -/
 
 open MeasureTheory ProbabilityTheory
@@ -132,7 +132,7 @@ theorem measurableSet_exec (Q : State w → ℕ → ℤ → ℤ → Prop) :
   exact ⟨s', t, d, p, he.withTape other (fun i _ hi => ha i hi), hq⟩
 
 /-- Cost of safe termination; unsuccessful execution has value `∞`. -/
-noncomputable def terminationTime (tape : RandomTape w) : ℕ∞ :=
+noncomputable def runTime (tape : RandomTape w) : ℕ∞ :=
   by
     classical
     exact if h : ∃ t, ∃ s' d p, Exec C tape c s s' t d p then
@@ -140,18 +140,18 @@ noncomputable def terminationTime (tape : RandomTape w) : ℕ∞ :=
 
 variable {C c s}
 
-theorem terminationTime_of_exec {tape : RandomTape w} {s' : State w} {t : ℕ} {d p : ℤ}
-    (h : Exec C tape c s s' t d p) : terminationTime C c s tape = (t : ℕ∞) := by
+theorem runTime_of_exec {tape : RandomTape w} {s' : State w} {t : ℕ} {d p : ℤ}
+    (h : Exec C tape c s s' t d p) : runTime C c s tape = (t : ℕ∞) := by
   have ht : ∃ t, ∃ s' d p, Exec C tape c s s' t d p := ⟨t, s', d, p, h⟩
   obtain ⟨s₀, d₀, p₀, h₀⟩ := Classical.choose_spec ht
   have heq := (h₀.deterministic h).2.1
-  simp only [terminationTime, dif_pos ht, heq]
+  simp only [runTime, dif_pos ht, heq]
 
-theorem terminationTime_eq_coe_iff (tape : RandomTape w) (t : ℕ) :
-    terminationTime C c s tape = (t : ℕ∞) ↔ ∃ s' d p, Exec C tape c s s' t d p := by
+theorem runTime_eq_coe_iff (tape : RandomTape w) (t : ℕ) :
+    runTime C c s tape = (t : ℕ∞) ↔ ∃ s' d p, Exec C tape c s s' t d p := by
   constructor
   · intro heq
-    unfold terminationTime at heq
+    unfold runTime at heq
     split at heq
     · have ht := Classical.choose_spec ‹∃ t, ∃ s' d p, Exec C tape c s s' t d p›
       have heq' : Classical.choose ‹∃ t, ∃ s' d p, Exec C tape c s s' t d p› = t := by
@@ -159,13 +159,13 @@ theorem terminationTime_eq_coe_iff (tape : RandomTape w) (t : ℕ) :
       simpa only [heq'] using ht
     · simp at heq
   · rintro ⟨s', d, p, he⟩
-    exact terminationTime_of_exec he
+    exact runTime_of_exec he
 
-theorem terminationTime_eq_top_iff (tape : RandomTape w) :
-    terminationTime C c s tape = ⊤ ↔ ¬ ∃ s' t d p, Exec C tape c s s' t d p := by
+theorem runTime_eq_top_iff (tape : RandomTape w) :
+    runTime C c s tape = ⊤ ↔ ¬ ∃ s' t d p, Exec C tape c s s' t d p := by
   constructor
   · intro ht ⟨s', t, d, p, he⟩
-    rw [terminationTime_of_exec he] at ht
+    rw [runTime_of_exec he] at ht
     exact ENat.coe_ne_top _ ht
   · intro hn
     apply dif_neg
@@ -174,51 +174,51 @@ theorem terminationTime_eq_top_iff (tape : RandomTape w) :
 
 variable (C c s)
 
-theorem measurable_terminationTime : Measurable (terminationTime C c s) := by
+theorem measurable_runTime : Measurable (runTime C c s) := by
   apply ENat.measurable_iff.mpr
   intro t
   have hm := measurableSet_exec C c s (fun _ t' _ _ => t' = t)
-  simpa only [Set.preimage, Set.mem_singleton_iff, terminationTime_eq_coe_iff,
+  simpa only [Set.preimage, Set.mem_singleton_iff, runTime_eq_coe_iff,
     exists_and_right, exists_eq_right] using hm
 
 /-- The unconditional PMF of safe termination costs, including an atom at `∞`. -/
-noncomputable def terminationTimePMF : PMF ℕ∞ :=
-  letI : IsProbabilityMeasure ((uniformTape w).map (terminationTime C c s)) :=
-    Measure.isProbabilityMeasure_map (measurable_terminationTime C c s).aemeasurable
-  ((uniformTape w).map (terminationTime C c s)).toPMF
+noncomputable def runTimePMF : PMF ℕ∞ :=
+  letI : IsProbabilityMeasure ((uniformTape w).map (runTime C c s)) :=
+    Measure.isProbabilityMeasure_map (measurable_runTime C c s).aemeasurable
+  ((uniformTape w).map (runTime C c s)).toPMF
 
 /-- PMF atoms are exactly the corresponding tape-event probabilities. -/
-theorem terminationTimePMF_apply (t : ℕ∞) :
-    terminationTimePMF C c s t = uniformTape w {tape | terminationTime C c s tape = t} := by
-  unfold terminationTimePMF
-  rw [Measure.toPMF_apply, Measure.map_apply (measurable_terminationTime C c s)
+theorem runTimePMF_apply (t : ℕ∞) :
+    runTimePMF C c s t = uniformTape w {tape | runTime C c s tape = t} := by
+  unfold runTimePMF
+  rw [Measure.toPMF_apply, Measure.map_apply (measurable_runTime C c s)
     (measurableSet_singleton t)]
   rfl
 
 /-- Expectations of the PMF agree with integration over tapes for every observable. -/
-theorem terminationTimePMF_expect_eq (f : ℕ∞ → ℝ≥0∞) :
-    (terminationTimePMF C c s).expect f =
-      ∫⁻ tape, f (terminationTime C c s tape) ∂uniformTape w := by
+theorem runTimePMF_expect_eq (f : ℕ∞ → ℝ≥0∞) :
+    (runTimePMF C c s).expect f =
+      ∫⁻ tape, f (runTime C c s tape) ∂uniformTape w := by
   rw [PMF.expect_eq_lintegral]
-  unfold terminationTimePMF
+  unfold runTimePMF
   rw [Measure.toPMF_toMeasure, lintegral_map (measurable_of_countable f)
-    (measurable_terminationTime C c s)]
+    (measurable_runTime C c s)]
 
 /-- Zero mass at infinity is exactly almost-sure safe termination. -/
-theorem terminationTimePMF_top_eq_zero_iff :
-    terminationTimePMF C c s ⊤ = 0 ↔
+theorem runTimePMF_top_eq_zero_iff :
+    runTimePMF C c s ⊤ = 0 ↔
       ∀ᵐ tape ∂uniformTape w, ∃ s' t d p, Exec C tape c s s' t d p := by
-  rw [terminationTimePMF_apply, ae_iff]
-  simp only [terminationTime_eq_top_iff]
+  rw [runTimePMF_apply, ae_iff]
+  simp only [runTime_eq_top_iff]
 
-/-- A constant termination time gives a point-mass distribution. -/
-theorem terminationTimePMF_eq_pure (t : ℕ∞)
-    (h : ∀ tape, terminationTime C c s tape = t) :
-    terminationTimePMF C c s = PMF.pure t := by
+/-- A constant runtime gives a point-mass distribution. -/
+theorem runTimePMF_eq_pure (t : ℕ∞)
+    (h : ∀ tape, runTime C c s tape = t) :
+    runTimePMF C c s = PMF.pure t := by
   classical
   apply PMF.ext
   intro t'
-  rw [terminationTimePMF_apply, PMF.pure_apply]
+  rw [runTimePMF_apply, PMF.pure_apply]
   simp only [h]
   by_cases ht : t' = t
   · subst t'; simp
@@ -226,11 +226,11 @@ theorem terminationTimePMF_eq_pure (t : ℕ∞)
     simp [ht, ht']
 
 /-- A random-free terminating computation has the same cost on every tape. -/
-theorem terminationTimePMF_of_randomFree {tape : RandomTape w} {s' : State w}
+theorem runTimePMF_of_randomFree {tape : RandomTape w} {s' : State w}
     {t : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p) (hc : c.RandomFree) :
-    terminationTimePMF C c s = PMF.pure (t : ℕ∞) :=
-  terminationTimePMF_eq_pure C c s t fun other =>
-    terminationTime_of_exec (h.withTape_of_randomFree hc other)
+    runTimePMF C c s = PMF.pure (t : ℕ∞) :=
+  runTimePMF_eq_pure C c s t fun other =>
+    runTime_of_exec (h.withTape_of_randomFree hc other)
 
 /-- Probability of a property of a safely terminating outcome. -/
 noncomputable def resultProb (Q : State w → ℕ → ℤ → ℤ → Prop) : ℝ≥0∞ :=

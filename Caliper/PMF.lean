@@ -6,7 +6,7 @@ import Mathlib.Data.Real.ENatENNReal
 # Expectations of discrete distributions
 
 This API is generic in the PMF and its observable. In particular, Caliper's
-termination-time distribution needs no separate program-specific expectation.
+runtime distribution needs no separate program-specific expectation.
 -/
 
 open MeasureTheory

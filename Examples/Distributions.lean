@@ -33,37 +33,37 @@ example (x y : Word w) :
   rw [he, uniformTape_cylinder]
 
 /-- Random output need not imply random runtime. -/
-example (s : State w) : terminationTimePMF .unit (.rand 0) s = PMF.pure 1 :=
-  terminationTimePMF_eq_pure _ _ _ _ (fun _ => terminationTime_of_exec Exec.rand)
+example (s : State w) : runTimePMF .unit (.rand 0) s = PMF.pure 1 :=
+  runTimePMF_eq_pure _ _ _ _ (fun _ => runTime_of_exec Exec.rand)
 
 example (s : State w) :
-    (terminationTimePMF .unit (.rand 0) s).expect ENat.toENNReal = 1 := by
-  rw [terminationTimePMF_eq_pure _ _ _ _ (fun _ => terminationTime_of_exec Exec.rand)]
+    (runTimePMF .unit (.rand 0) s).expect ENat.toENNReal = 1 := by
+  rw [runTimePMF_eq_pure _ _ _ _ (fun _ => runTime_of_exec Exec.rand)]
   simp only [PMF.expect_pure, ENat.toENNReal_coe]
   norm_num [CostModel.unit]
 
 /-- An invalid load is charged to infinity, even though it fails immediately. -/
-example : terminationTimePMF .unit (.memLoad 0 0 0) (State.init 64) = PMF.pure ⊤ := by
-  apply terminationTimePMF_eq_pure
+example : runTimePMF .unit (.memLoad 0 0 0) (State.init 64) = PMF.pure ⊤ := by
+  apply runTimePMF_eq_pure
   intro tape
-  apply (terminationTime_eq_top_iff tape).mpr
+  apply (runTime_eq_top_iff tape).mpr
   rintro ⟨s', t, d, p, he⟩
   cases he with
   | memLoad h => simp [State.init] at h
 
 /-- A deterministic program has a point-mass runtime under the uniform tape law. -/
-example : terminationTimePMF .unit (.imm 0 (7 : Word 64)) (State.init 64) = PMF.pure 1 :=
-  terminationTimePMF_of_randomFree _ _ _ (tape := RandomTape.zero) Exec.imm trivial
+example : runTimePMF .unit (.imm 0 (7 : Word 64)) (State.init 64) = PMF.pure 1 :=
+  runTimePMF_of_randomFree _ _ _ (tape := RandomTape.zero) Exec.imm trivial
 
 /-- A sampled one triggers an invalid load; a sampled zero returns safely. -/
 def maybeFault : Stmt 1 := .rand 0 ;; .ifNZ 0 (.memLoad 1 0 0) .skip
 
-example : terminationTimePMF .unit maybeFault (State.init 1) ⊤ = (2 : ℝ≥0∞)⁻¹ := by
-  rw [terminationTimePMF_apply]
-  have he : {tape | terminationTime .unit maybeFault (State.init 1) tape = ⊤} =
+example : runTimePMF .unit maybeFault (State.init 1) ⊤ = (2 : ℝ≥0∞)⁻¹ := by
+  rw [runTimePMF_apply]
+  have he : {tape | runTime .unit maybeFault (State.init 1) tape = ⊤} =
       {tape : RandomTape 1 | tape 0 = 0}ᶜ := by
     ext tape
-    rw [Set.mem_setOf_eq, terminationTime_eq_top_iff]
+    rw [Set.mem_setOf_eq, runTime_eq_top_iff]
     change (¬ ∃ s' t d p, Exec .unit tape maybeFault (State.init 1) s' t d p) ↔ tape 0 ≠ 0
     constructor
     · intro hn hz

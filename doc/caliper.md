@@ -12,7 +12,7 @@ upper bounds on running time and on allocated memory.
 | `Core.lean` | Syntax (`Stmt`), cost models (`CostModel`, `CostModel.Admissible`), big-step cost semantics (`Exec`), determinism, framing (`Writes`/`Touches`), the unit-time theorems, the partial static clock (`staticTime?`), peak memory ≤ running time (`Exec.peak_le_time`), well-formed states and absolute live memory (`State.WellFormed`, `State.liveMem`), reference interpreter (`run`) and its soundness |
 | `Render.lean` | Pretty-printer: `Stmt.render`/`Stmt.renderString` emit the `mem.`-qualified assembly dialect used for the listings in this document |
 | `Tape.lean` | Fixed-tape locality, replay completeness, random-free programs, and independence of program behavior from the cost model |
-| `PMF.lean`, `Probability.lean` | Generic PMF expectation, uniform word tapes, unconditional result probabilities, and termination-time distributions |
+| `PMF.lean`, `Probability.lean` | Generic PMF expectation, uniform word tapes, unconditional result probabilities, and runtime distributions |
 | `TapeMeasure.lean`, `Outcome.lean` | Independent unread tails after variable-length subroutines and countable terminating outcomes |
 | `ProbTriple.lean` | Almost-sure resource specifications, expected-time sequencing, deterministic callee reuse, branching, and countable terminating cases |
 | `Geometric.lean`, `Retry.lean` | Unbounded retry, geometric runtime atoms, almost-sure termination, and exact expected time |
@@ -439,13 +439,13 @@ preserves safe termination, the final state, and both memory costs.
 All fixed-tape semantics and triples take `tape` explicitly. `RandomTape.zero`
 selects deterministic all-zero inputs without disabling the `rand` instruction.
 `Stmt.RandomFree` certifies that a program consumes no words; its executions and
-termination-time law are independent of the supplied tape. Replay uses the returned
+runtime law are independent of the supplied tape. Replay uses the returned
 state, including its cursor. Fuel is an interpreter limit, not an observable clock;
 `run_mono` and `run_complete` relate it to unbounded executions.
 
 `uniformTape w` is the infinite product of uniform word distributions. It is a
 measure, since infinite tapes are not a countable discrete sample space. The
-termination-time *image* is countable and is exposed as `terminationTimePMF : PMF ℕ∞`.
+runtime *image* is countable and is exposed as `runTimePMF : PMF ℕ∞`.
 Faults and divergence both contribute to infinity, even if a fault happens after a
 finite instruction count. `resultProb` counts safe terminating outcomes without
 conditioning on success. Generic `PMF.expect`, `PMF.expect_map`, and `PMF.expect_bind`
