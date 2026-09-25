@@ -29,8 +29,8 @@ instance instDecidableRandomFree : ∀ (c : Stmt w), Decidable c.RandomFree
     have := instDecidableRandomFree g
     have := instDecidableRandomFree b
     inferInstanceAs (Decidable (_ ∧ _))
-  | .skip | .imm .. | .mov .. | .un .. | .bin .. | .memAlloc .. | .memAllocI ..
-    | .memFree .. | .memLen .. | .memLoad .. | .memStore .. | .memPush .. | .memPop .. =>
+  | .skip | .imm .. | .mov .. | .un .. | .bin .. | .memResize .. | .memResizeI ..
+    | .memLen .. | .memLoad .. | .memStore .. | .memPush .. | .memPop .. =>
     inferInstanceAs (Decidable True)
 
 /-- Programs cannot observe elapsed time: changing every instruction price
@@ -63,9 +63,8 @@ theorem Exec.withCostModel {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}
   | mov => exact ⟨_, .mov⟩
   | un => exact ⟨_, .un⟩
   | bin => exact ⟨_, .bin⟩
-  | memAlloc => exact ⟨_, .memAlloc⟩
-  | memAllocI => exact ⟨_, .memAllocI⟩
-  | memFree => exact ⟨_, .memFree⟩
+  | memResize => exact ⟨_, .memResize⟩
+  | memResizeI => exact ⟨_, .memResizeI⟩
   | memLen => exact ⟨_, .memLen⟩
   | memLoad h => exact ⟨_, .memLoad h⟩
   | memStore h => exact ⟨_, .memStore h⟩
@@ -75,13 +74,13 @@ theorem Exec.withCostModel {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}
 /-- The input cursor never moves backwards. -/
 theorem Exec.tapePos_mono {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}
     (h : Exec C tape c s s' t d p) : s.tapePos ≤ s'.tapePos := by
-  induction h <;> simp_all -failIfUnchanged [State.setReg, State.setBuf, State.allocBuf, State.readRandom] <;>
+  induction h <;> simp_all -failIfUnchanged [State.setReg, State.setBuf, State.resizeBuf, State.readRandom] <;>
     omega
 
 /-- Random-free programs leave the input cursor unchanged. -/
 theorem Exec.tapePos_eq_of_randomFree {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}
     (h : Exec C tape c s s' t d p) (hc : c.RandomFree) : s'.tapePos = s.tapePos := by
-  induction h <;> simp_all [Stmt.RandomFree, State.setReg, State.setBuf, State.allocBuf]
+  induction h <;> simp_all [Stmt.RandomFree, State.setReg, State.setBuf, State.resizeBuf]
 
 /-- Every terminating derivation is returned by all sufficiently large fuels. -/
 theorem Exec.run_eventually {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}

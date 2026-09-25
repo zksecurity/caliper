@@ -54,9 +54,8 @@ def Stmt.readsSet : Stmt w → Finset ℕ
   | .mov _ a => {a}
   | .un _ _ a => {a}
   | .bin _ _ a b => {a, b}
-  | .memAlloc _ n => {n}
-  | .memAllocI _ _ => ∅
-  | .memFree _ => ∅
+  | .memResize _ n => {n}
+  | .memResizeI _ _ => ∅
   | .memLen _ _ => ∅
   | .memLoad _ _ i => {i}
   | .memStore _ i src => {i, src}
@@ -76,9 +75,8 @@ def Stmt.writesSet : Stmt w → Finset ℕ
   | .mov d _ => {d}
   | .un _ d _ => {d}
   | .bin _ d _ _ => {d}
-  | .memAlloc _ _ => ∅
-  | .memAllocI _ _ => ∅
-  | .memFree _ => ∅
+  | .memResize _ _ => ∅
+  | .memResizeI _ _ => ∅
   | .memLen d _ => {d}
   | .memLoad d _ _ => {d}
   | .memStore _ _ _ => ∅
@@ -261,7 +259,7 @@ theorem Stmt.regPeak_mono (c : Stmt w) :
 `memLoad`, exactly the leaves with nonempty `writesSet`), counted through all
 branches and loop bodies. Not an instruction count: memory-only instructions write
 no register and are not counted, which is what lets the straight-line corollary
-survive 0-cost instructions like `memAllocI _ 0`. -/
+survive 0-cost instructions like the free `memResizeI _ 0`. -/
 def Stmt.writesTotal : Stmt w → ℕ
   | .seq c₁ c₂ => c₁.writesTotal + c₂.writesTotal
   | .rand .. => 1
@@ -371,14 +369,14 @@ theorem Stmt.regPeak_le_card_liveBefore_add_writesTotal (c : Stmt w)
 /-- For straight-line code the register-writing leaf count is bounded by the
 unit-model static time: every register-writing leaf (`imm`/`mov`/`un`/`bin`/
 `memLen`/`memLoad`) costs exactly 1 in `CostModel.unit`, and every other leaf
-costs ≥ 0, including the 0-cost `memAllocI _ 0`, which writes no register and so is
-not counted. `Straight` excludes `ifNZ`/`whileNZ`/dynamic `memAlloc`, so no
+costs ≥ 0, including the 0-cost `memResizeI _ 0`, which writes no register and so
+is not counted. `Straight` excludes `ifNZ`/`whileNZ`/dynamic `memResize`, so no
 `max`/loop shapes arise. -/
 theorem Stmt.Straight.writesTotal_le_staticTime_unit {c : Stmt w} (h : c.Straight) :
     c.writesTotal ≤ c.staticTime CostModel.unit := by
   induction c with
   | seq c₁ c₂ ih₁ ih₂ => exact Nat.add_le_add (ih₁ h.1) (ih₂ h.2)
-  | memAlloc | ifNZ | whileNZ => exact h.elim
+  | memResize | ifNZ | whileNZ => exact h.elim
   | _ => simp [Stmt.writesTotal, Stmt.staticTime, CostModel.unit]
 
 /-- Straight-line code: peak register pressure ≤ live-ins + running time. With
@@ -417,18 +415,18 @@ theorem SpaceTriple.spaceBound {C : CostModel} {P Q : State w → Prop}
 
 /-! ### Time ≥ total memory, on the straight fragment
 
-The buffer peak is covered by the per-word allocation charges and the register peak,
+The buffer peak is covered by the per-word resize charges and the register peak,
 beyond live-ins, by the register-writing leaves. Those two instruction sets are
-disjoint, an allocation writing no register, so the two space summands fit inside a
+disjoint, a resize writing no register, so the two space summands fit inside a
 *single* running time rather than two copies of it. -/
 
 /-- Total words of buffer capacity a statement can acquire, summed over every
-`memAllocI` immediate (the dynamic `memAlloc` is excluded from `Stmt.Straight`,
+`memResizeI` immediate (the dynamic `memResize` is excluded from `Stmt.Straight`,
 where this bound is used). On straight code it bounds the peak of every
 execution (`Exec.straight_peak_le_allocTotal`). -/
 def Stmt.allocTotal : Stmt w → ℕ
   | .seq c₁ c₂ => c₁.allocTotal + c₂.allocTotal
-  | .memAllocI _ n => n
+  | .memResizeI _ n => n
   | .ifNZ _ t e => t.allocTotal + e.allocTotal
   | .whileNZ g _ b => g.allocTotal + b.allocTotal
   | _ => 0
@@ -446,8 +444,8 @@ theorem Exec.straight_peak_le_allocTotal {C : CostModel} {c : Stmt w}
     simp only [Stmt.allocTotal]
     push_cast
     omega
-  | memAlloc | ifNZ_true | ifNZ_false | while_done | while_step => exact hs.elim
-  | memAllocI => simp only [Stmt.allocTotal]; omega
+  | memResize | ifNZ_true | ifNZ_false | while_done | while_step => exact hs.elim
+  | memResizeI => simp only [Stmt.allocTotal]; omega
   | _ => omega
 
 /-- Straight-line accounting is disjoint: the allocation words and the
@@ -462,7 +460,7 @@ theorem Stmt.Straight.allocTotal_add_writesTotal_le_staticTime_unit {c : Stmt w}
     have := ih₂ h.2
     simp only [Stmt.allocTotal, Stmt.writesTotal, Stmt.staticTime]
     omega
-  | memAlloc | ifNZ | whileNZ => exact h.elim
+  | memResize | ifNZ | whileNZ => exact h.elim
   | _ => simp [Stmt.allocTotal, Stmt.writesTotal, Stmt.staticTime, CostModel.unit]
 
 /-- Straight-line code: total footprint ≤ live-ins + running time. Buffer peak `p`
@@ -548,7 +546,7 @@ theorem SumBuf.total_space {C : CostModel} (arr : Array (Word 64))
 independent of the trip count: memory reuse in the buffer summand, static inference
 in the register summand. -/
 theorem ScratchLoop.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
-    SpaceBound C RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat 64 n)
+    SpaceBound C RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat 64 n ∧ s.bufs 0 = #[])
       (Examples.ScratchLoop.code 0)
       (fun s => s.bufs 0 = #[] ∧ s.caps 0 = 0) 5 :=
   (Examples.ScratchLoop.spec 0 n hn).space.spaceBound (by decide)
@@ -556,7 +554,7 @@ theorem ScratchLoop.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
 /-- `Iota` (on buffer 0): buffer peak `n` + register peak 4 = total `n + 4`, the one
 genuinely linear-space example. -/
 theorem Iota.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
-    SpaceBound C RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat 64 n)
+    SpaceBound C RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat 64 n ∧ s.bufs 0 = #[])
       (Examples.Iota.code 0)
       (fun s => s.bufs 0 = Examples.Iota.iotaTo 64 n) ((n : ℤ) + 4) :=
   (Examples.Iota.spec 0 n hn).space.spaceBound

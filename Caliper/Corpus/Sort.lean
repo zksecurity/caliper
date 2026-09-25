@@ -123,7 +123,7 @@ def matmulB (a b c : Buf w) : Build w Unit := do
 statically priced), then multiply buffers 0 and 1 into it. -/
 def prog : Stmt 64 :=
   (Build.build (w := 64) do
-    Build.emit (.memAllocI 2 9)
+    Build.emit (.memResizeI 2 9)
     matmulB ⟨0⟩ ⟨1⟩ ⟨2⟩).2
 
 /--
@@ -133,7 +133,7 @@ def prog : Stmt 64 :=
     ⎣7 8 9⎦   ⎣3 2 1⎦   ⎣138 114  90⎦
 ```
 `(result, time, net, peak)`, memory (9, 9): the result buffer, charged once at its
-immediate allocation. -/
+immediate resize. -/
 def demo : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
   (run .unit Caliper.RandomTape.zero 100000 prog
       { State.init 64 with

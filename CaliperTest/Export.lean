@@ -41,7 +41,7 @@ open Caliper CaliperTest.RV64
 
 /-- One differential test case. Buffers are given as
 `(id, initial contents, layout capacity)`; the initial Caliper capacity is
-the contents' length (programs that push first reserve via `memAlloc*`,
+the contents' length (programs that push first reserve via `memResize*`,
 exactly as on the RV64 side, where the layout capacity sizes the arena
 region). -/
 structure TestCase where
@@ -129,7 +129,7 @@ def exportCase (tc : TestCase) : IO Unit := do
   IO.FS.writeFile s!"tests/vectors/{tc.name}.json" json
   IO.println s!"  {tc.name}: {words.size} rv64 words, {steps} caliper steps"
 
-/-! ## The cases: the corpus plus four worked examples -/
+/-! ## The cases: the corpus, four worked examples, and two resize vectors -/
 
 open Caliper.Corpus in
 def cases : List TestCase :=
@@ -178,6 +178,13 @@ def cases : List TestCase :=
     , initRegs := [(2, 5)], bufs := [(0, [], 5)], resultReg := 0 }
   , { name := "scratch_loop", stmt := Caliper.Examples.ScratchLoop.code 0
     , initRegs := [(2, 100)], bufs := [(0, [], 1)], resultReg := 0 }
+  -- realloc semantics: doubling growth keeps contents; shrinking truncates
+  , { name := "grow_vec", stmt := GrowVec.demoProg [10, 20, 30, 40, 50]
+    , bufs := [(0, [], 8)], resultReg := 0 }
+  , { name := "resize_shrink"
+    , stmt := .imm 0 2 ;; .memResize 0 0 ;; .memResizeI 0 4 ;; .imm 1 9 ;;
+        .memPush 0 1 ;; .memLen 2 0
+    , bufs := [(0, [1, 2, 3, 4, 5], 5)], resultReg := 2 }
   ]
 
 def main : IO Unit := do

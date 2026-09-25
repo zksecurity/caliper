@@ -42,7 +42,8 @@ These are source excerpts from namespace `Caliper`.
 
 Programs can be written against the raw constructors (assembly-flavoured, what proofs are stated over) or through `Builder.lean`: a monad with `freshReg`/`freshBuf`, compound expressions (`x + y * z` compiling through fresh temporaries), `while_`/`if_`, and subroutines as ordinary Lean functions.
 `freshReg` is a pure name counter: naming a register emits no code and costs nothing, and the register file's footprint is the statically inferred live peak, so there is no scoping ceremony and no lifetime to declare.
-At the surface, buffers are the newtype `Buf w`, produced only by `Mem.alloc` (dynamic capacity) or `Mem.allocI` (immediate capacity, statically priced); reads, writes, pushes, pops, length and free are methods on the handle (`b.load i`, `b.store i e`, `b.push e`, `b.pop`, `b.len`, `b.free`).
+At the surface, buffers are the newtype `Buf w`, produced only by `Mem.alloc` (dynamic capacity) or `Mem.allocI` (immediate capacity, statically priced), both emitting a reset (`memResizeI b 0`) followed by a resize, so they always yield an empty buffer; reads, writes, pushes, pops, length, resize and free are methods on the handle (`b.load i`, `b.store i e`, `b.push e`, `b.pop`, `b.len`, `b.resize n`, `b.resizeI n`, `b.free`).
+`b.resize`/`b.resizeI` are the non-resetting primitives: a resize is a realloc and keeps the contents that fit, and `b.free` (a resize to 0) resets a buffer.
 In the core both `Reg` and `BufId` are `ℕ` (numeral-friendly proof goals), so the wrapper is what stops a buffer handle being confused with a register or an index.
 Builder output is checked equal to the hand-written core syntax in the examples, so the sugar adds nothing to the trusted surface.
 Subroutine *specs* are ordinary Lean theorems about the generated code (`SumBuf.spec`), reused at every call site.

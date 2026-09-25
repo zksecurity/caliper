@@ -34,7 +34,7 @@ The only requirements are:
 
 - Register allocation and liveness analysis: Caliper has an infinite number of registers (each of which "cost" 1 memory), while the real CPU has a finite number of registers.
 - Supplying random words: the abstract `rand` price models a tape read. The current RV64 test backend rejects `rand`; it needs a tape-input implementation before lowering randomized programs.
-- Implementing a heap: Caliper can allocate/free arrays of words of fixed/variable size, hence a heap must be implemented.
+- Implementing a heap: Caliper can resize (realloc: allocate, grow, shrink, free) arrays of words of variable size, hence a heap must be implemented.
 
 Overall the goal of Caliper is that if a Caliper program can be proven to have computational cost $n$, 
 then a real RISC-V program can be written which executes in $c \cdot n$ instructions on any reasonable RISC-V CPU
@@ -47,7 +47,7 @@ then a real RISC-V program can be written which uses $c \cdot m$ words of memory
 A natural question is why not just use RISC-V to reason about concrete running time directly?
 The answer is that reasoning about RAM machines is complicated,
 in particular, requiring reasoning about memory, including aliasing of memory locations.
-Caliper sidesteps this by modelling memory as arrays of words which can only be atomically allocated/freed 
+Caliper sidesteps this by modelling memory as arrays of words which can only be atomically resized (allocated/grown/shrunk/freed) 
 and cannot be aliased (there are no pointer types in Caliper, only indexes).
 It also allows us to sidestep a bunch of complexity related to e.g. register spilling:
 a real RISC-V CPU has only a finite number of registers, if you need additional variables in your program,

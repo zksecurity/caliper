@@ -26,13 +26,15 @@ Stated plainly:
 - Allocator realities are outside the metric.
   Allocator metadata, alignment, fragmentation, and code size are not measured.
   The peak `p` counts reserved words, made absolute by the `WellFormed`/`liveMem` theorems, but words-to-bytes, headers and padding are the allocator's business.
+  The certified peak counts live reserved words, not fragmentation: under a non-reclaiming bump arena, regions left behind by copying reallocs are not reused, so the physical footprint can reach about twice the certified peak.
+  A resize's peak is its whole new capacity, which covers a copying realloc holding the old and the new region at once; an in-place backend is over-approximated by up to the old capacity for that instant.
 - Generation-time staging is unpriced.
   Builder programs, and compilers targeting this machine, unroll at *generation* time, so generated code size is proportional to their static parameters.
   The cost theorems price the runtime of the generated code; the size itself is visible as the instruction count under the unit model, but the generation work is Lean evaluation and carries no bound.
 - Time data-independence is not a side-channel proof.
   `straight_time_eq` proves that the abstract time counter is the same on every input.
   It does not cover memory-access addresses (`memLoad b i` costs one unit whatever the data-dependent index `i` is), memory profiles, or faults.
-  Allocation sizes do show up in the counter, since allocation is charged per word: the dynamic `memAlloc` is data-dependent and hence excluded from the straight-line fragment, while `memAllocI`'s size is syntactic.
+  Resize sizes do show up in the counter, since resizing is charged per word: the dynamic `memResize` is data-dependent and hence excluded from the straight-line fragment, while `memResizeI`'s size is syntactic.
 
 ## Trusted Base
 

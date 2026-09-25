@@ -31,14 +31,16 @@ What differs is the accounting, and the split follows the information: buffer co
 Nothing about the split makes registers cheaper; it makes their accounting exact without runtime instructions.
 The dynamic-side principle, in one paragraph:
 
-> Acquiring a word of buffer capacity costs one step, and that per-word charge prices the word's whole lifetime, creation and eventual destruction; there is no per-object base, since buffer names are static and capacities explicit, so an arena/bump allocator serves them.
-> Holding it is free.
-> Releasing it is free.
+> Every resize costs one step per word of the *new* capacity, surviving words included (growing `c → 2c` charges `2c`, not `c`), and those per-word charges price each word's creation, any copy, and its eventual destruction; there is no per-object base, since buffer names are static and capacities explicit.
+> Holding capacity is free.
+> Releasing it (a resize to 0) is free.
 
-Dynamic live memory is the sum of reserved buffer capacities: `memAlloc`/`memAllocI` charge `newCap - oldCap`, only `memFree` credits, and push/pop move the fill level inside capacity already paid for.
-Releasing is free in *time* as well (`C.memFree = 0` in both tables): a release only ever shrinks the footprint, and every release matches a unique earlier acquisition whose per-word charge covers creation and destruction.
-That is the only split stable across real allocators, since a buffer's teardown (freelist push, deferred coalescing, `munmap`) is bounded by size-linear work already paid at its `memAlloc`.
-A release with no matching acquisition, e.g. a `mem.free` of a never-acquired buffer name, is statically detectable and elidable by a backend.
+Dynamic live memory is the sum of reserved buffer capacities: `memResize`/`memResizeI` change it by `newCap - oldCap` (a charge when growing, a credit when shrinking), and push/pop move the fill level inside capacity already paid for.
+The memory profile of a resize is net `newCap - oldCap` and peak `newCap`: a realloc that cannot resize in place allocates the new region, copies, and only then releases the old one, so for a moment both coexist, `oldCap + newCap` words, i.e. `newCap` above the starting footprint.
+Charging the whole new capacity as the peak makes `p` a true high-water mark for every implementation of the realloc contract, in place or copying; a fresh acquisition (`oldCap = 0`) and the free (`newCap = 0`, peak 0) are priced exactly as before.
+Releasing is free in *time* as well: the free `memResizeI b 0` costs only the base `C.memResize`, 0 in both tables, since a release only ever shrinks the footprint and every released word was charged by an earlier resize whose per-word charge covers creation and destruction.
+That is the only split stable across real allocators, since a buffer's teardown (freelist push, deferred coalescing, `munmap`) is bounded by size-linear work already paid when its capacity was acquired.
+A free of a never-acquired buffer name is statically detectable and elidable by a backend.
 Profiles compose like high-water marks:
 
     seq:  net = d₁ + d₂        peak = max p₁ (d₁ + p₂)
@@ -66,15 +68,15 @@ The register-side counterpart is static: `ScopedSumSq` (`3² + 4²`) names five 
 Inference is what keeps the register summand tight.
 Explicit alloc/free brackets around register lifetimes, the obvious alternative, can only over-approximate a live range: `SumBuf` uses 6 registers and never releases one, so both accountings agree at `0 + 6 = 6` (`SumBuf.total_space`), but `ScopedSumSq`'s brackets would certify 3 (stage-1 result, stage-2 scratch and stage-2 result coexist as *names*) where inference gives `0 + 2 = 2` (`ScopedSumSq.total_space`), and the array-of-pairs demo, whose builder temporaries are never released, drops from 22 (4 buffer words + 18 register names) to `4 + 3 = 7`.
 
-Invariants `0 ≤ p` and `d ≤ p` hold always; code acquiring no buffer capacity has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`, which allows `memFree`, as it only shrinks the footprint); and `p ≤ t` in any model with `1 ≤ allocPerWord` (`Exec.peak_le_time`), so a time bound subsumes the buffer-peak bound.
+Invariants `0 ≤ p` and `d ≤ p` hold always; code acquiring no buffer capacity has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`, which allows the free `memResizeI b 0`, as it only shrinks the footprint); and `p ≤ t` in any model with `1 ≤ allocPerWord` (`Exec.peak_le_time`), so a time bound subsumes the buffer-peak bound.
 The register side has the static analogue `Stmt.Straight.regPeak₀_le`: peak register pressure ≤ live-ins + unit-model static time.
-The two bounds do not each consume a running time of their own: on straight code the instructions covering the buffer words (per-word allocation charges) and those covering the register slots (register-writing leaves) are disjoint, so buffer peak + register peak ≤ live-ins + `t` for the *single* running time `t` (`Exec.straight_total_footprint_le`).
+The two bounds do not each consume a running time of their own: on straight code the instructions covering the buffer words (per-word resize charges) and those covering the register slots (register-writing leaves) are disjoint, so buffer peak + register peak ≤ live-ins + `t` for the *single* running time `t` (`Exec.straight_total_footprint_le`).
 
 ## Absolute Live Memory
 
 We relate these indices to *absolute* live memory through a state invariant.
-`State.WellFormed` (every buffer's fill within its reserved capacity, finitely many buffers reserved) holds for `State.init` and is preserved by every execution (`Exec.wellFormed_preserved`), which rules out adversarial states with phantom capacity, e.g. a fabricated `caps b` that a `memFree` could turn into credit funding a huge allocation at certified peak 0.
-Over such states the absolute footprint `State.liveMem` changes by exactly `d` (`Exec.liveMem_eq`), a free credits only genuinely live capacity (`Exec.memFree_credit_le`), and every state the execution passes through stays within `p` of the start (`Exec.reaches_liveMem_le_peak`, `Exec.liveMem_le_peak`), so `p` is a true high-water mark on physical memory.
+`State.WellFormed` (every buffer's fill within its reserved capacity, finitely many buffers reserved) holds for `State.init` and is preserved by every execution (`Exec.wellFormed_preserved`), which rules out adversarial states with phantom capacity, e.g. a fabricated `caps b` that a shrinking resize could turn into credit funding a huge allocation at certified peak 0.
+Over such states the absolute footprint `State.liveMem` changes by exactly `d` (`Exec.liveMem_eq`), a resize credits only genuinely live capacity (`Exec.memResize_credit_le`, `Exec.memResizeI_credit_le`), and every state the execution passes through stays within `p` of the start (`Exec.reaches_liveMem_le_peak`, `Exec.liveMem_le_peak`), so `p` is a true high-water mark on physical memory.
 
 The state invariant and absolute-memory counter come from [Core.lean](../Caliper/Core.lean):
 

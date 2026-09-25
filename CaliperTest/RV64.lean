@@ -60,7 +60,7 @@ Mnemonic → (format, opcode, f3, f7):
   fixup sequences and address arithmetic, `x0` is the hard-wired zero, and `x4`,
   `x31` are unused.
 * Buffer arena: each `BufId` gets a fixed region decided at lowering time from a
-  per-test declared maximum capacity, a lowering parameter, since dynamic `memAlloc`
+  per-test declared maximum capacity, a lowering parameter, since dynamic `memResize`
   capacities are not statically known. The region is `1 + cap` 64-bit words starting
   at its base address: word 0 is the buffer's fill length, the data follows. Regions
   are laid out back-to-back from `arenaBase = 0x100000`.
@@ -70,9 +70,15 @@ Mnemonic → (format, opcode, f3, f7):
   - `umod` by zero is the dividend in Caliper, which `REMU` already gives; no fixup.
   - shift amounts ≥ 64 give 0 in Caliper, RV64 masks to 6 bits, so mask the
     `SLL`/`SRL` result with `-(shamt <ᵤ 64)` (4 instructions total).
-  - `memAlloc`/`memAllocI`/`memFree` all reduce to zeroing the length slot: regions
-    are preassigned, so no runtime bump pointer is needed, and `memFree` does not
-    reclaim arena space, each buffer's region being dedicated.
+  - `memResize`/`memResizeI` realize the realloc contract in place: regions are
+    preassigned at the declared maximum capacity, so no runtime bump pointer or copy
+    is needed, and a resize only truncates the fill length, `len ← min(len, n)`
+    (one compare-and-branch; a resize to 0 is a single store of 0). Contents below
+    the new length stay where they are, exactly as `State.resizeBuf` keeps the
+    prefix. An immediate capacity above the declared region is rejected at lowering
+    time; a register capacity above it is outside the test lowering's contract (the
+    harness declares every buffer's maximum), and shrinking does not reclaim arena
+    space, each buffer's region being dedicated.
   - `memPop` on an empty buffer is a no-op, so branch over the decrement.
 * Programs end with `EBREAK`; the harness runs until it is reached.
 -/
@@ -139,6 +145,7 @@ def remu (rd rs1 rs2 : Nat) : UInt32 := rtype 0x01 rs2 rs1 0x7 rd 0x33
 def ld (rd : Nat) (off : Int) (rs1 : Nat) : UInt32 := itype off rs1 0x3 rd 0x03
 def sd (rs2 : Nat) (off : Int) (rs1 : Nat) : UInt32 := stype off rs2 rs1 0x3 0x23
 def beq (rs1 rs2 : Nat) (off : Int) : UInt32 := btype off rs2 rs1 0x0
+def bltu (rs1 rs2 : Nat) (off : Int) : UInt32 := btype off rs2 rs1 0x6
 def jal (rd : Nat) (off : Int) : UInt32 := jtype off rd
 def ebreak : UInt32 := itype 1 0 0x0 0 0x73
 
@@ -274,17 +281,26 @@ partial def lowerStmt (ctx : Ctx) : Stmt 64 → Except String (Array UInt32)
     | .ne => .ok #[xor s1 ra rb, sltu rd 0 s1]
     | .ult => .ok #[sltu rd ra rb]
     | .ule => .ok #[sltu s1 rb ra, xori rd s1 1]
-  -- all three allocation-shaped instructions reduce to zeroing the length
-  -- slot: regions are preassigned, memFree does not reclaim (test arena)
-  | .memAlloc b _ => do
+  -- resize in place: regions are preassigned at the declared maximum capacity,
+  -- so a resize only truncates the fill length, len ← min(len, n)
+  | .memResize b n => do
+    let rn ← regMap n
     let l ← ctx.find b
-    .ok (li s1 l.base ++ #[sd 0 0 s1])
-  | .memAllocI b _ => do
+    .ok (li s1 l.base ++
+      #[ld s2 0 s1,        -- len
+        bltu s2 rn 8,      -- len < n: growing keeps everything
+        sd rn 0 s1])       -- n ≤ len: truncate to n
+  | .memResizeI b n => do
     let l ← ctx.find b
-    .ok (li s1 l.base ++ #[sd 0 0 s1])
-  | .memFree b => do
-    let l ← ctx.find b
-    .ok (li s1 l.base ++ #[sd 0 0 s1])
+    if l.cap < n then
+      .error s!"buffer b{b}: immediate capacity {n} exceeds its declared region {l.cap}"
+    else if n = 0 then
+      .ok (li s1 l.base ++ #[sd 0 0 s1])   -- free: empty
+    else
+      .ok (li s1 l.base ++ li s3 n ++
+        #[ld s2 0 s1,
+          bltu s2 s3 8,
+          sd s3 0 s1])
   | .memLen d b => do
     let rd ← regMap d
     let l ← ctx.find b

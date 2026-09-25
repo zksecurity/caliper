@@ -49,9 +49,8 @@ def Stmt.render : Stmt w → List String
   | .mov d a => [s!"{pad "mov" 6}r{d}, r{a}"]
   | .un op d a => [s!"{pad op.mnemonic 5}r{d}, r{a}"]
   | .bin op d a b => [s!"{pad op.mnemonic 5}r{d}, r{a}, r{b}"]
-  | .memAlloc b n => [s!"{pad "mem.alloc" 10}b{b}, r{n}"]
-  | .memAllocI b n => [s!"{pad "mem.alloci" 10}b{b}, {n}"]
-  | .memFree b => [s!"{pad "mem.free" 10}b{b}"]
+  | .memResize b n => [s!"{pad "mem.resize" 10}b{b}, r{n}"]
+  | .memResizeI b n => [s!"{pad "mem.resizei" 10}b{b}, {n}"]
   | .memLen d b => [s!"{pad "mem.len" 10}r{d}, b{b}"]
   | .memLoad d b i => [s!"{pad "mem.load" 10}r{d}, b{b}[r{i}]"]
   | .memStore b i src => [s!"{pad "mem.store" 10}b{b}[r{i}], r{src}"]
@@ -77,19 +76,19 @@ every `mem.` instruction, a conditional and a loop. -/
 
 private def renderDemo : Stmt 64 :=
   .imm 2 5 ;;
-  .memAllocI 0 3 ;;
+  .memResizeI 0 3 ;;
   .whileNZ (.bin .ult 1 0 2) 1
     (.memPush 0 0 ;;
      .imm 3 1 ;;
      .bin .add 0 0 3) ;;
   .ifNZ 1
     (.memLoad 4 0 1 ;; .memStore 0 1 4 ;; .memPop 0)
-    (.un .isZero 4 1 ;; .memLen 5 0 ;; .memAlloc 1 5 ;; .mov 6 4 ;; .skip) ;;
-  .memFree 0
+    (.un .isZero 4 1 ;; .memLen 5 0 ;; .memResize 1 5 ;; .mov 6 4 ;; .skip) ;;
+  .memResizeI 0 0
 
 /--
 info: imm   r2, 5
-mem.alloci b0, 3
+mem.resizei b0, 3
 loop {
   ult  r1, r0, r2
   bifz r1
@@ -104,11 +103,11 @@ ifnz r1 {
 } else {
   seqz r4, r1
   mem.len   r5, b0
-  mem.alloc b1, r5
+  mem.resize b1, r5
   mov   r6, r4
   skip
 }
-mem.free  b0
+mem.resizei b0, 0
 -/
 #guard_msgs in
 #eval IO.println renderDemo.renderString

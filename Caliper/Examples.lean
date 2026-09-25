@@ -243,9 +243,11 @@ end SumBuf
 
 /-! ## Example 3: filling a buffer, the allocation bound
 
-`iota n`: reserve capacity `n`, then push `0, 1, ..., n-1`. The capacity is charged at
-`memAlloc` (net and peak `n`); every push is then memory-free and worst-case unit
-time. The push rule's capacity obligation is discharged from the invariant.
+`iota n`: reserve capacity `n` for an empty buffer, then push `0, 1, ..., n-1`. The
+capacity is charged at the `memResize` (net and peak `n`); every push is then
+memory-free and worst-case unit time. The push rule's capacity obligation is
+discharged from the invariant. The resize keeps whatever the buffer already holds,
+so the spec assumes it starts empty (a fresh buffer, as from `State.init`).
 
 Register conventions: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1. -/
 
@@ -253,12 +255,12 @@ namespace Iota
 
 /--
 ```c
-b = alloc(n); i = 0;
+b = realloc(b, n); i = 0;   // b empty on entry
 while (i < n) { b.push(i); i += 1; }
 ```
 `n` is passed in `r2`. -/
 def code (b : BufId) : Stmt w :=
-  .memAlloc b 2 ;;
+  .memResize b 2 ;;
   .imm 0 0 ;;
   .whileNZ (.bin .ult 1 0 2) 1
     (.memPush b 0 ;;
@@ -286,15 +288,16 @@ def InvG (b : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
 
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
-  C.memAlloc + n * C.allocPerWord + C.imm + (n + 1) * (C.bin .ult + C.branch)
+  C.memResize + n * C.allocPerWord + C.imm + (n + 1) * (C.bin .ult + C.branch)
     + n * (C.memPush + C.imm + C.bin .add)
 
 /-- `code b` fills `b` with `0..n-1`. Time is linear; memory is charged once, at the
 allocation: net and peak are both `n`. The capacity is *dynamic* (read from `r2`),
 so the allocation's per-word time charge is data-dependent and enters the bound as
-`n * C.allocPerWord` through the capacity bound of `Triple.memAlloc`. -/
+`n * C.allocPerWord` through the capacity bound of `Triple.memResize`. -/
 theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
-    Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (code b)
+    Triple C Caliper.RandomTape.zero
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs b = #[]) (code b)
       (fun s => s.bufs b = iotaTo w n)
       (timeBound C n) n n := by
   have hguard : ∀ k, Triple C Caliper.RandomTape.zero (Inv (w := w) b n k) (.bin .ult 1 0 2)
@@ -331,18 +334,19 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
       rw [toNat_add_ofNat_one hlt hn]
       simp [iotaTo]
     · simp [hcap]
-  have h1 : Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (.memAlloc b 2)
+  have h1 : Triple C Caliper.RandomTape.zero
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs b = #[]) (.memResize b 2)
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps b = n ∧ s.bufs b = #[])
-      (C.memAlloc + n * C.allocPerWord) n n := by
-    apply Triple.memAlloc
-    intro s hs
+      (C.memResize + n * C.allocPerWord) n n := by
+    apply Triple.memResize
+    rintro s ⟨hs, hb⟩
     have hval : (s.regs 2).toNat = n := by
       rw [hs, BitVec.toNat_ofNat]
       exact Nat.mod_eq_of_lt hn
     refine ⟨by omega, ?_, ?_, ?_⟩
     · simp [hs]
     · simp [hval]
-    · simp
+    · exact bufs_resizeBuf_self_of_empty _ _ hb
   have h2 : Triple C Caliper.RandomTape.zero
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps b = n ∧ s.bufs b = #[])
       (.imm 0 0) (Inv b n n) C.imm 0 0 := by
@@ -371,8 +375,9 @@ end Iota
 A one-slot scratch buffer is allocated once, each of the `n` iterations pushes into
 it and pops again inside the fixed capacity, so both are memory-free, and the buffer
 is freed at the end. Net memory 0, peak 1, for any `n`, where a total-allocation
-counter would report `n`. `Triple.memFree'`, free with known capacity, credits the
-word back so the whole program nets to zero.
+counter would report `n`. `Triple.free'`, free with known capacity, credits the
+word back so the whole program nets to zero. The scratch buffer must start empty
+(a fresh buffer), since the resize keeps any contents that fit.
 
 Registers: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1. -/
 
@@ -380,22 +385,22 @@ namespace ScratchLoop
 
 /--
 ```c
-s = alloc(1); i = 0;
+s = realloc(s, 1); i = 0;   // s empty on entry
 while (i < n) { s.push(i); s.pop(); i += 1; }
-free(s);
+s = realloc(s, 0);          // free
 ```
 `n` is passed in `r2`. The one-word capacity is known at generation time, so the
-allocation uses the statically priced `memAllocI`: no register setup, and the
+allocation uses the statically priced `memResizeI`: no register setup, and the
 per-word charge is the syntactic constant `1 * C.allocPerWord`. -/
 def code (sb : BufId) : Stmt w :=
-  .memAllocI sb 1 ;;
+  .memResizeI sb 1 ;;
   .imm 0 0 ;;
   .whileNZ (.bin .ult 1 0 2) 1
     (.memPush sb 0 ;;
      .memPop sb ;;
      .imm 3 1 ;;
      .bin .add 0 0 3) ;;
-  .memFree sb
+  .memResizeI sb 0
 
 def Inv (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 2 = BitVec.ofNat w n ∧
@@ -408,12 +413,13 @@ def InvG (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 1 = if (s.regs 0).toNat < n then 1 else 0
 
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
-  C.memAlloc + C.allocPerWord + C.memFree + C.imm + (n + 1) * (C.bin .ult + C.branch)
+  C.memResize + C.allocPerWord + C.memResize + C.imm + (n + 1) * (C.bin .ult + C.branch)
     + n * (C.memPush + C.memPop + C.imm + C.bin .add)
 
 /-- Linear time, net memory 0 and peak memory 1, for any `n`. -/
 theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
-    Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (code sb)
+    Triple C Caliper.RandomTape.zero
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs sb = #[]) (code sb)
       (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
       (timeBound C n) 0 1 := by
   have hguard : ∀ k, Triple C Caliper.RandomTape.zero (Inv (w := w) sb n k) (.bin .ult 1 0 2)
@@ -449,16 +455,16 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     · simp [hbuf]
     · simp [hcap]
   have h1 : Triple C Caliper.RandomTape.zero
-      (fun s => s.regs 2 = BitVec.ofNat w n)
-      (.memAllocI sb 1)
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs sb = #[])
+      (.memResizeI sb 1)
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
-      (C.memAlloc + 1 * C.allocPerWord) 1 1 := by
-    apply Triple.memAllocI
-    intro s hlim
+      (C.memResize + 1 * C.allocPerWord) 1 1 := by
+    apply Triple.memResizeI
+    rintro s ⟨hlim, hb⟩
     refine ⟨?_, ?_, ?_⟩
     · simp [hlim]
     · simp
-    · simp
+    · exact bufs_resizeBuf_self_of_empty _ _ hb
   have h2 : Triple C Caliper.RandomTape.zero
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
       (.imm 0 0) (Inv sb n n) C.imm 0 0 := by
@@ -471,9 +477,9 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     · simp [hcap]
   have hW := Triple.whileNZ_measure hguard hpos hbody n
   have hF : Triple C Caliper.RandomTape.zero (fun s => ∃ k', InvG (w := w) sb n k' s ∧ s.regs 1 = 0)
-      (.memFree sb) (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
-      C.memFree (-(1 : ℤ)) 0 := by
-    apply Triple.memFree' (K := 1)
+      (.memResizeI sb 0) (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
+      C.memResize (-(1 : ℤ)) 0 := by
+    apply Triple.free' (K := 1)
     rintro s ⟨k', ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hzero⟩
     exact ⟨by omega, by simp, by simp⟩
   refine ((h1.seq (h2.seq (hW.seq hF))).conseq (fun _ h => h)
@@ -607,7 +613,7 @@ theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
   · omega
 
 /-- Recombined: the time-only proof above, and a space triple obtained for free
-(`code` contains no `memAlloc`), glued into a full `Triple` by determinism. -/
+(`code` acquires no capacity), glued into a full `Triple` by determinism. -/
 theorem spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
     Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
       (fun s => (s.regs 0).toNat = n) (timeBound C n) 0 0 :=

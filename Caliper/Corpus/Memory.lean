@@ -7,13 +7,14 @@ import Caliper.Liveness
 Four classic buffer routines, written against the raw `Stmt` syntax so their
 proofs and pins read off the code directly:
 
-* `Memcpy`: copy a buffer into a freshly, dynamically allocated one, with a proved
+* `Memcpy`: copy a buffer into an empty, dynamically resized one, with a proved
   `Triple` for functional correctness, linear time, and net/peak memory exactly the
   copied length.
 * `Memset`: overwrite every element of a buffer in place.
 * `Reverse`: reverse a buffer in place with two `memStore`s per step.
 * `StackSum`: drain a buffer as a stack (`memLen`/`memLoad`/`memPop`), then release
-  it (`memFree`); the sum survives and the memory is credited back.
+  it (`memResizeI b 0`, the free); the sum survives and the memory is credited
+  back.
 
 Each program gets interpreter pins (`#guard_msgs` on a concrete input) and a
 pinned statically inferred register peak (`Stmt.regPeak₀`).
@@ -31,17 +32,17 @@ namespace Memcpy
 
 /--
 ```c
-n = src.len; dst = alloc(n); i = 0;
+n = src.len; dst = realloc(dst, n); i = 0;   // dst empty on entry
 while (i < n) { dst.push(src[i]); i += 1; }
 ```
 Registers: `r0` index, `r1` length, `r2` loop flag, `r3` element, `r4` the
-constant 1. The destination capacity comes from a register (`memAlloc`), so the
-allocation is the *dynamic* one: its time charge is data-dependent and enters the
-bound through `Triple.memAlloc`'s capacity bound.
+constant 1. The destination capacity comes from a register (`memResize`), so the
+resize is the *dynamic* one: its time charge is data-dependent and enters the
+bound through `Triple.memResize`'s capacity bound.
 -/
 def code (src dst : BufId) : Stmt w :=
   .memLen 1 src ;;
-  .memAlloc dst 1 ;;
+  .memResize dst 1 ;;
   .imm 0 0 ;;
   .whileNZ (.bin .ult 2 0 1) 2
     (.memLoad 3 src 0 ;;
@@ -97,18 +98,19 @@ def InvG (src dst : BufId) (arr : Array (Word w)) (k : ℕ) (s : State w) : Prop
 /-- Linear time: the length read, the per-word-priced allocation, one setup
 `imm`, `n + 1` guard evaluations, `n` loop bodies. -/
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
-  C.memLen + (C.memAlloc + n * C.allocPerWord) + C.imm
+  C.memLen + (C.memResize + n * C.allocPerWord) + C.imm
     + (n + 1) * (C.bin .ult + C.branch)
     + n * (C.memLoad + C.memPush + C.imm + C.bin .add)
 
 /-- Memcpy is correct, linear-time, and costs exactly its payload in memory: from a
-state where `src` holds `arr`, the copy terminates with `dst = arr` and `src`
+state where `src` holds `arr` and `dst` is empty, the copy terminates with `dst = arr` and `src`
 untouched, in time `timeBound C arr.size`, with net and peak live-memory growth
-`arr.size`, the destination's capacity charged once at the dynamic allocation.
+`arr.size`, the destination's capacity charged once at the dynamic resize.
 `dst ≠ src` is the one separation fact, a statement about buffer *names*. -/
 theorem spec {C : CostModel} (src dst : BufId) (hne : dst ≠ src)
     (arr : Array (Word w)) (hsz : arr.size < 2 ^ w) :
-    Triple C Caliper.RandomTape.zero (fun s => s.bufs src = arr) (code src dst)
+    Triple C Caliper.RandomTape.zero (fun s => s.bufs src = arr ∧ s.bufs dst = #[])
+      (code src dst)
       (fun s => s.bufs dst = arr ∧ s.bufs src = arr)
       (timeBound C arr.size) arr.size arr.size := by
   have hne' : src ≠ dst := fun h => hne h.symm
@@ -154,26 +156,27 @@ theorem spec {C : CostModel} (src dst : BufId) (hne : dst ≠ src)
       simp [prefixOf, hlt, hsrc]
     · simp [hcap]
   -- prologue: read the length, allocate, zero the index
-  have h1 : Triple C Caliper.RandomTape.zero (fun s => s.bufs src = arr) (.memLen 1 src)
-      (fun s => s.bufs src = arr ∧ s.regs 1 = BitVec.ofNat w arr.size)
+  have h1 : Triple C Caliper.RandomTape.zero (fun s => s.bufs src = arr ∧ s.bufs dst = #[])
+      (.memLen 1 src)
+      (fun s => s.bufs src = arr ∧ s.bufs dst = #[] ∧ s.regs 1 = BitVec.ofNat w arr.size)
       C.memLen 0 0 :=
-    Triple.memLen fun s hs => by simp [hs]
+    Triple.memLen fun s hs => by simp [hs.1, hs.2]
   have h2 : Triple C Caliper.RandomTape.zero
-      (fun s => s.bufs src = arr ∧ s.regs 1 = BitVec.ofNat w arr.size)
-      (.memAlloc dst 1)
+      (fun s => s.bufs src = arr ∧ s.bufs dst = #[] ∧ s.regs 1 = BitVec.ofNat w arr.size)
+      (.memResize dst 1)
       (fun s => s.bufs src = arr ∧ s.regs 1 = BitVec.ofNat w arr.size
         ∧ s.caps dst = arr.size ∧ s.bufs dst = #[])
-      (C.memAlloc + arr.size * C.allocPerWord) arr.size arr.size := by
-    apply Triple.memAlloc
-    rintro s ⟨hsrc, hlen⟩
+      (C.memResize + arr.size * C.allocPerWord) arr.size arr.size := by
+    apply Triple.memResize
+    rintro s ⟨hsrc, hdst, hlen⟩
     have hval : (s.regs 1).toNat = arr.size := by
       rw [hlen, BitVec.toNat_ofNat]
       exact Nat.mod_eq_of_lt hsz
     refine ⟨by omega, ?_, ?_, ?_, ?_⟩
-    · simp [bufs_allocBuf_ne _ _ hne', hsrc]
+    · simp [bufs_resizeBuf_ne _ _ hne', hsrc]
     · simp [hlen]
     · simp [hval]
-    · simp
+    · exact bufs_resizeBuf_self_of_empty _ _ hdst
   have h3 : Triple C Caliper.RandomTape.zero
       (fun s => s.bufs src = arr ∧ s.regs 1 = BitVec.ofNat w arr.size
         ∧ s.caps dst = arr.size ∧ s.bufs dst = #[])
@@ -313,11 +316,12 @@ namespace StackSum
 ```c
 acc = 0;
 while (b.len != 0) { acc += b[b.len - 1]; b.pop(); }
-free(b);
+b = realloc(b, 0);   // free
 ```
 Registers: `r0` accumulator, `r1` length, `r2` loop flag, `r3` the constant
 1, `r4` top index, `r5` element. The buffer is consumed as a stack, reading the top
-(`memLen`, `sub`, `memLoad`) and then `memPop`, and released at the end (`memFree`),
+(`memLen`, `sub`, `memLoad`) and then `memPop`, and released at the end
+(`memResizeI b 0`),
 so the net memory is *negative*: the program gives back the buffer's capacity.
 -/
 def code (b : BufId) : Stmt w :=
@@ -328,7 +332,7 @@ def code (b : BufId) : Stmt w :=
      .memLoad 5 b 4 ;;
      .bin .add 0 0 5 ;;
      .memPop b) ;;
-  .memFree b
+  .memResizeI b 0
 
 /-- Drain `#[3, 5, 9]`: `(sum, final length, final capacity, time, net, peak)`. The
 sum is 17 and the buffer ends empty with its 3-word capacity credited back
