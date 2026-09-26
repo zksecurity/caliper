@@ -20,25 +20,25 @@ Every constructor other than `seq`/`ifNZ`/`whileNZ` is one instruction priced by
 content of "unit time": `straight_time_eq` says a branch-free program's running
 time is a syntactic constant. Two consequences for the instruction set:
 
-* Memory is reserved, not initialised: `memResize`/`memResizeI` set a buffer's
-  capacity realloc-style (growing keeps the contents, shrinking keeps a prefix,
-  resizing to 0 frees) without a `memset`, and `memLoad` requires `i < size`, so
-  uninitialised capacity is never observable and initialisation is paid for by the
-  pushes and stores that perform it. A resize to capacity `n` is charged
-  `C.memResize + n * C.allocPerWord`, at least a tick per word of the new capacity
-  (a realloc copies up to `n` words), so nothing acquires `n` words in `o(n)` time
-  and peak memory is bounded by running time (`Exec.peak_le_time`). The resize's
-  peak is the whole new capacity `n`, since old and new coexist during a copying
-  realloc; its net is `n - cap`.
-* `memPush` requires free capacity (a proof obligation, like `memLoad`'s in-range
-  obligation), hence is worst-case unit time: no doubling, no amortisation
-  anywhere in the machine. A growable vector is a library on top (`GrowVec` in
-  `Corpus/GrowVec.lean`), its doubling `memResize` costing what it visibly costs.
+* A buffer is a zero-initialised array whose length is its only size: there is
+  no separate capacity and no reserved-but-unreadable state. `memResize`/
+  `memResizeI` set the length realloc-style (growing keeps the contents and appends
+  zeros, shrinking keeps a prefix, resizing to 0 frees), and `memLoad`/`memStore`
+  require `i < length`. A resize to length `n` is charged
+  `C.memResize + n * C.allocPerWord`, at least a tick per word of the new length
+  (a realloc copies up to `n` words and zeroes the new ones), so nothing acquires
+  `n` words in `o(n)` time and peak memory is bounded by running time
+  (`Exec.peak_le_time`). The resize's peak is the whole new length `n`, since old
+  and new coexist during a copying realloc; its net is `n - oldLength`.
+* No instruction grows a buffer implicitly, so every instruction but a resize is
+  worst-case unit time: no doubling, no amortisation anywhere in the machine. A
+  growable vector is a library on top (`GrowVec` in `Corpus/GrowVec.lean`), a fill
+  register plus a doubling `memResize` costing what it visibly costs.
 
 `Exec C tape c s s' t d p`: from `s`, `c` terminates in `s'` spending `t` time units,
 with net live-memory change `d` (signed words) and peak growth `p` above the
-starting level. Live memory is the sum of reserved buffer capacities, so push and
-pop are memory-neutral. Registers are outside the dynamic profile: their lifetimes
+starting level. Live memory is the sum of buffer lengths, so stores are
+memory-neutral. Registers are outside the dynamic profile: their lifetimes
 are static, so the register footprint is the inferred peak `Stmt.regPeak₀`
 (`Liveness.lean`). Profiles compose as high-water marks:
 
@@ -134,41 +134,36 @@ inductive Stmt (w : ℕ) where
   | un (op : UnOp) (d a : Reg)
   /-- `d ← a op b` -/
   | bin (op : BinOp) (d a b : Reg)
-  /-- `b ← realloc(b, regs n)`: set `b`'s capacity to the register value, keeping
-  the filled prefix that fits (`State.resizeBuf`): growing keeps the contents,
-  shrinking truncates, and a resize to 0 frees. New words are charged but
-  uninitialised, unreadable until pushed. Time is `C.memResize + cap *
-  C.allocPerWord` with `cap` the *runtime* register value (a realloc copies up to
-  `cap` words), so the time is data-dependent: excluded from `Stmt.Straight`, and
-  `staticTime?` returns `none`. Use `memResizeI` for a generation-time capacity. -/
+  /-- `b ← realloc(b, regs n)`: set `b`'s length to the register value
+  (`State.resizeBuf`): growing keeps the contents and appends zeros, shrinking
+  truncates, and a resize to 0 frees. Time is `C.memResize + len * C.allocPerWord`
+  with `len` the *runtime* register value (a realloc copies up to `len` words and
+  zeroes the new ones), so the time is data-dependent: excluded from
+  `Stmt.Straight`, and `staticTime?` returns `none`. Use `memResizeI` for a
+  generation-time length. -/
   | memResize (b : BufId) (n : Reg)
-  /-- `b ← realloc(b, n)` with the capacity `n` an immediate in the syntax: same
-  semantics as `memResize` at that capacity, but the charge `C.memResize + n *
+  /-- `b ← realloc(b, n)` with the length `n` an immediate in the syntax: same
+  semantics as `memResize` at that length, but the charge `C.memResize + n *
   C.allocPerWord` is a pure function of the instruction, so static pricing
   (`Stmt.Straight`, `staticTime`) applies. `memResizeI b 0` is the free: it costs
   only the base `C.memResize` (0 in both shipped tables) and credits the whole
-  capacity.
+  length.
 
-  Hazard: the immediate is a bare `ℕ`, so unlike `memResize`, whose capacity comes
+  Hazard: the immediate is a bare `ℕ`, so unlike `memResize`, whose length comes
   from a `w`-bit register and is `< 2 ^ w`, a `memResizeI` with `n ≥ 2 ^ w` is
-  expressible. Every cost and semantics theorem still holds, but a buffer filled past
-  `2 ^ w` words makes `memLen` read back a wrapped length. Keep immediate capacities
-  `< 2 ^ w`; the builder's `Mem.allocI` enforces that bound. -/
+  expressible. Every cost and semantics theorem still holds, but a buffer that long
+  makes `memLen` read back a wrapped length. Keep immediate lengths `< 2 ^ w`; the
+  builder's `Mem.allocI` enforces that bound. -/
   | memResizeI (b : BufId) (n : ℕ)
-  /-- `d ← |b|` (the filled length, not the capacity). The length is loaded as
-  `BitVec.ofNat w size`, so it is exact only while the size is `< 2 ^ w`; past that
-  it reads back wrapped, reachable only through a `memResizeI` immediate capacity
-  `≥ 2 ^ w`, since register-driven capacities are `< 2 ^ w`. -/
+  /-- `d ← |b|`, the length. It is loaded as `BitVec.ofNat w size`, so it is exact
+  only while the size is `< 2 ^ w`; past that it reads back wrapped, reachable only
+  through a `memResizeI` immediate length `≥ 2 ^ w`, since register-driven lengths
+  are `< 2 ^ w`. -/
   | memLen (d : Reg) (b : BufId)
   /-- `d ← b[i]`; requires `i < |b|`. -/
   | memLoad (d : Reg) (b : BufId) (i : Reg)
   /-- `b[i] ← src`; requires `i < |b|`. -/
   | memStore (b : BufId) (i src : Reg)
-  /-- `b.push src`; requires free capacity (`|b| < cap b`), hence worst-case unit
-  time. Memory-neutral: the word was charged at the resize that reserved it. -/
-  | memPush (b : BufId) (src : Reg)
-  /-- `b.pop`; a no-op on an empty buffer. Keeps the capacity, so memory-neutral. -/
-  | memPop (b : BufId)
   | ifNZ (c : Reg) (thn els : Stmt w)
   /-- `guard; while (c ≠ 0) { body; guard }`. The guard is a *statement* because
   computing a loop condition costs real instructions; as an expression it would
@@ -192,12 +187,12 @@ structure CostModel where
   mov : ℕ := 1
   un : UnOp → ℕ := fun _ => 1
   bin : BinOp → ℕ := fun _ => 1
-  /-- Base cost of a resize, on top of the per-word charge: a resize to capacity
+  /-- Base cost of a resize, on top of the per-word charge: a resize to length
   `n` costs `memResize + n * allocPerWord`. 0 in both shipped tables, since static
-  buffer names and explicit capacities admit an arena/bump allocator, so creation is
+  buffer names and explicit lengths admit an arena/bump allocator, so creation is
   a pointer bump amortized into the per-word charge. (A non-reclaiming bump arena
   does not reuse the regions a copying realloc leaves behind, so its physical
-  footprint can reach about twice the certified peak; the peak counts live reserved
+  footprint can reach about twice the certified peak; the peak counts live buffer
   words, not allocator fragmentation.) The free, `memResizeI b 0`,
   costs only this base: every release pairs with earlier acquisitions of the same
   buffer, whose per-word charges price creation and destruction (a freelist push,
@@ -205,21 +200,19 @@ structure CostModel where
   work already paid there). `CostModel.Admissible` exempts this base;
   `allocPerWord` keeps the per-word charge ≥ 1. -/
   memResize : ℕ := 0
-  /-- Per-word cost of a resize, charged on the full *new* capacity, since a
-  realloc may copy every surviving word. Any model with `1 ≤ allocPerWord` makes
+  /-- Per-word cost of a resize, charged on the full *new* length, since a realloc
+  may copy every surviving word and zero every new one. Any model with `1 ≤ allocPerWord` makes
   peak memory bounded by running time (`Exec.peak_le_time`): no program can hold
   more live words than it has spent time steps. -/
   allocPerWord : ℕ := 1
   memLen : ℕ := 1
   memLoad : ℕ := 1
   memStore : ℕ := 1
-  memPush : ℕ := 1
-  memPop : ℕ := 1
   /-- Cost of testing a condition register and taking the branch. -/
   branch : ℕ := 1
 
 /-- Uniform model: every priced entry is 1, so a resize costs one tick per word of
-the new capacity with no base, and a resize to 0 (the free) costs nothing (see
+the new length with no base, and a resize to 0 (the free) costs nothing (see
 `memResize`). -/
 def CostModel.unit : CostModel := {}
 
@@ -231,12 +224,11 @@ def CostModel.cycles : CostModel where
     | .udiv | .umod => 30
     | _ => 1
   memResize := 0  -- no malloc: static buffer names admit an arena/bump allocator
-  -- one cycle per word of new capacity: a cache-line-amortised first touch or
+  -- one cycle per word of new length: a cache-line-amortised zeroing store or
   -- copy. Kept ≥ 1 so `Exec.peak_le_time` applies to this table.
   allocPerWord := 1
   memLoad := 4     -- L1 hit
   memStore := 4
-  memPush := 5
   branch := 2     -- mispredict-amortised
 
 /-- Every table entry pricing an instruction is at least one time unit: no
@@ -245,14 +237,14 @@ instruction runs for free, and no word of live memory is acquired for free.
 The predicate exists because every cost theorem is generic in `C`, and a degenerate
 table with a zero entry makes cost claims vacuous: a model pricing real work at zero
 certifies any program under any budget, and peak memory can exceed running time.
-Under an admissible model every executed instruction other than a zero-capacity
-resize contributes a tick to `t` (`skip` is no instruction and costs nothing), and the `allocPerWord` field is literally the
-`1 ≤ C.allocPerWord` hypothesis of `Exec.peak_le_time`. Both shipped tables are
+Under an admissible model every executed instruction other than a zero-length
+resize contributes a tick to `t` (`skip` is no instruction and costs nothing), and
+the `allocPerWord` field is literally the `1 ≤ C.allocPerWord` hypothesis of `Exec.peak_le_time`. Both shipped tables are
 proved admissible (`CostModel.unit.admissible`, `CostModel.cycles.admissible`).
 
 One exemption, free-is-free: the resize *base* `memResize`, since `allocPerWord`
-already keeps the full resize charge ≥ 1 per word of new capacity. The only
-zero-time resize is the zero-capacity one, the free, which acquires nothing and
+already keeps the full resize charge ≥ 1 per word of new length. The only
+zero-time resize is the zero-length one, the free, which acquires nothing and
 whose release work was priced into the acquisitions that created the buffer. -/
 structure CostModel.Admissible (C : CostModel) : Prop where
   imm : 1 ≤ C.imm
@@ -264,8 +256,6 @@ structure CostModel.Admissible (C : CostModel) : Prop where
   memLen : 1 ≤ C.memLen
   memLoad : 1 ≤ C.memLoad
   memStore : 1 ≤ C.memStore
-  memPush : 1 ≤ C.memPush
-  memPop : 1 ≤ C.memPop
   branch : 1 ≤ C.branch
 
 /-- The uniform table is admissible: every priced entry is literally 1. -/
@@ -282,28 +272,26 @@ theorem CostModel.cycles.admissible : CostModel.cycles.Admissible := by
 
 /-! ## Machine state -/
 
-/-- Registers hold words; buffers hold arrays of words (the filled prefix) plus a
-reserved capacity. All indexed by `ℕ` and represented as functions, which makes the
+/-- Registers hold words; buffers hold zero-initialised arrays of words, whose
+length is the buffer's size. All indexed by `ℕ` and represented as functions, which makes the
 separation lemmas below one-liners. Buffers are real `Array`s so that the interpreter
 does not walk a closure chain per element. -/
 structure State (w : ℕ) where
   /-- Input-tape cursor; bookkeeping outside the program memory metric. -/
   tapePos : ℕ := 0
   regs : Reg → Word w
+  /-- Buffer contents; live memory is the sum of lengths. -/
   bufs : BufId → Array (Word w)
-  /-- Reserved capacity in words; live memory is the sum of capacities. -/
-  caps : BufId → ℕ
 
 /-- The initial state: all registers zero, all buffers empty and unallocated. -/
 def State.init (w : ℕ) : State w where
   regs _ := 0
   bufs _ := #[]
-  caps _ := 0
 
 def State.setReg (s : State w) (d : Reg) (v : Word w) : State w :=
   { s with regs := fun r => if r = d then v else s.regs r }
 
-/-- Consume exactly one word without changing buffers or capacities. -/
+/-- Consume exactly one word without changing buffers. -/
 def State.readRandom (s : State w) (tape : RandomTape w) (d : Reg) : State w :=
   { s.setReg d (tape s.tapePos) with tapePos := s.tapePos + 1 }
 
@@ -316,20 +304,50 @@ def State.readRandom (s : State w) (tape : RandomTape w) (d : Reg) : State w :=
 @[simp] theorem bufs_readRandom (s : State w) (tape : RandomTape w) (d : Reg) :
     (s.readRandom tape d).bufs = s.bufs := rfl
 
-@[simp] theorem caps_readRandom (s : State w) (tape : RandomTape w) (d : Reg) :
-    (s.readRandom tape d).caps = s.caps := rfl
-
-/-- Update the filled contents of `b` (capacity unchanged). -/
+/-- Update the contents of `b`. -/
 def State.setBuf (s : State w) (b : BufId) (a : Array (Word w)) : State w :=
   { s with bufs := fun b' => if b' = b then a else s.bufs b' }
 
-/-- Resize `b` to capacity `n`, realloc-style: the contents are truncated to the
-first `n` words (unchanged when growing), the capacity becomes `n`, every other
-buffer and register is untouched. `resizeBuf b 0` frees `b`. The fill stays within
-the capacity by construction (`size_bufs_resizeBuf_self`). -/
+/-- `a` resized to length `n`: its first `n` words, then zeros up to length `n`. -/
+def zeroResize {α : Type} [Zero α] (a : Array α) (n : ℕ) : Array α :=
+  a.take n ++ Array.replicate (n - a.size) 0
+
+@[simp] theorem size_zeroResize {α : Type} [Zero α] (a : Array α) (n : ℕ) :
+    (zeroResize a n).size = n := by
+  simp [zeroResize]; omega
+
+/-- Surviving words keep their value; new words read 0. -/
+theorem getElem_zeroResize {α : Type} [Zero α] (a : Array α) (n j : ℕ)
+    (h : j < (zeroResize a n).size) :
+    (zeroResize a n)[j] = if hj : j < a.size then a[j] else 0 := by
+  simp only [zeroResize, Array.take_eq_extract, Array.getElem_append, Array.size_extract,
+    Array.getElem_extract, Array.getElem_replicate]
+  rw [size_zeroResize] at h
+  have hm : min n a.size - 0 = min n a.size := Nat.sub_zero _
+  split_ifs with h1 h2 h2
+  · simp only [Nat.zero_add]
+  · omega
+  · exact absurd (hm ▸ h1) (by rw [Nat.lt_min]; omega)
+  · rfl
+
+/-- `getElem?` form of `getElem_zeroResize` for a surviving word. -/
+theorem getElem?_zeroResize_of_lt {α : Type} [Zero α] (a : Array α) {n j : ℕ}
+    (hn : j < n) (ha : j < a.size) : (zeroResize a n)[j]? = a[j]? := by
+  rw [Array.getElem?_eq_getElem (by simpa using hn), Array.getElem?_eq_getElem ha,
+    getElem_zeroResize, dif_pos ha]
+
+@[simp] theorem zeroResize_zero {α : Type} [Zero α] (a : Array α) :
+    zeroResize a 0 = #[] := by
+  simp [zeroResize]
+
+@[simp] theorem zeroResize_empty {α : Type} [Zero α] (n : ℕ) :
+    zeroResize (#[] : Array α) n = Array.replicate n 0 := by
+  simp [zeroResize]
+
+/-- Resize `b` to length `n`, realloc-style: the first `n` words survive, new words
+are zero, every other buffer and register is untouched. `resizeBuf b 0` frees `b`. -/
 def State.resizeBuf (s : State w) (b : BufId) (n : ℕ) : State w :=
-  { s with bufs := fun b' => if b' = b then (s.bufs b).take n else s.bufs b',
-           caps := fun b' => if b' = b then n else s.caps b' }
+  { s with bufs := fun b' => if b' = b then zeroResize (s.bufs b) n else s.bufs b' }
 
 @[simp] theorem regs_setReg_self (s : State w) (d : Reg) (v : Word w) :
     (s.setReg d v).regs d = v := by simp [State.setReg]
@@ -351,52 +369,30 @@ a side condition decidable over two `ℕ`s. -/
 @[simp] theorem regs_setBuf (s : State w) (b : BufId) (a : Array (Word w)) :
     (s.setBuf b a).regs = s.regs := rfl
 
-@[simp] theorem caps_setBuf (s : State w) (b : BufId) (a : Array (Word w)) :
-    (s.setBuf b a).caps = s.caps := rfl
-
-@[simp] theorem caps_setReg (s : State w) (d : Reg) (v : Word w) :
-    (s.setReg d v).caps = s.caps := rfl
-
 @[simp] theorem regs_resizeBuf (s : State w) (b : BufId) (n : ℕ) :
     (s.resizeBuf b n).regs = s.regs := rfl
 
 @[simp] theorem tapePos_resizeBuf (s : State w) (b : BufId) (n : ℕ) :
     (s.resizeBuf b n).tapePos = s.tapePos := rfl
 
-/-- The resized buffer holds the prefix of its old contents that fits. Not `simp`:
-`Array.take` is itself simp-normalised to `extract`; use the specialised
-`bufs_resizeBuf_self_of_le` / `bufs_resizeBuf_self_zero` or this lemma explicitly. -/
-theorem bufs_resizeBuf_self (s : State w) (b : BufId) (n : ℕ) :
-    (s.resizeBuf b n).bufs b = (s.bufs b).take n := by simp [State.resizeBuf]
+@[simp] theorem bufs_resizeBuf_self (s : State w) (b : BufId) (n : ℕ) :
+    (s.resizeBuf b n).bufs b = zeroResize (s.bufs b) n := by simp [State.resizeBuf]
 
-/-- Growing (or keeping) the capacity keeps the contents. -/
-theorem bufs_resizeBuf_self_of_le (s : State w) {b : BufId} {n : ℕ}
-    (h : (s.bufs b).size ≤ n) : (s.resizeBuf b n).bufs b = s.bufs b := by
-  rw [bufs_resizeBuf_self]
-  exact Array.extract_eq_self_of_le h
+/-- The resized buffer has exactly the requested length. -/
+theorem size_bufs_resizeBuf_self (s : State w) (b : BufId) (n : ℕ) :
+    ((s.resizeBuf b n).bufs b).size = n := by simp
 
 /-- Resizing to 0 empties the buffer: the free. -/
-@[simp] theorem bufs_resizeBuf_self_zero (s : State w) (b : BufId) :
-    (s.resizeBuf b 0).bufs b = #[] := by
-  rw [bufs_resizeBuf_self]; simp
+theorem bufs_resizeBuf_self_zero (s : State w) (b : BufId) :
+    (s.resizeBuf b 0).bufs b = #[] := by simp
 
-/-- An empty buffer stays empty under any resize: a fresh acquisition. -/
+/-- Resizing an empty buffer yields zeros: a fresh acquisition. -/
 theorem bufs_resizeBuf_self_of_empty (s : State w) {b : BufId} (n : ℕ)
-    (h : s.bufs b = #[]) : (s.resizeBuf b n).bufs b = #[] := by
-  rw [bufs_resizeBuf_self_of_le _ (by simp [h]), h]
-
-@[simp] theorem size_bufs_resizeBuf_self (s : State w) (b : BufId) (n : ℕ) :
-    ((s.resizeBuf b n).bufs b).size = min n (s.bufs b).size := by
-  rw [bufs_resizeBuf_self]; simp
+    (h : s.bufs b = #[]) : (s.resizeBuf b n).bufs b = Array.replicate n 0 := by
+  simp [h]
 
 @[simp] theorem bufs_resizeBuf_ne (s : State w) {b b' : BufId} (n : ℕ)
     (h : b' ≠ b) : (s.resizeBuf b n).bufs b' = s.bufs b' := by simp [State.resizeBuf, h]
-
-@[simp] theorem caps_resizeBuf_self (s : State w) (b : BufId) (n : ℕ) :
-    (s.resizeBuf b n).caps b = n := by simp [State.resizeBuf]
-
-@[simp] theorem caps_resizeBuf_ne (s : State w) {b b' : BufId} (n : ℕ)
-    (h : b' ≠ b) : (s.resizeBuf b n).caps b' = s.caps b' := by simp [State.resizeBuf, h]
 
 /-! ## Semantics
 
@@ -418,22 +414,22 @@ inductive Exec (C : CostModel) (tape : RandomTape w) : Stmt w → State w → St
   | bin {op d a b s} :
       Exec C tape (.bin op d a b) s (s.setReg d (op.eval (s.regs a) (s.regs b)))
         (C.bin op) 0 0
-  /-- Resize (dynamic, from a register): net charges the new capacity and credits
-  the old; the peak is the whole new capacity, since during a copying realloc the
-  old and the new region coexist. Time is `C.memResize + cap * C.allocPerWord`,
-  state-dependent, since the capacity is read from a register at runtime. -/
+  /-- Resize (dynamic, from a register): net charges the new length and credits the
+  old; the peak is the whole new length, since during a copying realloc the old and
+  the new region coexist. Time is `C.memResize + cap * C.allocPerWord`,
+  state-dependent, since the length is read from a register at runtime. -/
   | memResize {b n s} :
       Exec C tape (.memResize b n) s (s.resizeBuf b (s.regs n).toNat)
         (C.memResize + (s.regs n).toNat * C.allocPerWord)
-        (((s.regs n).toNat : ℤ) - (s.caps b : ℤ))
+        (((s.regs n).toNat : ℤ) - ((s.bufs b).size : ℤ))
         ((s.regs n).toNat : ℤ)
-  /-- Resize (immediate): identical semantics at capacity `n`, with the per-word time
+  /-- Resize (immediate): identical semantics at length `n`, with the per-word time
   charge a pure function of the instruction. At `n = 0` this is the free: time
-  `C.memResize` (0 in both shipped tables), net `-(caps b)`, peak 0. -/
+  `C.memResize` (0 in both shipped tables), net `-|b|`, peak 0. -/
   | memResizeI {b n s} :
       Exec C tape (.memResizeI b n) s (s.resizeBuf b n)
         (C.memResize + n * C.allocPerWord)
-        ((n : ℤ) - (s.caps b : ℤ))
+        ((n : ℤ) - ((s.bufs b).size : ℤ))
         (n : ℤ)
   | memLen {d b s} :
       Exec C tape (.memLen d b) s (s.setReg d (BitVec.ofNat w (s.bufs b).size)) C.memLen 0 0
@@ -442,14 +438,6 @@ inductive Exec (C : CostModel) (tape : RandomTape w) : Stmt w → State w → St
   | memStore {b i src s} (h : (s.regs i).toNat < (s.bufs b).size) :
       Exec C tape (.memStore b i src) s
         (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) h)) C.memStore 0 0
-  /-- Push requires free capacity: no rule otherwise, so a derivation proves the
-  program stays within what it reserved. Memory-neutral. -/
-  | memPush {b src s} (h : (s.bufs b).size < s.caps b) :
-      Exec C tape (.memPush b src) s (s.setBuf b ((s.bufs b).push (s.regs src)))
-        C.memPush 0 0
-  /-- Pop keeps the capacity: memory-neutral. -/
-  | memPop {b s} :
-      Exec C tape (.memPop b) s (s.setBuf b (s.bufs b).pop) C.memPop 0 0
   | ifNZ_true {c thn els s s' t d p} (h : s.regs c ≠ 0) :
       Exec C tape thn s s' t d p → Exec C tape (.ifNZ c thn els) s s' (C.branch + t) d p
   | ifNZ_false {c thn els s s' t d p} (h : s.regs c = 0) :
@@ -584,8 +572,6 @@ def Stmt.Writes : Stmt w → Reg → Prop
   | .memLen d _, r => r = d
   | .memLoad d _ _, r => r = d
   | .memStore .., _ => False
-  | .memPush .., _ => False
-  | .memPop _, _ => False
   | .ifNZ _ t e, r => t.Writes r ∨ e.Writes r
   | .whileNZ g _ b, r => g.Writes r ∨ b.Writes r
 
@@ -596,8 +582,6 @@ def Stmt.Touches : Stmt w → BufId → Prop
   | .memResize b' _, b => b = b'
   | .memResizeI b' _, b => b = b'
   | .memStore b' _ _, b => b = b'
-  | .memPush b' _, b => b = b'
-  | .memPop b', b => b = b'
   | .ifNZ _ t e, b => t.Touches b ∨ e.Touches b
   | .whileNZ g _ bd, b => g.Touches b ∨ bd.Touches b
   | _, _ => False
@@ -618,8 +602,6 @@ instance instDecidableWrites : ∀ (c : Stmt w) (r : Reg), Decidable (c.Writes r
   | .memLen d _, r => inferInstanceAs (Decidable (r = d))
   | .memLoad d _ _, r => inferInstanceAs (Decidable (r = d))
   | .memStore .., _ => inferInstanceAs (Decidable False)
-  | .memPush .., _ => inferInstanceAs (Decidable False)
-  | .memPop _, _ => inferInstanceAs (Decidable False)
   | .ifNZ _ t e, r =>
     have := instDecidableWrites t r
     have := instDecidableWrites e r
@@ -645,8 +627,6 @@ instance instDecidableTouches : ∀ (c : Stmt w) (b : BufId), Decidable (c.Touch
   | .memLen .., _ => inferInstanceAs (Decidable False)
   | .memLoad .., _ => inferInstanceAs (Decidable False)
   | .memStore b' _ _, b => inferInstanceAs (Decidable (b = b'))
-  | .memPush b' _, b => inferInstanceAs (Decidable (b = b'))
-  | .memPop b', b => inferInstanceAs (Decidable (b = b'))
   | .ifNZ _ t e, b =>
     have := instDecidableTouches t b
     have := instDecidableTouches e b
@@ -682,7 +662,7 @@ theorem Exec.frame_reg {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     rw [ih₂ hr.2, ih₁ hr.1]
   | rand | imm | mov | un | bin | memLen | memLoad =>
     exact regs_setReg_ne _ _ hr
-  | memResize | memResizeI | memStore | memPush | memPop => rfl
+  | memResize | memResizeI | memStore => rfl
   | ifNZ_true _ _ ih => exact ih fun hh => hr (Or.inl hh)
   | ifNZ_false _ _ ih => exact ih fun hh => hr (Or.inr hh)
   | while_done _ _ ihg => exact ihg fun hh => hr (Or.inl hh)
@@ -700,26 +680,8 @@ theorem Exec.frame_buf {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     simp only [Touches_seq, not_or] at hb
     rw [ih₂ hb.2, ih₁ hb.1]
   | rand | imm | mov | un | bin | memLen | memLoad => rfl
-  | memStore | memPush | memPop => exact bufs_setBuf_ne _ _ hb
+  | memStore => exact bufs_setBuf_ne _ _ hb
   | memResize | memResizeI => exact bufs_resizeBuf_ne _ _ hb
-  | ifNZ_true _ _ ih => exact ih fun hh => hb (Or.inl hh)
-  | ifNZ_false _ _ ih => exact ih fun hh => hb (Or.inr hh)
-  | while_done _ _ ihg => exact ihg fun hh => hb (Or.inl hh)
-  | while_step _ _ _ _ ihg ihb ihl =>
-    rw [ihl hb, ihb fun hh => hb (Or.inr hh), ihg fun hh => hb (Or.inl hh)]
-
-/-- Capacity frame rule: an untouched buffer keeps its reserved capacity too. -/
-theorem Exec.frame_cap {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} {b : BufId}
-    (h : Exec C tape c s s' t d p) (hb : ¬ c.Touches b) : s'.caps b = s.caps b := by
-  induction h with
-  | skip => rfl
-  | seq _ _ ih₁ ih₂ =>
-    simp only [Touches_seq, not_or] at hb
-    rw [ih₂ hb.2, ih₁ hb.1]
-  | rand | imm | mov | un | bin | memLen | memLoad => rfl
-  | memStore | memPush | memPop => rfl
-  | memResize | memResizeI => exact caps_resizeBuf_ne _ _ hb
   | ifNZ_true _ _ ih => exact ih fun hh => hb (Or.inl hh)
   | ifNZ_false _ _ ih => exact ih fun hh => hb (Or.inr hh)
   | while_done _ _ ihg => exact ihg fun hh => hb (Or.inl hh)
@@ -745,7 +707,7 @@ def Stmt.Straight : Stmt w → Prop
 /-- No `whileNZ` and no dynamic `memResize` anywhere; `ifNZ` is allowed, with both
 branches loop-free. For such code `staticTime` is an upper bound on every execution
 (`Exec.time_le_staticTime_of_loopFree`). The dynamic `memResize` is excluded for the
-same reason as loops: its charge depends on the runtime capacity. -/
+same reason as loops: its charge depends on the runtime length. -/
 def Stmt.LoopFree : Stmt w → Prop
   | .seq c₁ c₂ => c₁.LoopFree ∧ c₂.LoopFree
   | .memResize .. => False
@@ -766,8 +728,8 @@ safe for loop-free code by `Exec.time_le_staticTime_of_loopFree`.
 
 Two ways to misuse it: on `whileNZ` it returns 0, so a number quoted for looping
 code bounds nothing; on the *dynamic* `memResize` it returns the base `C.memResize`
-and under-reports, since the real charge adds `cap * C.allocPerWord` for a runtime
-capacity no function of the syntax can know. At the API surface use `staticTime?`,
+and under-reports, since the real charge adds `len * C.allocPerWord` for a runtime
+length no function of the syntax can know. At the API surface use `staticTime?`,
 which returns `none` unless the number is exact, or pair this with a
 `Stmt.Straight` (exact) or `Stmt.LoopFree` (upper bound) proof. Bounds for looping
 or dynamically-resizing code come from the `Triple` logic. -/
@@ -784,13 +746,11 @@ def Stmt.staticTime (C : CostModel) : Stmt w → ℕ
   | .memLen .. => C.memLen
   | .memLoad .. => C.memLoad
   | .memStore .. => C.memStore
-  | .memPush .. => C.memPush
-  | .memPop _ => C.memPop
   | .ifNZ _ t e => C.branch + max (t.staticTime C) (e.staticTime C)
   | .whileNZ .. => 0
 
 /-- `c` acquires no live memory anywhere, branches and loops included: no
-`memResize`, and `memResizeI` only at capacity 0. The free `memResizeI b 0` is
+`memResize`, and `memResizeI` only at length 0. The free `memResizeI b 0` is
 allowed, as it only ever decreases live memory, which is what
 `Exec.allocFree_space`'s `d ≤ 0 ∧ p ≤ 0` certifies. -/
 def Stmt.AllocFree : Stmt w → Prop
@@ -825,7 +785,7 @@ theorem Exec.time_le_staticTime_of_loopFree {C : CostModel} {c : Stmt w}
   | memResize | while_done | while_step => exact hl.elim
   | _ => exact le_rfl
 
-/-- Memory only ever enters through a resize to positive capacity, so alloc-free
+/-- Memory only ever enters through a resize to positive length, so alloc-free
 code, straight-line or not, has non-positive net and zero peak growth. The free
 `memResizeI b 0` may make the net strictly negative. -/
 theorem Exec.allocFree_space {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
@@ -921,50 +881,47 @@ theorem Exec.staticTime?_time_eq {C : CostModel} {c : Stmt w} {s s' : State w}
 /-! ### Absolute live memory: well-formed states and `liveMem`
 
 `Exec` defines the indices `d` and `p` for *arbitrary* start states, including
-adversarial ones where they have no physical reading. A state claiming a huge
-unbacked `caps b` would let `memResizeI b 0 ;; memResize b' n` fund a large allocation at
-certified peak 0 (phantom credit), and a state with `(s.bufs b).size > s.caps b`
-stores data the metric never charged (hidden storage). No such state is reachable
-from an honest start: `State.WellFormed` (fill within reserved capacity, finitely
-many reservations) holds for `State.init` and is preserved by every execution
-(`Exec.wellFormed_preserved`). Over such states the *absolute* footprint
-`State.liveMem`, the sum of reserved buffer capacities, is well defined
-(`liveMem_eq_of_supportBound`) and the profile is pinned to it exactly:
+adversarial ones where they have no physical reading: a state with infinitely many
+non-empty buffers has no finite footprint at all. No such state is reachable from
+an honest start: `State.WellFormed` (finitely many non-empty buffers) holds for
+`State.init` and is preserved by every execution (`Exec.wellFormed_preserved`).
+Over such states the *absolute* footprint `State.liveMem`, the sum of buffer
+lengths, is well defined (`liveMem_eq_of_supportBound`) and the profile is pinned
+to it exactly:
 
 * the net change is exact: `liveMem s' = liveMem s + d` (`Exec.liveMem_eq`);
 * the final state is within the peak (`Exec.liveMem_le_peak`), and so is every
   intermediate state (`Exec.reaches_liveMem_le_peak`, with `Reaches` enumerating
   the states an execution passes through);
-* a resize credits only capacity genuinely present in the footprint
+* a resize credits only words genuinely present in the footprint
   (`Exec.memResize_credit_le`, `Exec.memResizeI_credit_le`).
+
+Since a buffer's length is its only size, every stored word is a live word: there
+is no reserved-but-unfilled capacity and no data outside the metric.
 
 So from a well-formed state, `p` is an absolute high-water mark on physical memory
 above the start level, not growth relative to an arbitrary baseline. -/
 
-/-- `B` is a *support bound* for `s`: every buffer at or above `B` has no reserved
-capacity. The absolute footprint of such a state is `s.liveMem B`, and the choice
-of bound does not matter (`liveMem_eq_of_supportBound`). -/
+/-- `B` is a *support bound* for `s`: every buffer at or above `B` is empty. The
+absolute footprint of such a state is `s.liveMem B`, and the choice of bound does
+not matter (`liveMem_eq_of_supportBound`). -/
 def State.SupportBound (s : State w) (B : ℕ) : Prop :=
-  ∀ b, B ≤ b → s.caps b = 0
+  ∀ b, B ≤ b → (s.bufs b).size = 0
 
 /-- A support bound stays one at any larger bound. -/
 theorem State.SupportBound.mono {s : State w} {B B' : ℕ} (hs : s.SupportBound B)
     (hB : B ≤ B') : s.SupportBound B' :=
   fun b hb => hs b (hB.trans hb)
 
-/-- The states the memory accounting is *about*: every buffer's filled prefix fits
-inside its reserved capacity, so no data goes uncharged, and only finitely many
-buffers are reserved, so total live memory is well defined. Holds for `State.init`
-and is preserved by execution (`Exec.wellFormed_preserved`). -/
+/-- The states the memory accounting is *about*: only finitely many buffers are
+non-empty, so total live memory is well defined. Holds for `State.init` and is
+preserved by execution (`Exec.wellFormed_preserved`). -/
 structure State.WellFormed (s : State w) : Prop where
-  /-- Storage never exceeds what was reserved (and charged). -/
-  size_le_cap : ∀ b, (s.bufs b).size ≤ s.caps b
-  /-- Finite support: beyond some bound, no capacity is reserved. -/
+  /-- Finite support: beyond some bound, every buffer is empty. -/
   finite : ∃ B, s.SupportBound B
 
-/-- The initial state is well-formed: nothing stored, nothing reserved. -/
+/-- The initial state is well-formed: nothing stored. -/
 theorem State.init_wellFormed : (State.init w).WellFormed where
-  size_le_cap _ := Nat.le_refl 0
   finite := ⟨0, fun _ _ => rfl⟩
 
 /-- A strict upper bound on every buffer name occurring in `c`. Buffer names are
@@ -978,8 +935,6 @@ def Stmt.memBound : Stmt w → ℕ
   | .memLen _ b => b + 1
   | .memLoad _ b _ => b + 1
   | .memStore b _ _ => b + 1
-  | .memPush b _ => b + 1
-  | .memPop b => b + 1
   | .ifNZ _ thn els => max thn.memBound els.memBound
   | .whileNZ g _ body => max g.memBound body.memBound
 
@@ -998,8 +953,7 @@ theorem Stmt.touches_lt_memBound {c : Stmt w} {b : BufId} (h : c.Touches b) :
     rcases h with h | h
     · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
     · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
-  | memResize _ _ | memResizeI _ _ | memStore _ _ _ | memPush _ _
-  | memPop _ =>
+  | memResize _ _ | memResizeI _ _ | memStore _ _ _ =>
     subst h; exact Nat.lt_succ_self _
   | _ => exact h.elim
 
@@ -1009,55 +963,14 @@ theorem Stmt.touches_lt_of_memBound_le {c : Stmt w} {B : ℕ} (hB : c.memBound �
     ∀ b, c.Touches b → b < B :=
   fun _ ht => lt_of_lt_of_le (touches_lt_memBound ht) hB
 
-/-- Preservation of the storage-within-capacity invariant; the induction core of
-`Exec.wellFormed_preserved`. `memPush` demands free capacity (its `size < cap`
-hypothesis is exactly what keeps the invariant alive), a resize truncates the
-contents to the new capacity, and no other instruction grows a buffer. -/
-theorem Exec.sizes_le_caps {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
-    {d p : ℤ} (h : Exec C tape c s s' t d p) (hs : ∀ b, (s.bufs b).size ≤ s.caps b) :
-    ∀ b, (s'.bufs b).size ≤ s'.caps b := by
-  induction h with
-  | skip => exact hs
-  | seq _ _ ih₁ ih₂ => exact ih₂ (ih₁ hs)
-  | rand | imm | mov | un | bin | memLen | memLoad => exact hs
-  | @memResize b _ s | @memResizeI b _ s =>
-    intro b'
-    by_cases hb : b' = b
-    · subst hb
-      simp only [size_bufs_resizeBuf_self, caps_resizeBuf_self]
-      exact Nat.min_le_left _ _
-    · simp only [bufs_resizeBuf_ne _ _ hb, caps_resizeBuf_ne _ _ hb]; exact hs b'
-  | @memStore b i src s hlt =>
-    intro b'
-    by_cases hb : b' = b
-    · subst hb; simp only [bufs_setBuf_self, caps_setBuf, Array.size_set]; exact hs b'
-    · simp only [bufs_setBuf_ne _ _ hb, caps_setBuf]; exact hs b'
-  | @memPush b src s hlt =>
-    intro b'
-    by_cases hb : b' = b
-    · subst hb; simp only [bufs_setBuf_self, caps_setBuf, Array.size_push]; omega
-    · simp only [bufs_setBuf_ne _ _ hb, caps_setBuf]; exact hs b'
-  | @memPop b s =>
-    intro b'
-    by_cases hb : b' = b
-    · subst hb
-      simp only [bufs_setBuf_self, caps_setBuf, Array.size_pop]
-      have := hs b'
-      omega
-    · simp only [bufs_setBuf_ne _ _ hb, caps_setBuf]; exact hs b'
-  | ifNZ_true _ _ ih => exact ih hs
-  | ifNZ_false _ _ ih => exact ih hs
-  | while_done _ _ ihg => exact ihg hs
-  | while_step _ _ _ _ ihg ihb ihl => exact ihl (ihb (ihg hs))
-
-/-- A support bound survives execution: capacities only change at buffers named in
-`c`, all of which lie below the bound. -/
+/-- A support bound survives execution: buffers only change at names in `c`, all
+of which lie below the bound. -/
 theorem Exec.supportBound_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
     {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C tape c s s' t d p)
     (hc : ∀ b, c.Touches b → b < B)
     (hs : s.SupportBound B) : s'.SupportBound B := by
   intro b hb
-  rw [h.frame_cap fun ht => Nat.lt_irrefl b (Nat.lt_of_lt_of_le (hc b ht) hb)]
+  rw [h.frame_buf fun ht => Nat.lt_irrefl b (Nat.lt_of_lt_of_le (hc b ht) hb)]
   exact hs b hb
 
 /-- Preservation of well-formedness. With `State.init_wellFormed`, every state
@@ -1067,7 +980,6 @@ execution from an honest start reads as physical memory (`Exec.liveMem_eq`,
 theorem Exec.wellFormed_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
     {t : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p) (hwf : s.WellFormed) :
     s'.WellFormed where
-  size_le_cap := h.sizes_le_caps hwf.size_le_cap
   finite := by
     obtain ⟨B, hB⟩ := hwf.finite
     exact ⟨max B c.memBound,
@@ -1075,31 +987,36 @@ theorem Exec.wellFormed_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
         (Stmt.touches_lt_of_memBound_le (Nat.le_max_right _ _))
         (hB.mono (Nat.le_max_left _ _))⟩
 
-/-- Absolute live memory below `B`: the words reserved by buffers `0, …, B - 1`.
+/-- Absolute live memory below `B`: the words held by buffers `0, …, B - 1`.
 For `B` a support bound this is the state's entire footprint, independent of the
 choice of `B` (`liveMem_eq_of_supportBound`). Defined by recursion on `B` (rather
 than a `Finset` sum) so that the update lemmas prove by `induction`/`omega`. -/
 def State.liveMem (s : State w) : ℕ → ℕ
   | 0 => 0
-  | B + 1 => s.liveMem B + s.caps B
+  | B + 1 => s.liveMem B + (s.bufs B).size
 
 @[simp] theorem liveMem_readRandom (s : State w) (tape : RandomTape w) (r : Reg)
     (B : ℕ) : (s.readRandom tape r).liveMem B = s.liveMem B := by
   induction B with
   | zero => rfl
-  | succ B ih => simp only [State.liveMem, caps_readRandom, ih]
+  | succ B ih => simp only [State.liveMem, bufs_readRandom, ih]
 
 @[simp] theorem liveMem_setReg (s : State w) (r : Reg) (v : Word w) (B : ℕ) :
     (s.setReg r v).liveMem B = s.liveMem B := by
   induction B with
   | zero => rfl
-  | succ B ih => simp only [State.liveMem, ih, caps_setReg]
+  | succ B ih => simp only [State.liveMem, ih, bufs_setReg]
 
-@[simp] theorem liveMem_setBuf (s : State w) (b : BufId) (a : Array (Word w)) (B : ℕ) :
-    (s.setBuf b a).liveMem B = s.liveMem B := by
+/-- Overwriting a buffer with an array of the same length keeps the footprint. -/
+theorem liveMem_setBuf (s : State w) {b : BufId} {a : Array (Word w)}
+    (ha : a.size = (s.bufs b).size) (B : ℕ) : (s.setBuf b a).liveMem B = s.liveMem B := by
   induction B with
   | zero => rfl
-  | succ B ih => simp only [State.liveMem, ih, caps_setBuf]
+  | succ B ih =>
+    simp only [State.liveMem, ih]
+    by_cases hB : B = b
+    · subst hB; rw [bufs_setBuf_self, ha]
+    · rw [bufs_setBuf_ne _ _ hB]
 
 theorem liveMem_resizeBuf_of_le (s : State w) {b : BufId} (n : ℕ) {B : ℕ}
     (hB : B ≤ b) : (s.resizeBuf b n).liveMem B = s.liveMem B := by
@@ -1107,31 +1024,31 @@ theorem liveMem_resizeBuf_of_le (s : State w) {b : BufId} (n : ℕ) {B : ℕ}
   | zero => rfl
   | succ B ih =>
     simp only [State.liveMem, ih (Nat.le_of_succ_le hB),
-      caps_resizeBuf_ne _ _ (Nat.ne_of_lt (Nat.lt_of_succ_le hB))]
+      bufs_resizeBuf_ne _ _ (Nat.ne_of_lt (Nat.lt_of_succ_le hB))]
 
-/-- Resizing buffer `b` to capacity `n` moves the footprint by exactly the amount
+/-- Resizing buffer `b` to length `n` moves the footprint by exactly the amount
 `Exec.memResize` charges. -/
 theorem liveMem_resizeBuf (s : State w) {b : BufId} (n : ℕ) {B : ℕ} (hb : b < B) :
-    ((s.resizeBuf b n).liveMem B : ℤ) = s.liveMem B + n - s.caps b := by
+    ((s.resizeBuf b n).liveMem B : ℤ) = s.liveMem B + n - (s.bufs b).size := by
   induction B with
   | zero => exact absurd hb (Nat.not_lt_zero b)
   | succ B ih =>
     rcases Nat.lt_or_ge b B with hbB | hbB
     · have := ih hbB
-      simp only [State.liveMem, caps_resizeBuf_ne _ _ (Nat.ne_of_gt hbB)]
+      simp only [State.liveMem, bufs_resizeBuf_ne _ _ (Nat.ne_of_gt hbB)]
       push_cast
       omega
     · have heq : b = B := Nat.le_antisymm (Nat.lt_succ_iff.mp hb) hbB
       subst heq
-      simp only [State.liveMem, caps_resizeBuf_self,
+      simp only [State.liveMem, size_bufs_resizeBuf_self,
         liveMem_resizeBuf_of_le _ _ (Nat.le_refl b)]
       push_cast
       omega
 
-/-- Any single reserved capacity is part of the footprint; the arithmetic behind
+/-- Any single buffer's length is part of the footprint; the arithmetic behind
 `Exec.memResize_credit_le`. -/
-theorem caps_le_liveMem (s : State w) {b B : ℕ} (hb : b < B) :
-    s.caps b ≤ s.liveMem B := by
+theorem size_le_liveMem (s : State w) {b B : ℕ} (hb : b < B) :
+    (s.bufs b).size ≤ s.liveMem B := by
   induction B with
   | zero => exact absurd hb (Nat.not_lt_zero b)
   | succ B ih =>
@@ -1164,7 +1081,7 @@ theorem Exec.liveMem_eq {C : CostModel} {c : Stmt w} {s s' : State w} {t : ℕ}
     ring
   | rand | imm | mov | un | bin | memLen | memLoad => simp
   | memResize | memResizeI => rw [liveMem_resizeBuf _ _ (hc _ rfl)]; omega
-  | memStore | memPush | memPop => simp
+  | memStore => rw [liveMem_setBuf _ (Array.size_set ..)]; omega
   | ifNZ_true _ _ ih => exact ih fun b hb => hc b (Or.inl hb)
   | ifNZ_false _ _ ih => exact ih fun b hb => hc b (Or.inr hb)
   | while_done _ _ ihg => exact ihg fun b hb => hc b (Or.inl hb)
@@ -1265,17 +1182,17 @@ theorem Exec.reaches_liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' m : Stat
       have h3 := Exec.liveMem_eq hb fun b hb' => hc b (Or.inr hb')
       omega
 
-/-- No phantom credit: from any state, a resize of `b` credits at most `s.caps b`
-(exactly that for the free `memResizeI b 0`), and that capacity is part of the
+/-- No phantom credit: from any state, a resize of `b` credits at most `|b|`
+(exactly that for the free `memResizeI b 0`), and those words are part of the
 current absolute footprint, so the credit `-d` never exceeds `liveMem`. A shrink
 can neither drive the footprint negative nor fund an allocation the profile did
 not pay for; by `Exec.liveMem_eq` the footprint after
-`memResizeI b 0 ;; memResize b' n` is `liveMem s - s.caps b + n`, all charged. -/
+`memResizeI b 0 ;; memResize b' n` is `liveMem s - |b| + n`, all charged. -/
 theorem Exec.memResizeI_credit_le {C : CostModel} {b : BufId} {n : ℕ} {s s' : State w}
     {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C tape (.memResizeI b n) s s' t d p)
     (hb : b < B) : -d ≤ (s.liveMem B : ℤ) := by
   cases h
-  have := caps_le_liveMem s hb
+  have := size_le_liveMem s hb
   omega
 
 /-- `Exec.memResizeI_credit_le` for the register form. -/
@@ -1283,7 +1200,7 @@ theorem Exec.memResize_credit_le {C : CostModel} {b : BufId} {n : Reg} {s s' : S
     {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C tape (.memResize b n) s s' t d p)
     (hb : b < B) : -d ≤ (s.liveMem B : ℤ) := by
   cases h
-  have := caps_le_liveMem s hb
+  have := size_le_liveMem s hb
   omega
 
 /-! ## Reference interpreter
@@ -1311,11 +1228,11 @@ def run (C : CostModel) (tape : RandomTape w) : ℕ → Stmt w → State w → O
     | .memResize b n =>
         some (s.resizeBuf b (s.regs n).toNat,
           C.memResize + (s.regs n).toNat * C.allocPerWord,
-          ((s.regs n).toNat : ℤ) - (s.caps b : ℤ),
+          ((s.regs n).toNat : ℤ) - ((s.bufs b).size : ℤ),
           ((s.regs n).toNat : ℤ))
     | .memResizeI b n =>
         some (s.resizeBuf b n, C.memResize + n * C.allocPerWord,
-          (n : ℤ) - (s.caps b : ℤ),
+          (n : ℤ) - ((s.bufs b).size : ℤ),
           (n : ℤ))
     | .memLen d b =>
         some (s.setReg d (BitVec.ofNat w (s.bufs b).size), C.memLen, 0, 0)
@@ -1328,11 +1245,6 @@ def run (C : CostModel) (tape : RandomTape w) : ℕ → Stmt w → State w → O
           some (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) h),
             C.memStore, 0, 0)
         else none
-    | .memPush b src =>
-        if h : (s.bufs b).size < s.caps b then
-          some (s.setBuf b ((s.bufs b).push (s.regs src)), C.memPush, 0, 0)
-        else none
-    | .memPop b => some (s.setBuf b (s.bufs b).pop, C.memPop, 0, 0)
     | .ifNZ c thn els =>
         if s.regs c = 0 then do
           let (s', t, d, p) ← run C tape f els s
@@ -1420,16 +1332,6 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
         obtain ⟨rfl, rfl, rfl, rfl⟩ := h
         exact .memStore ‹_›
       · cases h
-    | .memPush b src =>
-      simp only [run] at h
-      split at h
-      · simp only [Option.some.injEq] at h
-        obtain ⟨rfl, rfl, rfl, rfl⟩ := h
-        exact .memPush ‹_›
-      · cases h
-    | .memPop b =>
-      simp only [run, Option.some.injEq] at h
-      obtain ⟨rfl, rfl, rfl, rfl⟩ := h; exact .memPop
     | .ifNZ c thn els =>
       simp only [run] at h
       by_cases hc : s.regs c = 0

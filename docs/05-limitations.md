@@ -19,15 +19,15 @@ Stated plainly:
 - Abstract states are mathematical functions.
   `State` maps registers and buffer names through functions.
   That a backend realizes these as stack slots, machine registers and per-buffer vectors is part of the same informal contract, made credible by the finitely many statically-known names, not proved.
-  Each buffer name also carries O(1) descriptor state (pointer, length, capacity) outside the word-count metric.
+  Each buffer name also carries O(1) descriptor state (pointer, length, and any allocator-side capacity) outside the word-count metric.
 - Total semantics at the edges.
-  `udiv`/`umod` by zero and `memPop` on an empty buffer follow the total `BitVec`/`Array` semantics: division by zero yields 0, pop on empty is a no-op.
+  `udiv`/`umod` by zero follow the total `BitVec` semantics: division by zero yields 0.
   A native backend must insert the corresponding checks or establish the corresponding preconditions, which is bounded O(1) work per site, but that obligation lives in the contract, not in the proofs.
 - Allocator realities are outside the metric.
   Allocator metadata, alignment, fragmentation, and code size are not measured.
-  The peak `p` counts reserved words, made absolute by the `WellFormed`/`liveMem` theorems, but words-to-bytes, headers and padding are the allocator's business.
-  The certified peak counts live reserved words, not fragmentation: under a non-reclaiming bump arena, regions left behind by copying reallocs are not reused, so the physical footprint can reach about twice the certified peak.
-  A resize's peak is its whole new capacity, which covers a copying realloc holding the old and the new region at once; an in-place backend is over-approximated by up to the old capacity for that instant.
+  The peak `p` counts buffer words, made absolute by the `WellFormed`/`liveMem` theorems, but words-to-bytes, headers and padding are the allocator's business.
+  The certified peak counts live buffer words, not fragmentation: under a non-reclaiming bump arena, regions left behind by copying reallocs are not reused, so the physical footprint can reach about twice the certified peak.
+  A resize's peak is its whole new length, which covers a copying realloc holding the old and the new region at once; an in-place backend is over-approximated by up to the old length for that instant.
 - Generation-time staging is unpriced.
   Builder programs, and compilers targeting this machine, unroll at *generation* time, so generated code size is proportional to their static parameters.
   The cost theorems price the runtime of the generated code; the size itself is visible as the instruction count under the unit model, but the generation work is Lean evaluation and carries no bound.

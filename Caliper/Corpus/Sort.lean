@@ -11,7 +11,7 @@ import Caliper.Liveness
   reverse-sorted and shuffled: three different times for one program.
 * `MatMul3`: 3×3 matrix multiply through the builder surface, with triply nested
   `while_` loops, compound index expressions (`3*i + k`), and a result buffer filled
-  by `push`.
+  by indexed stores.
 -/
 
 namespace Caliper.Corpus
@@ -70,8 +70,7 @@ def code (b : BufId) : Stmt w :=
 def runOn (arr : Array (Word 64)) : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
   (run .unit Caliper.RandomTape.zero 100000 (code 0)
       { State.init 64 with
-        bufs := fun b => if b = 0 then arr else #[]
-        caps := fun b => if b = 0 then arr.size else 0 }).map
+        bufs := fun b => if b = 0 then arr else #[] }).map
     fun (s, t, d, p) => (s.bufs 0, t, d, p)
 
 /- Shuffled input. -/
@@ -102,7 +101,7 @@ namespace MatMul3
 open Build in
 /-- `C[i][j] = Σₖ A[3i+k] · B[3k+j]`, row-major, written entirely in the
 builder surface: three nested `while_` loops, index arithmetic as compound
-expressions, results pushed into `c` in row-major order. -/
+expressions, results stored into `c` at `3i + j`. -/
 def matmulB (a b c : Buf w) : Build w Unit := do
   let i ← var 0
   while_ (var ((i : Exp w) .< 3)) do
@@ -115,12 +114,12 @@ def matmulB (a b c : Buf w) : Build w Unit := do
         let y ← b.load (3 * (k : Exp w) + j)
         acc <~ (acc : Exp w) + (x : Exp w) * y
         k <~ (k : Exp w) + 1
-      c.push (acc : Exp w)
+      c.store (3 * (i : Exp w) + j) (acc : Exp w)
       j <~ (j : Exp w) + 1
     i <~ (i : Exp w) + 1
 
-/-- The full program: reserve the 9-word result buffer (buffer 2, immediate capacity,
-statically priced), then multiply buffers 0 and 1 into it. -/
+/-- The full program: resize the result buffer (buffer 2) to 9 words (immediate
+length, statically priced), then multiply buffers 0 and 1 into it. -/
 def prog : Stmt 64 :=
   (Build.build (w := 64) do
     Build.emit (.memResizeI 2 9)
@@ -139,21 +138,20 @@ def demo : Option (Array (Word 64) × ℕ × ℤ × ℤ) :=
       { State.init 64 with
         bufs := fun b =>
           if b = 0 then #[1, 2, 3, 4, 5, 6, 7, 8, 9]
-          else if b = 1 then #[9, 8, 7, 6, 5, 4, 3, 2, 1] else #[]
-        caps := fun b => if b = 0 ∨ b = 1 then 9 else 0 }).map
+          else if b = 1 then #[9, 8, 7, 6, 5, 4, 3, 2, 1] else #[] }).map
     fun (s, t, d, p) => (s.bufs 2, t, d, p)
 
 /--
-info: some (#[30#64, 24#64, 18#64, 84#64, 69#64, 54#64, 138#64, 114#64, 90#64], 544, 9, 9)
+info: some (#[30#64, 24#64, 18#64, 84#64, 69#64, 54#64, 138#64, 114#64, 90#64], 571, 9, 9)
 -/
 #guard_msgs in
 #eval demo
 
-/- 22 registers: the conservative (fixpoint-free) loop widening of the
+/- 25 registers: the conservative (fixpoint-free) loop widening of the
 liveness analysis keeps every register the three nested loop bodies read
 alive across the loop heads, so nearly all of the builder's temporaries
 count toward the peak here. -/
-/-- info: 22 -/
+/-- info: 25 -/
 #guard_msgs in
 #eval prog.regPeak₀
 

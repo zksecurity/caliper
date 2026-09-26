@@ -54,8 +54,6 @@ def Stmt.render : Stmt w → List String
   | .memLen d b => [s!"{pad "mem.len" 10}r{d}, b{b}"]
   | .memLoad d b i => [s!"{pad "mem.load" 10}r{d}, b{b}[r{i}]"]
   | .memStore b i src => [s!"{pad "mem.store" 10}b{b}[r{i}], r{src}"]
-  | .memPush b src => [s!"{pad "mem.push" 10}b{b}, r{src}"]
-  | .memPop b => [s!"{pad "mem.pop" 10}b{b}"]
   | .ifNZ c thn els =>
       s!"ifnz r{c} \{" :: thn.render.map ("  " ++ ·) ++
       "} else {" :: els.render.map ("  " ++ ·) ++ ["}"]
@@ -78,11 +76,11 @@ private def renderDemo : Stmt 64 :=
   .imm 2 5 ;;
   .memResizeI 0 3 ;;
   .whileNZ (.bin .ult 1 0 2) 1
-    (.memPush 0 0 ;;
+    (.memStore 0 0 0 ;;
      .imm 3 1 ;;
      .bin .add 0 0 3) ;;
   .ifNZ 1
-    (.memLoad 4 0 1 ;; .memStore 0 1 4 ;; .memPop 0)
+    (.memLoad 4 0 1 ;; .memStore 0 1 4)
     (.un .isZero 4 1 ;; .memLen 5 0 ;; .memResize 1 5 ;; .mov 6 4 ;; .skip) ;;
   .memResizeI 0 0
 
@@ -92,14 +90,13 @@ mem.resizei b0, 3
 loop {
   ult  r1, r0, r2
   bifz r1
-  mem.push  b0, r0
+  mem.store b0[r0], r0
   imm   r3, 1
   add  r0, r0, r3
 }
 ifnz r1 {
   mem.load  r4, b0[r1]
   mem.store b0[r1], r4
-  mem.pop   b0
 } else {
   seqz r4, r1
   mem.len   r5, b0

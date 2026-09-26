@@ -16,11 +16,11 @@ this library).
 
 | Program | File | Highlights | Proved bound |
 | --- | --- | --- | --- |
-| `Memcpy` | `Corpus/Memory.lean` | dynamic `memResize`, `memPush` | `Triple`: linear time, memory = payload |
+| `Memcpy` | `Corpus/Memory.lean` | dynamic `memResize`, store loop | `Triple`: linear time, memory ≤ payload |
 | `Memset` | `Corpus/Memory.lean` | in-place `memStore` loop | pins |
 | `Reverse` | `Corpus/Memory.lean` | two-pointer swap, compound guard | pins |
-| `StackSum` | `Corpus/Memory.lean` | `memPop`/free (`memResizeI b 0`), negative net | pins |
-| `GrowVec` | `Corpus/GrowVec.lean` | doubling `memResize` that keeps contents | `Triple`: push spec, amortized linear time for `n` pushes |
+| `StackSum` | `Corpus/Memory.lean` | top-down loads, free (`memResizeI b 0`), negative net | pins |
+| `GrowVec` | `Corpus/GrowVec.lean` | fill register, doubling `memResize` that keeps contents | `Triple`: push spec, amortized linear time for `n` pushes |
 | `DotProduct` | `Corpus/Arith.lean` | two-buffer fold | `Triple`: linear time, zero memory |
 | `Gcd` | `Corpus/Arith.lean` | value-measure loop, builder comparator | `Triple`: `Nat.gcd` spec, linear-in-`b` time |
 | `BinExp` | `Corpus/Arith.lean` | square-and-multiply, `ifNZ`/`skip` | pins |
@@ -38,8 +38,8 @@ ops (`add`/`sub`/`mul` throughout, `mulhi`/`udiv`/`umod`/`eq` in `DivMod`,
 `ule` in `BitTricks`, `ult` in every counting guard), `memResize` (`Memcpy`,
 growing a non-empty buffer in `GrowVec`), `memResizeI` (`MatMul3`, `GrowVec`, and
 the free `memResizeI b 0` in `StackSum`), `memLoad`/`memStore`
-(`Reverse`, `InsertionSort`, …), `memPush` (`Memcpy`, `MatMul3`), `memPop`
-(`StackSum`), `memLen` (`Memcpy`, `Memset`, `StackSum`, `InsertionSort`),
+(`Reverse`, `InsertionSort`, `Memcpy`, `MatMul3`, `GrowVec`, …), `memLen`
+(`Memcpy`, `Memset`, `StackSum`, `InsertionSort`, `GrowVec`),
 `ifNZ` (`BinExp`, `InsertionSort`), `whileNZ` (all loops), `skip` (the else
 branches of `BinExp` and `InsertionSort`).
 -/

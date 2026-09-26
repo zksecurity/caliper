@@ -12,7 +12,7 @@ The worked programs, in increasing order of interest:
 2. `SumBuf`: a loop reading a buffer, with functional correctness, a linear *upper
    bound* on time, and zero memory.
 3. `Iota`: a loop that allocates, with net and peak memory growing linearly.
-4. `ScratchLoop`: a loop that *reuses* memory. Each iteration pushes and pops, so
+4. `ScratchLoop`: a loop that *reuses* memory. Each iteration writes a word and reads it back, so
    the peak is 1 word regardless of the trip count, which is what the (net, peak)
    profile buys over counting allocations.
 5. `SumTwo`: composition of two `SumBuf` calls, where the separation reasoning is
@@ -243,11 +243,11 @@ end SumBuf
 
 /-! ## Example 3: filling a buffer, the allocation bound
 
-`iota n`: reserve capacity `n` for an empty buffer, then push `0, 1, ..., n-1`. The
-capacity is charged at the `memResize` (net and peak `n`); every push is then
-memory-free and worst-case unit time. The push rule's capacity obligation is
-discharged from the invariant. The resize keeps whatever the buffer already holds,
-so the spec assumes it starts empty (a fresh buffer, as from `State.init`).
+`iota n`: resize the buffer to length `n` (new words read 0), then store
+`0, 1, ..., n-1` through an explicit fill index. The words are charged at the
+`memResize` (net at most `n`, peak `n`); every store is then memory-free and unit
+time, its in-range obligation discharged from the invariant. Whatever the buffer
+held before is overwritten, so the spec assumes nothing about it.
 
 Register conventions: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1. -/
 
@@ -255,15 +255,15 @@ namespace Iota
 
 /--
 ```c
-b = realloc(b, n); i = 0;   // b empty on entry
-while (i < n) { b.push(i); i += 1; }
+b = realloc(b, n); i = 0;
+while (i < n) { b[i] = i; i += 1; }
 ```
 `n` is passed in `r2`. -/
 def code (b : BufId) : Stmt w :=
   .memResize b 2 ;;
   .imm 0 0 ;;
   .whileNZ (.bin .ult 1 0 2) 1
-    (.memPush b 0 ;;
+    (.memStore b 0 0 ;;
      .imm 3 1 ;;
      .bin .add 0 0 3)
 
@@ -277,11 +277,25 @@ private theorem iotaTo_size (w n : ℕ) : (iotaTo w n).size = n := by
   | zero => rfl
   | succ n ih => simp [iotaTo, ih]
 
+private theorem getElem?_iotaTo (w n j : ℕ) :
+    (iotaTo w n)[j]? = if j < n then some (BitVec.ofNat w j) else none := by
+  induction n with
+  | zero => simp [iotaTo]
+  | succ n ih =>
+    rw [iotaTo, Array.getElem?_push, iotaTo_size, ih]
+    by_cases h1 : j = n
+    · subst h1; simp
+    · by_cases h2 : j < n
+      · simp [h1, h2, show j < n + 1 by omega]
+      · simp [h1, h2, show ¬ j < n + 1 by omega]
+
+/-- Loop invariant: `k` iterations remain, `b` has length `n`, and the words below
+the index hold their final values. -/
 def Inv (b : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 2 = BitVec.ofNat w n ∧
   (s.regs 0).toNat + k = n ∧
-  s.bufs b = iotaTo w (s.regs 0).toNat ∧
-  s.caps b = n
+  (s.bufs b).size = n ∧
+  ∀ j, j < (s.regs 0).toNat → (s.bufs b)[j]? = some (BitVec.ofNat w j)
 
 def InvG (b : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   Inv b n k s ∧
@@ -289,115 +303,120 @@ def InvG (b : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
 
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
   C.memResize + n * C.allocPerWord + C.imm + (n + 1) * (C.bin .ult + C.branch)
-    + n * (C.memPush + C.imm + C.bin .add)
+    + n * (C.memStore + C.imm + C.bin .add)
 
 /-- `code b` fills `b` with `0..n-1`. Time is linear; memory is charged once, at the
-allocation: net and peak are both `n`. The capacity is *dynamic* (read from `r2`),
-so the allocation's per-word time charge is data-dependent and enters the bound as
-`n * C.allocPerWord` through the capacity bound of `Triple.memResize`. -/
+resize: net and peak at most `n`. The length is *dynamic* (read from `r2`), so the
+resize's per-word time charge is data-dependent and enters the bound as
+`n * C.allocPerWord` through the length bound of `Triple.memResize`. -/
 theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
-    Triple C Caliper.RandomTape.zero
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs b = #[]) (code b)
+    Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (code b)
       (fun s => s.bufs b = iotaTo w n)
       (timeBound C n) n n := by
   have hguard : ∀ k, Triple C Caliper.RandomTape.zero (Inv (w := w) b n k) (.bin .ult 1 0 2)
       (InvG (w := w) b n k) (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
-    rintro s ⟨hlim, hik, hbuf, hcap⟩
+    rintro s ⟨hlim, hik, hsz, hfill⟩
     refine ⟨⟨?_, ?_, ?_, ?_⟩, ?_⟩
     · simp [hlim]
     · simp [hik]
-    · simp [hbuf]
-    · simp [hcap]
+    · simp [hsz]
+    · simpa using hfill
     · simp [hlim, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hn]
   have hpos : ∀ k (s : State w), InvG b n k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
-    rintro k s ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩ hnz
+    rintro k s ⟨⟨hlim, hik, hsz, hfill⟩, hflag⟩ hnz
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
-  have hbody : ∀ k, Triple C Caliper.RandomTape.zero (fun (s : State w) => InvG b n (k + 1) s ∧ s.regs 1 ≠ 0)
-      (.memPush b 0 ;; .imm 3 1 ;; .bin .add 0 0 3)
+  have hbody : ∀ k, Triple C Caliper.RandomTape.zero
+      (fun (s : State w) => InvG b n (k + 1) s ∧ s.regs 1 ≠ 0)
+      (.memStore b 0 0 ;; .imm 3 1 ;; .bin .add 0 0 3)
       (Inv b n k)
-      (C.memPush + (C.imm + C.bin .add)) 0 0 := by
-    rintro k s ⟨⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hnz⟩
+      (C.memStore + (C.imm + C.bin .add)) 0 0 := by
+    rintro k s ⟨⟨⟨hlim, hik, hsz, hfill⟩, hflag⟩, hnz⟩
     have hlt : (s.regs 0).toNat < n := cond_of_flag_ne hflag hnz
-    have hpush : (s.bufs b).size < s.caps b := by
-      rw [hbuf, hcap, iotaTo_size]
-      exact hlt
-    refine ⟨_, _, _, _, .seq (.memPush hpush) (.seq .imm .bin),
+    have hst : (s.regs 0).toNat < (s.bufs b).size := by rw [hsz]; exact hlt
+    refine ⟨_, _, _, _, .seq (.memStore hst) (.seq .imm .bin),
       ⟨?_, ?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
     · simp [hlim]
     · simp [-BitVec.toNat_add]
       rw [toNat_add_ofNat_one hlt hn]
       omega
-    · simp [-BitVec.toNat_add, hbuf]
-      rw [toNat_add_ofNat_one hlt hn]
-      simp [iotaTo]
-    · simp [hcap]
-  have h1 : Triple C Caliper.RandomTape.zero
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs b = #[]) (.memResize b 2)
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps b = n ∧ s.bufs b = #[])
+    · simp [hsz]
+    · intro j hj
+      simp [-BitVec.toNat_add] at hj ⊢
+      rw [toNat_add_ofNat_one hlt hn] at hj
+      rw [Array.getElem?_set]
+      by_cases hij : (s.regs 0).toNat = j
+      · subst hij; simp
+      · rw [if_neg hij]; exact hfill j (by omega)
+  have h1 : Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n)
+      (.memResize b 2)
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ (s.bufs b).size = n)
       (C.memResize + n * C.allocPerWord) n n := by
     apply Triple.memResize
-    rintro s ⟨hs, hb⟩
+    intro s hs
     have hval : (s.regs 2).toNat = n := by
       rw [hs, BitVec.toNat_ofNat]
       exact Nat.mod_eq_of_lt hn
-    refine ⟨by omega, ?_, ?_, ?_⟩
-    · simp [hs]
-    · simp [hval]
-    · exact bufs_resizeBuf_self_of_empty _ _ hb
+    exact ⟨by omega, by simp [hs], by simp [hval]⟩
   have h2 : Triple C Caliper.RandomTape.zero
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps b = n ∧ s.bufs b = #[])
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ (s.bufs b).size = n)
       (.imm 0 0) (Inv b n n) C.imm 0 0 := by
     apply Triple.imm
-    rintro s ⟨hlim, hcap, hbuf⟩
+    rintro s ⟨hlim, hsz⟩
     refine ⟨?_, ?_, ?_, ?_⟩
     · simp [hlim]
     · simp
-    · simp [hbuf, iotaTo]
-    · simp [hcap]
+    · simp [hsz]
+    · intro j hj; simp at hj
   have hW := Triple.whileNZ_measure hguard hpos hbody n
   refine ((h1.seq (h2.seq hW)).conseq (fun _ h => h) ?_
     (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp))
-  rintro s ⟨k', ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hzero⟩
+  rintro s ⟨k', ⟨⟨hlim, hik, hsz, hfill⟩, hflag⟩, hzero⟩
   by_cases hc : (s.regs 0).toNat < n
   · exfalso
     rw [hflag] at hzero
     exact not_cond_of_flag_zero (by omega) hzero hc
   · have hi : (s.regs 0).toNat = n := by omega
-    rw [hbuf, hi]
+    apply Array.ext_getElem?
+    intro j
+    rw [getElem?_iotaTo]
+    by_cases hj : j < n
+    · rw [if_pos hj]; exact hfill j (by omega)
+    · rw [if_neg hj, Array.getElem?_eq_none (by omega)]
 
 end Iota
 
 /-! ## Example 4: memory reuse, peak 1 regardless of trip count
 
-A one-slot scratch buffer is allocated once, each of the `n` iterations pushes into
-it and pops again inside the fixed capacity, so both are memory-free, and the buffer
-is freed at the end. Net memory 0, peak 1, for any `n`, where a total-allocation
-counter would report `n`. `Triple.free'`, free with known capacity, credits the
-word back so the whole program nets to zero. The scratch buffer must start empty
-(a fresh buffer), since the resize keeps any contents that fit.
+A one-word scratch buffer is allocated once, each of the `n` iterations writes a
+word into it and reads it back, so every access is memory-free, and the buffer is
+freed at the end. Net memory 0, peak 1, for any `n`, where a total-allocation
+counter would report `n`. `Triple.free'`, free with known length, credits the word
+back so the whole program nets to zero.
 
-Registers: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1. -/
+Registers: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1, `r4` the
+scratch index 0, `r5` the word read back. -/
 
 namespace ScratchLoop
 
 /--
 ```c
-s = realloc(s, 1); i = 0;   // s empty on entry
-while (i < n) { s.push(i); s.pop(); i += 1; }
+s = realloc(s, 1); i = 0;
+while (i < n) { s[0] = i; x = s[0]; i += 1; }
 s = realloc(s, 0);          // free
 ```
-`n` is passed in `r2`. The one-word capacity is known at generation time, so the
+`n` is passed in `r2`. The one-word length is known at generation time, so the
 allocation uses the statically priced `memResizeI`: no register setup, and the
 per-word charge is the syntactic constant `1 * C.allocPerWord`. -/
 def code (sb : BufId) : Stmt w :=
   .memResizeI sb 1 ;;
   .imm 0 0 ;;
   .whileNZ (.bin .ult 1 0 2) 1
-    (.memPush sb 0 ;;
-     .memPop sb ;;
+    (.imm 4 0 ;;
+     .memStore sb 4 0 ;;
+     .memLoad 5 sb 4 ;;
      .imm 3 1 ;;
      .bin .add 0 0 3) ;;
   .memResizeI sb 0
@@ -405,8 +424,7 @@ def code (sb : BufId) : Stmt w :=
 def Inv (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   s.regs 2 = BitVec.ofNat w n ∧
   (s.regs 0).toNat + k = n ∧
-  s.bufs sb = #[] ∧
-  s.caps sb = 1
+  (s.bufs sb).size = 1
 
 def InvG (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
   Inv sb n k s ∧
@@ -414,74 +432,65 @@ def InvG (sb : BufId) (n : ℕ) (k : ℕ) (s : State w) : Prop :=
 
 def timeBound (C : CostModel) (n : ℕ) : ℕ :=
   C.memResize + C.allocPerWord + C.memResize + C.imm + (n + 1) * (C.bin .ult + C.branch)
-    + n * (C.memPush + C.memPop + C.imm + C.bin .add)
+    + n * (C.imm + C.memStore + C.memLoad + C.imm + C.bin .add)
 
 /-- Linear time, net memory 0 and peak memory 1, for any `n`. -/
 theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
-    Triple C Caliper.RandomTape.zero
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs sb = #[]) (code sb)
-      (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
+    Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (code sb)
+      (fun s => s.bufs sb = #[])
       (timeBound C n) 0 1 := by
   have hguard : ∀ k, Triple C Caliper.RandomTape.zero (Inv (w := w) sb n k) (.bin .ult 1 0 2)
       (InvG (w := w) sb n k) (C.bin .ult) 0 0 := by
     intro k
     apply Triple.bin
-    rintro s ⟨hlim, hik, hbuf, hcap⟩
-    refine ⟨⟨?_, ?_, ?_, ?_⟩, ?_⟩
+    rintro s ⟨hlim, hik, hsz⟩
+    refine ⟨⟨?_, ?_, ?_⟩, ?_⟩
     · simp [hlim]
     · simp [hik]
-    · simp [hbuf]
-    · simp [hcap]
+    · simp [hsz]
     · simp [hlim, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hn]
   have hpos : ∀ k (s : State w), InvG sb n k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
-    rintro k s ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩ hnz
+    rintro k s ⟨⟨hlim, hik, hsz⟩, hflag⟩ hnz
     have hlt := cond_of_flag_ne hflag hnz
     exact ⟨k - 1, by omega⟩
-  have hbody : ∀ k, Triple C Caliper.RandomTape.zero (fun (s : State w) => InvG sb n (k + 1) s ∧ s.regs 1 ≠ 0)
-      (.memPush sb 0 ;; .memPop sb ;; .imm 3 1 ;; .bin .add 0 0 3)
+  have hbody : ∀ k, Triple C Caliper.RandomTape.zero
+      (fun (s : State w) => InvG sb n (k + 1) s ∧ s.regs 1 ≠ 0)
+      (.imm 4 0 ;; .memStore sb 4 0 ;; .memLoad 5 sb 4 ;; .imm 3 1 ;; .bin .add 0 0 3)
       (Inv sb n k)
-      (C.memPush + (C.memPop + (C.imm + C.bin .add))) 0 0 := by
-    rintro k s ⟨⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hnz⟩
+      (C.imm + (C.memStore + (C.memLoad + (C.imm + C.bin .add)))) 0 0 := by
+    rintro k s ⟨⟨⟨hlim, hik, hsz⟩, hflag⟩, hnz⟩
     have hlt : (s.regs 0).toNat < n := cond_of_flag_ne hflag hnz
-    have hpush : (s.bufs sb).size < s.caps sb := by
-      rw [hbuf, hcap]
-      simp
-    refine ⟨_, _, _, _, .seq (.memPush hpush) (.seq .memPop (.seq .imm .bin)),
-      ⟨?_, ?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
+    refine ⟨_, _, _, _,
+      .seq .imm (.seq (.memStore (by simp [hsz])) (.seq (.memLoad (by simp [hsz]))
+        (.seq .imm .bin))),
+      ⟨?_, ?_, ?_⟩, le_refl _, by omega, by omega⟩
     · simp [hlim]
-    · simp [-BitVec.toNat_add, hbuf]
+    · simp [-BitVec.toNat_add]
       rw [toNat_add_ofNat_one hlt hn]
       omega
-    · simp [hbuf]
-    · simp [hcap]
+    · simp [hsz]
   have h1 : Triple C Caliper.RandomTape.zero
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.bufs sb = #[])
+      (fun s => s.regs 2 = BitVec.ofNat w n)
       (.memResizeI sb 1)
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ (s.bufs sb).size = 1)
       (C.memResize + 1 * C.allocPerWord) 1 1 := by
     apply Triple.memResizeI
-    rintro s ⟨hlim, hb⟩
-    refine ⟨?_, ?_, ?_⟩
-    · simp [hlim]
-    · simp
-    · exact bufs_resizeBuf_self_of_empty _ _ hb
+    intro s hlim
+    exact ⟨by simp [hlim], by simp⟩
   have h2 : Triple C Caliper.RandomTape.zero
-      (fun s => s.regs 2 = BitVec.ofNat w n ∧ s.caps sb = 1 ∧ s.bufs sb = #[])
+      (fun s => s.regs 2 = BitVec.ofNat w n ∧ (s.bufs sb).size = 1)
       (.imm 0 0) (Inv sb n n) C.imm 0 0 := by
     apply Triple.imm
-    rintro s ⟨hlim, hcap, hbuf⟩
-    refine ⟨?_, ?_, ?_, ?_⟩
-    · simp [hlim]
-    · simp
-    · simp [hbuf]
-    · simp [hcap]
+    rintro s ⟨hlim, hsz⟩
+    exact ⟨by simp [hlim], by simp, by simp [hsz]⟩
   have hW := Triple.whileNZ_measure hguard hpos hbody n
-  have hF : Triple C Caliper.RandomTape.zero (fun s => ∃ k', InvG (w := w) sb n k' s ∧ s.regs 1 = 0)
-      (.memResizeI sb 0) (fun s => s.bufs sb = #[] ∧ s.caps sb = 0)
+  have hF : Triple C Caliper.RandomTape.zero
+      (fun s => ∃ k', InvG (w := w) sb n k' s ∧ s.regs 1 = 0)
+      (.memResizeI sb 0) (fun s => s.bufs sb = #[])
       C.memResize (-(1 : ℤ)) 0 := by
     apply Triple.free' (K := 1)
-    rintro s ⟨k', ⟨⟨hlim, hik, hbuf, hcap⟩, hflag⟩, hzero⟩
-    exact ⟨by omega, by simp, by simp⟩
+    rintro s ⟨k', ⟨⟨hlim, hik, hsz⟩, hflag⟩, hzero⟩
+    exact ⟨by omega, by simp⟩
   refine ((h1.seq (h2.seq (hW.seq hF))).conseq (fun _ h => h)
     (fun _ h => h) (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp))
 
@@ -543,7 +552,7 @@ end SumTwo
 
 * `CountUp` proves a `SumBuf`-shaped loop bound as a `TimeTriple`: no net, no peak,
   no `max` profile algebra appears anywhere in the proof.
-* `Drain` pops a buffer until it is empty. Its trip count is the *runtime* buffer
+* `Drain` counts a buffer's length down to zero. Its trip count is the *runtime* buffer
   length, unbounded over the trivial precondition, so no uniform time bound exists
   (`Drain.no_time_bound`), yet the space bound net 0 / peak 0 is provable
   independent of the trip count (`Drain.space_spec`).
@@ -613,7 +622,7 @@ theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
   · omega
 
 /-- Recombined: the time-only proof above, and a space triple obtained for free
-(`code` acquires no capacity), glued into a full `Triple` by determinism. -/
+(`code` acquires no memory), glued into a full `Triple` by determinism. -/
 theorem spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
     Triple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (code (w := w))
       (fun s => (s.regs 0).toNat = n) (timeBound C n) 0 0 :=
@@ -626,83 +635,103 @@ namespace Drain
 
 /--
 ```c
-while (b.len != 0) { b.pop(); }
+i = b.len; while (i != 0) { i -= 1; }
 ```
-The flag is `r1`. The trip count is the buffer's length, a *runtime* quantity with
-no static bound. -/
+`r0` the counter, `r1` the flag, `r2` the constant 1. The trip count is the buffer's
+length, a *runtime* quantity with no static bound. -/
 def code (b : BufId) : Stmt w :=
-  .whileNZ (.memLen 1 b) 1 (.memPop b)
+  .memLen 0 b ;;
+  .whileNZ (.mov 1 0) 1 (.imm 2 1 ;; .bin .sub 0 0 2)
 
-def Inv (b : BufId) (k : ℕ) (s : State w) : Prop := (s.bufs b).size = k
+/-- Decrementing a nonzero word does not wrap. -/
+private theorem toNat_sub_one {x : BitVec w} (hx : x.toNat ≠ 0) :
+    (x - 1).toNat = x.toNat - 1 := by
+  have hlt := x.isLt
+  have h1 : (1 : BitVec w).toNat = 1 := by
+    show (BitVec.ofNat w 1).toNat = 1
+    rw [BitVec.toNat_ofNat]; exact Nat.mod_eq_of_lt (by omega)
+  rw [BitVec.toNat_sub, h1]
+  have : 2 ^ w - 1 + x.toNat = (x.toNat - 1) + 2 ^ w := by omega
+  rw [this, Nat.add_mod_right, Nat.mod_eq_of_lt (by omega)]
 
-def InvG (b : BufId) (k : ℕ) (s : State w) : Prop :=
-  Inv b k s ∧ s.regs 1 = BitVec.ofNat w k
+def Inv (k : ℕ) (s : State w) : Prop := (s.regs 0).toNat = k
+
+def InvG (k : ℕ) (s : State w) : Prop := Inv k s ∧ s.regs 1 = s.regs 0
 
 /-- Space-only: net 0, peak 0, from every start state, including those where the
-loop runs longer than any given time bound (`no_time_bound`). The measure, the buffer
-length, still drives the induction; it never appears in the bounds. -/
+loop runs longer than any given time bound (`no_time_bound`). The measure, the
+counter's value, still drives the induction; it never appears in the bounds. -/
 theorem space_spec {C : CostModel} (b : BufId) :
     SpaceTriple C Caliper.RandomTape.zero (fun _ => True) (code (w := w) b) (fun _ => True) 0 0 := by
-  have hguard : ∀ k, SpaceTriple C Caliper.RandomTape.zero (Inv (w := w) b k) (.memLen 1 b)
-      (InvG (w := w) b k) 0 0 := by
+  have hguard : ∀ k, SpaceTriple C Caliper.RandomTape.zero (Inv (w := w) k) (.mov 1 0)
+      (InvG (w := w) k) 0 0 := by
     intro k
-    apply SpaceTriple.memLen
+    apply SpaceTriple.mov
     intro s hs
-    exact ⟨hs, by simp [show (s.bufs b).size = k from hs]⟩
-  have hpos : ∀ k (s : State w), InvG b k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
-    rintro (_ | k) s ⟨_, hflag⟩ hnz
-    · exact absurd (hflag.trans (by simp)) hnz
+    exact ⟨by simpa [Inv] using hs, by simp⟩
+  have hpos : ∀ k (s : State w), InvG k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
+    rintro (_ | k) s ⟨hk, h1⟩ hnz
+    · exact absurd (h1.trans (BitVec.eq_of_toNat_eq (by simpa [Inv] using hk))) hnz
     · exact ⟨k, rfl⟩
-  have hbody : ∀ k, SpaceTriple C Caliper.RandomTape.zero (fun (s : State w) => InvG b (k + 1) s ∧ s.regs 1 ≠ 0)
-      (.memPop b) (Inv b k) 0 0 := by
-    intro k
-    apply SpaceTriple.memPop
-    rintro s ⟨⟨hsz, _⟩, _⟩
-    show ((s.setBuf b (s.bufs b).pop).bufs b).size = k
-    simp [show (s.bufs b).size = k + 1 from hsz]
+  have hbody : ∀ k, SpaceTriple C Caliper.RandomTape.zero
+      (fun (s : State w) => InvG (k + 1) s ∧ s.regs 1 ≠ 0)
+      (.imm 2 1 ;; .bin .sub 0 0 2) (Inv k) 0 0 := by
+    rintro k s ⟨⟨hk, _⟩, _⟩
+    refine ⟨_, _, _, _, .seq .imm .bin, ?_, le_refl _, le_refl _⟩
+    simp only [Inv] at hk ⊢
+    simp only [BinOp.eval, regs_setReg_self, regs_setReg_ne _ _ (show (0 : ℕ) ≠ 2 by decide)]
+    rw [toNat_sub_one (by omega)]
+    omega
   intro s _
   obtain ⟨s', t, d, p, hexec, _, hd, hp⟩ :=
-    SpaceTriple.whileNZ_measure hguard hpos hbody ((s.bufs b).size) s rfl
-  refine ⟨s', t, d, p, hexec, trivial, ?_, ?_⟩ <;> simp_all
+    SpaceTriple.whileNZ_measure hguard hpos hbody
+      ((s.setReg 0 (BitVec.ofNat w (s.bufs b).size)).regs 0).toNat
+      (s.setReg 0 (BitVec.ofNat w (s.bufs b).size)) rfl
+  refine ⟨s', _, _, _, .seq .memLen hexec, trivial, ?_, ?_⟩ <;> simp_all
 
-/-- An `ofNat` below the modulus is zero only if its argument is. -/
-private theorem ofNat_eq_zero_iff {n : ℕ} (hn : n < 2 ^ w) :
-    BitVec.ofNat w n = 0 ↔ n = 0 := by
-  constructor
-  · intro h
-    have := congrArg BitVec.toNat h
-    simp only [BitVec.toNat_ofNat] at this
-    rw [Nat.mod_eq_of_lt hn] at this
-    exact this
-  · rintro rfl
-    rfl
-
-/-- Time lower bound: draining a buffer of length `m < 2 ^ w` takes at least `m`
-steps under the unit cost model. (The hypothesis keeps the length register from
-wrapping; it is preserved as the buffer shrinks.) -/
-private theorem time_lower {b : BufId} {c : Stmt w} {s s' : State w} {t : ℕ}
+/-- Time lower bound for the countdown loop: from counter value `x`, at least
+`x.toNat` steps under the unit cost model. -/
+private theorem loop_time_lower {c : Stmt w} {s s' : State w} {t : ℕ}
     {d p : ℤ} (h : Exec .unit Caliper.RandomTape.zero c s s' t d p)
-    (hc : c = .whileNZ (.memLen 1 b) 1 (.memPop b))
-    (hsz : (s.bufs b).size < 2 ^ w) : (s.bufs b).size ≤ t := by
+    (hc : c = .whileNZ (.mov 1 0) 1 (.imm 2 1 ;; .bin .sub 0 0 2)) :
+    (s.regs 0).toNat ≤ t := by
   induction h with
   | while_done hg hz =>
     obtain ⟨rfl, rfl, rfl⟩ := Stmt.whileNZ.inj hc
     cases hg
     simp only [regs_setReg_self] at hz
-    rw [ofNat_eq_zero_iff hsz] at hz
-    omega
+    simp [hz]
   | while_step hg hnz hb _ _ _ ihl =>
     obtain ⟨rfl, rfl, rfl⟩ := Stmt.whileNZ.inj hc
     cases hg
-    cases hb
-    simp only [regs_setReg_self, ne_eq, ofNat_eq_zero_iff hsz] at hnz
-    have hlow := ihl rfl (by simp; omega)
-    simp only [bufs_setBuf_self, bufs_setReg, Array.size_pop] at hlow
-    have e1 : CostModel.unit.memLen = 1 := rfl
-    have e2 : CostModel.unit.branch = 1 := rfl
-    have e3 : CostModel.unit.memPop = 1 := rfl
-    omega
+    cases hb with
+    | seq h₁ h₂ =>
+      cases h₁
+      cases h₂
+      simp only [regs_setReg_self] at hnz
+      have hx : (_ : BitVec w).toNat ≠ 0 := fun h0 => hnz (BitVec.eq_of_toNat_eq (by simpa using h0))
+      have hlow := ihl rfl
+      simp only [BinOp.eval, regs_setReg_self, regs_setReg_ne _ _ (show (0 : ℕ) ≠ 2 by decide),
+        regs_setReg_ne _ _ (show (0 : ℕ) ≠ 1 by decide)] at hlow
+      rw [toNat_sub_one hx] at hlow
+      have e1 : CostModel.unit.mov = 1 := rfl
+      have e2 : CostModel.unit.branch = 1 := rfl
+      have e3 : CostModel.unit.imm = 1 := rfl
+      have e4 : CostModel.unit.bin .sub = 1 := rfl
+      omega
   | _ => simp_all
+
+/-- Time lower bound: counting down a buffer of length `m < 2 ^ w` takes at least `m`
+steps under the unit cost model. -/
+private theorem time_lower {b : BufId} {s s' : State w} {t : ℕ} {d p : ℤ}
+    (h : Exec .unit Caliper.RandomTape.zero (code b) s s' t d p)
+    (hsz : (s.bufs b).size < 2 ^ w) : (s.bufs b).size ≤ t := by
+  cases h with
+  | seq h₁ h₂ =>
+    cases h₁
+    have := loop_time_lower h₂ rfl
+    simp only [regs_setReg_self, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hsz] at this
+    omega
 
 /-- No uniform time bound exists for `Drain.code`: every candidate `T` representable
 in a word is beaten by starting with a buffer of length `T + 1`. Contrast
@@ -714,7 +743,7 @@ theorem no_time_bound (b : BufId) (T : ℕ) (hT : T + 1 < 2 ^ w) :
     { State.init w with
       bufs := fun b' => if b' = b then Array.replicate (T + 1) 0 else #[] }
     trivial
-  have hlow := time_lower hexec rfl (by simp; omega)
+  have hlow := time_lower hexec (by simp; omega)
   simp at hlow
   omega
 
@@ -868,8 +897,7 @@ words, and the scratch loop runs 100 iterations peaking at 1 word. -/
 /-- Initial state with `#[3, 5, 9]` in buffer 0. -/
 def demoState : State 64 :=
   { State.init 64 with
-    bufs := fun b => if b = 0 then #[3, 5, 9] else #[]
-    caps := fun b => if b = 0 then 3 else 0 }
+    bufs := fun b => if b = 0 then #[3, 5, 9] else #[] }
 
 /-- Sum: expect value 17, time 23, memory (0, 0). -/
 def demoSum : Option (Word 64 × ℕ × ℤ × ℤ) :=
@@ -893,7 +921,7 @@ def demoScratch : Option (ℕ × ℤ × ℤ) :=
 #guard_msgs in
 #eval demoIota
 
-/-- info: some (604, 0, 1) -/
+/-- info: some (704, 0, 1) -/
 #guard_msgs in
 #eval demoScratch
 
@@ -901,9 +929,9 @@ def demoScratch : Option (ℕ × ℤ × ℤ) :=
 
 `PairBuf` (see `Builder.lean`) is an array-of-structs: one buffer, stride 2. Field
 access is compiled index arithmetic, so its cost is ordinary instruction cost. The
-demo allocates room for two pairs, pushes them, reads `fst 1` (= 30) and `snd 0`
+demo allocates two zeroed pairs, stores both, reads `fst 1` (= 30) and `snd 0`
 (= 20), and returns their sum: value 50, memory (4, 4), the four buffer words
-charged at allocation, the pushes themselves being memory-free. The 18 register
+charged at allocation, the stores themselves being memory-free. The 34 register
 names the straight-line expression code uses are not in the dynamic profile; their
 inferred live peak is pinned in `Liveness.lean`. -/
 
@@ -912,8 +940,8 @@ register peak alongside the buffer numbers below. -/
 def pairProg : ℕ × Stmt 64 :=
   Build.build (w := 64) do
     let pb ← Build.mkPairBuf 2
-    pb.push 10 20
-    pb.push 30 40
+    pb.set 0 10 20
+    pb.set 1 30 40
     let x ← pb.fst 1
     let y ← pb.snd 0
     Build.var ((x : Exp 64) + y)

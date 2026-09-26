@@ -57,12 +57,12 @@ Mnemonic → (format, opcode, f3, f7):
 
 * Registers: Caliper `rN` maps to RISC-V `x(5+N)` (`x5`–`x30`), and the lowering
   fails (returns `.error`) for `N ≥ 26`. `x1`–`x3` are scratch registers for the
-  fixup sequences and address arithmetic, `x0` is the hard-wired zero, and `x4`,
-  `x31` are unused.
+  fixup sequences and address arithmetic, `x31` holds an immediate resize length,
+  `x0` is the hard-wired zero, and `x4` is unused.
 * Buffer arena: each `BufId` gets a fixed region decided at lowering time from a
-  per-test declared maximum capacity, a lowering parameter, since dynamic `memResize`
-  capacities are not statically known. The region is `1 + cap` 64-bit words starting
-  at its base address: word 0 is the buffer's fill length, the data follows. Regions
+  per-test declared maximum length, a lowering parameter, since dynamic `memResize`
+  lengths are not statically known. The region is `1 + cap` 64-bit words starting
+  at its base address: word 0 is the buffer's length, the data follows. Regions
   are laid out back-to-back from `arenaBase = 0x100000`.
 * Semantics fixups, where Caliper differs from raw RV64:
   - `udiv` by zero is 0 in Caliper, all-ones on RV64, so mask the `DIVU` result with
@@ -71,15 +71,16 @@ Mnemonic → (format, opcode, f3, f7):
   - shift amounts ≥ 64 give 0 in Caliper, RV64 masks to 6 bits, so mask the
     `SLL`/`SRL` result with `-(shamt <ᵤ 64)` (4 instructions total).
   - `memResize`/`memResizeI` realize the realloc contract in place: regions are
-    preassigned at the declared maximum capacity, so no runtime bump pointer or copy
-    is needed, and a resize only truncates the fill length, `len ← min(len, n)`
-    (one compare-and-branch; a resize to 0 is a single store of 0). Contents below
-    the new length stay where they are, exactly as `State.resizeBuf` keeps the
-    prefix. An immediate capacity above the declared region is rejected at lowering
-    time; a register capacity above it is outside the test lowering's contract (the
-    harness declares every buffer's maximum), and shrinking does not reclaim arena
-    space, each buffer's region being dedicated.
-  - `memPop` on an empty buffer is a no-op, so branch over the decrement.
+    preassigned at the declared maximum length, so no runtime bump pointer or copy
+    is needed. A resize zeroes the words from the old length up to `n` (a loop of
+    five instructions per word, the O(n) work the `n · allocPerWord` charge pays
+    for, and nothing when shrinking), then stores `n` as the length. Words below
+    `min(len, n)` stay where they are and the new ones read 0, exactly as
+    `State.resizeBuf`; a resize to 0 is a single store of 0. An immediate length
+    above the declared region is rejected at lowering time; a register length above
+    it is outside the test lowering's contract (the harness declares every buffer's
+    maximum), and shrinking does not reclaim arena space, each buffer's region being
+    dedicated.
 * Programs end with `EBREAK`; the harness runs until it is reached.
 -/
 
@@ -209,6 +210,21 @@ def Ctx.arenaEnd (ctx : Ctx) : Nat :=
 private def s1 : Nat := 1
 private def s2 : Nat := 2
 private def s3 : Nat := 3
+private def s4 : Nat := 31
+
+/-- Zero `data[len .. n)` and set the length to `n`, for `n` in register `rn` and
+the length slot's address in `s1`: `i ← len; while (i < n) { data[i] ← 0; i += 1 };
+len ← n`. -/
+private def resizeTo (rn : Nat) : Array UInt32 :=
+  #[ld s2 0 s1,        -- i ← len
+    bltu s2 rn 8,      -- i < n: zero one word
+    jal 0 24,          -- otherwise done
+    slli s3 s2 3,
+    add s3 s3 s1,
+    sd 0 8 s3,         -- data[i] ← 0 (skipping the length slot)
+    addi s2 s2 1,
+    jal 0 (-24),       -- back to the test
+    sd rn 0 s1]        -- len ← n
 
 /-- Caliper register → RISC-V register. Direct map `rN ↦ x(5+N)`, failing beyond the
 26 registers `x5`–`x30`. -/
@@ -281,26 +297,20 @@ partial def lowerStmt (ctx : Ctx) : Stmt 64 → Except String (Array UInt32)
     | .ne => .ok #[xor s1 ra rb, sltu rd 0 s1]
     | .ult => .ok #[sltu rd ra rb]
     | .ule => .ok #[sltu s1 rb ra, xori rd s1 1]
-  -- resize in place: regions are preassigned at the declared maximum capacity,
-  -- so a resize only truncates the fill length, len ← min(len, n)
+  -- resize in place: regions are preassigned at the declared maximum length, so a
+  -- resize zeroes the words it adds and stores the new length
   | .memResize b n => do
     let rn ← regMap n
     let l ← ctx.find b
-    .ok (li s1 l.base ++
-      #[ld s2 0 s1,        -- len
-        bltu s2 rn 8,      -- len < n: growing keeps everything
-        sd rn 0 s1])       -- n ≤ len: truncate to n
+    .ok (li s1 l.base ++ resizeTo rn)
   | .memResizeI b n => do
     let l ← ctx.find b
     if l.cap < n then
-      .error s!"buffer b{b}: immediate capacity {n} exceeds its declared region {l.cap}"
+      .error s!"buffer b{b}: immediate length {n} exceeds its declared region {l.cap}"
     else if n = 0 then
       .ok (li s1 l.base ++ #[sd 0 0 s1])   -- free: empty
     else
-      .ok (li s1 l.base ++ li s3 n ++
-        #[ld s2 0 s1,
-          bltu s2 s3 8,
-          sd s3 0 s1])
+      .ok (li s1 l.base ++ li s4 n ++ resizeTo s4)
   | .memLen d b => do
     let rd ← regMap d
     let l ← ctx.find b
@@ -315,23 +325,6 @@ partial def lowerStmt (ctx : Ctx) : Stmt 64 → Except String (Array UInt32)
     let rs ← regMap src
     let l ← ctx.find b
     .ok (li s1 (l.base + 8) ++ #[slli s2 ri 3, add s1 s1 s2, sd rs 0 s1])
-  | .memPush b src => do
-    let rs ← regMap src
-    let l ← ctx.find b
-    .ok (li s1 l.base ++
-      #[ld s2 0 s1,        -- len
-        slli s3 s2 3,
-        add s3 s3 s1,
-        sd rs 8 s3,        -- data[len] (skipping the length slot)
-        addi s2 s2 1,
-        sd s2 0 s1])
-  | .memPop b => do
-    let l ← ctx.find b
-    .ok (li s1 l.base ++
-      #[ld s2 0 s1,
-        beq s2 0 12,       -- empty: skip the decrement (no-op pop)
-        addi s2 s2 (-1),
-        sd s2 0 s1])
   | .ifNZ c thn els => do
     let rc ← regMap c
     let thnW ← lowerStmt ctx thn

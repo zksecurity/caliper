@@ -30,7 +30,7 @@ instance instDecidableRandomFree : ∀ (c : Stmt w), Decidable c.RandomFree
     have := instDecidableRandomFree b
     inferInstanceAs (Decidable (_ ∧ _))
   | .skip | .imm .. | .mov .. | .un .. | .bin .. | .memResize .. | .memResizeI ..
-    | .memLen .. | .memLoad .. | .memStore .. | .memPush .. | .memPop .. =>
+    | .memLen .. | .memLoad .. | .memStore .. =>
     inferInstanceAs (Decidable True)
 
 /-- Programs cannot observe elapsed time: changing every instruction price
@@ -68,8 +68,6 @@ theorem Exec.withCostModel {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}
   | memLen => exact ⟨_, .memLen⟩
   | memLoad h => exact ⟨_, .memLoad h⟩
   | memStore h => exact ⟨_, .memStore h⟩
-  | memPush h => exact ⟨_, .memPush h⟩
-  | memPop => exact ⟨_, .memPop⟩
 
 /-- The input cursor never moves backwards. -/
 theorem Exec.tapePos_mono {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}
@@ -192,7 +190,7 @@ theorem Exec.withTape {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}
       (ihb fun i hlo hhi => agree i (hg.tapePos_mono.trans hlo)
         (lt_of_lt_of_le hhi hl.tapePos_mono))
       (ihl fun i hlo hhi => agree i ((hg.tapePos_mono.trans hb.tapePos_mono).trans hlo) hhi)
-  | _ => constructor <;> assumption
+  | _ => constructor
 
 /-- Changing the tape cannot change a random-free execution. -/
 theorem Exec.withTape_of_randomFree {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}

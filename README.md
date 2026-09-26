@@ -34,7 +34,7 @@ The only requirements are:
 
 - Register allocation and liveness analysis: Caliper has an infinite number of registers (each of which "cost" 1 memory), while the real CPU has a finite number of registers.
 - Supplying random words: the abstract `rand` price models a tape read. The current RV64 test backend rejects `rand`; it needs a tape-input implementation before lowering randomized programs.
-- Implementing a heap: Caliper can resize (realloc: allocate, grow, shrink, free) arrays of words of variable size, hence a heap must be implemented.
+- Implementing a heap: Caliper can resize (a zero-filling realloc: allocate, grow, shrink, free) arrays of words of variable size, hence a heap must be implemented.
 
 Overall the goal of Caliper is that if a Caliper program can be proven to have computational cost $n$, 
 then a real RISC-V program can be written which executes in $c \cdot n$ instructions on any reasonable RISC-V CPU

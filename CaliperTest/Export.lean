@@ -40,10 +40,9 @@ namespace CaliperTest.Export
 open Caliper CaliperTest.RV64
 
 /-- One differential test case. Buffers are given as
-`(id, initial contents, layout capacity)`; the initial Caliper capacity is
-the contents' length (programs that push first reserve via `memResize*`,
-exactly as on the RV64 side, where the layout capacity sizes the arena
-region). -/
+`(id, initial contents, layout capacity)`: the initial Caliper buffer is the
+contents, and the layout capacity, the largest length the program resizes the
+buffer to, sizes its RV64 arena region. -/
 structure TestCase where
   name : String
   stmt : Stmt 64
@@ -59,9 +58,6 @@ def TestCase.state (tc : TestCase) : State 64 where
   bufs := fun b => match tc.bufs.find? (·.1 == b) with
     | some (_, ws, _) => (ws.map (BitVec.ofNat 64)).toArray
     | none => #[]
-  caps := fun b => match tc.bufs.find? (·.1 == b) with
-    | some (_, ws, _) => ws.length
-    | none => 0
 
 def TestCase.ctx (tc : TestCase) : Ctx :=
   layout (tc.bufs.map fun (b, _, cap) => (b, cap))
@@ -178,12 +174,13 @@ def cases : List TestCase :=
     , initRegs := [(2, 5)], bufs := [(0, [], 5)], resultReg := 0 }
   , { name := "scratch_loop", stmt := Caliper.Examples.ScratchLoop.code 0
     , initRegs := [(2, 100)], bufs := [(0, [], 1)], resultReg := 0 }
-  -- realloc semantics: doubling growth keeps contents; shrinking truncates
+  -- realloc semantics: doubling growth keeps contents and zeroes new words;
+  -- shrinking truncates, and regrowing must re-zero the words it brings back
   , { name := "grow_vec", stmt := GrowVec.demoProg [10, 20, 30, 40, 50]
     , bufs := [(0, [], 8)], resultReg := 0 }
   , { name := "resize_shrink"
     , stmt := .imm 0 2 ;; .memResize 0 0 ;; .memResizeI 0 4 ;; .imm 1 9 ;;
-        .memPush 0 1 ;; .memLen 2 0
+        .imm 3 3 ;; .memStore 0 3 1 ;; .memLen 2 0
     , bufs := [(0, [1, 2, 3, 4, 5], 5)], resultReg := 2 }
   ]
 

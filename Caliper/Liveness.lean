@@ -59,8 +59,6 @@ def Stmt.readsSet : Stmt w → Finset ℕ
   | .memLen _ _ => ∅
   | .memLoad _ _ i => {i}
   | .memStore _ i src => {i, src}
-  | .memPush _ src => {src}
-  | .memPop _ => ∅
   | .ifNZ c t e => insert c (t.readsSet ∪ e.readsSet)
   | .whileNZ g c b => insert c (g.readsSet ∪ b.readsSet)
 
@@ -80,8 +78,6 @@ def Stmt.writesSet : Stmt w → Finset ℕ
   | .memLen d _ => {d}
   | .memLoad d _ _ => {d}
   | .memStore _ _ _ => ∅
-  | .memPush _ _ => ∅
-  | .memPop _ => ∅
   | .ifNZ _ t e => t.writesSet ∪ e.writesSet
   | .whileNZ g _ b => g.writesSet ∪ b.writesSet
 
@@ -392,7 +388,7 @@ theorem Stmt.Straight.regPeak₀_le {c : Stmt w} (h : c.Straight) :
 /-! ## The combined footprint: buffers + registers
 
 Total memory is two summands: the dynamic buffer profile (the `(d, p)` indices of
-`Exec`/`SpaceTriple`, metering reserved capacities) plus the static register peak
+`Exec`/`SpaceTriple`, metering buffer lengths) plus the static register peak
 `Stmt.regPeak₀`, read off the code. Registers are memory, counted statically because
 register liveness is static information, not because they are free. `SpaceBound`
 packages the sum as the number a space claim should quote, so a buffers-only figure
@@ -420,7 +416,7 @@ beyond live-ins, by the register-writing leaves. Those two instruction sets are
 disjoint, a resize writing no register, so the two space summands fit inside a
 *single* running time rather than two copies of it. -/
 
-/-- Total words of buffer capacity a statement can acquire, summed over every
+/-- Total buffer words a statement can acquire, summed over every
 `memResizeI` immediate (the dynamic `memResize` is excluded from `Stmt.Straight`,
 where this bound is used). On straight code it bounds the peak of every
 execution (`Exec.straight_peak_le_allocTotal`). -/
@@ -432,7 +428,7 @@ def Stmt.allocTotal : Stmt w → ℕ
   | _ => 0
 
 /-- On straight-line code the buffer peak never exceeds the total immediate
-allocation capacity: a syntactic bound, in any cost model. -/
+resize length: a syntactic bound, in any cost model. -/
 theorem Exec.straight_peak_le_allocTotal {C : CostModel} {c : Stmt w}
     {s s' : State w} {t : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p)
     (hs : c.Straight) : p ≤ (c.allocTotal : ℤ) := by
@@ -542,19 +538,19 @@ theorem SumBuf.total_space {C : CostModel} (arr : Array (Word 64))
       (fun s => s.regs 0 = Examples.SumBuf.sumTo arr arr.size) 6 :=
   (Examples.SumBuf.spec 0 arr hsz).space.spaceBound (by decide)
 
-/-- `ScratchLoop` (on buffer 0): buffer peak 1 + register peak 4 = total 5,
+/-- `ScratchLoop` (on buffer 0): buffer peak 1 + register peak 5 = total 6,
 independent of the trip count: memory reuse in the buffer summand, static inference
 in the register summand. -/
 theorem ScratchLoop.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
-    SpaceBound C RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat 64 n ∧ s.bufs 0 = #[])
+    SpaceBound C RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat 64 n)
       (Examples.ScratchLoop.code 0)
-      (fun s => s.bufs 0 = #[] ∧ s.caps 0 = 0) 5 :=
+      (fun s => s.bufs 0 = #[]) 6 :=
   (Examples.ScratchLoop.spec 0 n hn).space.spaceBound (by decide)
 
 /-- `Iota` (on buffer 0): buffer peak `n` + register peak 4 = total `n + 4`, the one
 genuinely linear-space example. -/
 theorem Iota.total_space {C : CostModel} (n : ℕ) (hn : n < 2 ^ 64) :
-    SpaceBound C RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat 64 n ∧ s.bufs 0 = #[])
+    SpaceBound C RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat 64 n)
       (Examples.Iota.code 0)
       (fun s => s.bufs 0 = Examples.Iota.iotaTo 64 n) ((n : ℤ) + 4) :=
   (Examples.Iota.spec 0 n hn).space.spaceBound
@@ -569,8 +565,8 @@ instruction producing its successor. With its buffers-only profile (0, 0), total
 #guard_msgs in
 #eval (Build.build Examples.nestedB).2.regPeak₀
 
-/- `pairProg` (the array-of-pairs demo, 18 register names): inferred peak 3. With
-its buffer peak 4 (`pairDemo` pin in `Examples.lean`), total 7, against the 22 a
+/- `pairProg` (the array-of-pairs demo, 34 register names): inferred peak 3. With
+its buffer peak 4 (`pairDemo` pin in `Examples.lean`), total 7, against the 38 a
 name count would give. -/
 
 /-- info: 3 -/

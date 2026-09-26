@@ -27,19 +27,20 @@ We account for the peak footprint, with two summands (`SpaceBound`, `Liveness.le
     total peak memory = dynamic buffer peak + static register peak
 
 The register file *is* memory; register words are as physical as buffer words.
-What differs is the accounting, and the split follows the information: buffer contents are runtime information (lengths are dynamic, indices are data), so buffer capacity is metered dynamically by the cost semantics; register lifetimes are static information (registers are statically named, never dynamically indexed), so the register footprint is a compile-time constant of the code, the inferred peak live-register count `Stmt.regPeak₀`.
+What differs is the accounting, and the split follows the information: buffer contents are runtime information (lengths are dynamic, indices are data), so buffer length is metered dynamically by the cost semantics; register lifetimes are static information (registers are statically named, never dynamically indexed), so the register footprint is a compile-time constant of the code, the inferred peak live-register count `Stmt.regPeak₀`.
 Nothing about the split makes registers cheaper; it makes their accounting exact without runtime instructions.
 The dynamic-side principle, in one paragraph:
 
-> Every resize costs one step per word of the *new* capacity, surviving words included (growing `c → 2c` charges `2c`, not `c`), and those per-word charges price each word's creation, any copy, and its eventual destruction; there is no per-object base, since buffer names are static and capacities explicit.
-> Holding capacity is free.
+> Every resize costs one step per word of the *new* length, surviving words included (growing `c → 2c` charges `2c`, not `c`), and those per-word charges price each word's creation and zeroing, any copy, and its eventual destruction; there is no per-object base, since buffer names are static and lengths explicit.
+> Holding words is free.
 > Releasing it (a resize to 0) is free.
 
-Dynamic live memory is the sum of reserved buffer capacities: `memResize`/`memResizeI` change it by `newCap - oldCap` (a charge when growing, a credit when shrinking), and push/pop move the fill level inside capacity already paid for.
-The memory profile of a resize is net `newCap - oldCap` and peak `newCap`: a realloc that cannot resize in place allocates the new region, copies, and only then releases the old one, so for a moment both coexist, `oldCap + newCap` words, i.e. `newCap` above the starting footprint.
-Charging the whole new capacity as the peak makes `p` a true high-water mark for every implementation of the realloc contract, in place or copying; a fresh acquisition (`oldCap = 0`) and the free (`newCap = 0`, peak 0) are priced exactly as before.
+Dynamic live memory is the sum of buffer lengths: `memResize`/`memResizeI` change it by `newLen - oldLen` (a charge when growing, a credit when shrinking), and stores overwrite words already paid for.
+Since a buffer's length is its only size, there is no reserved-but-unfilled capacity: every word the metric counts is readable, and every readable word is counted.
+The memory profile of a resize is net `newLen - oldLen` and peak `newLen`: a realloc that cannot resize in place allocates the new region, copies, and only then releases the old one, so for a moment both coexist, `oldLen + newLen` words, i.e. `newLen` above the starting footprint.
+Charging the whole new length as the peak makes `p` a true high-water mark for every implementation of the realloc contract, in place or copying; a fresh acquisition (`oldLen = 0`) and the free (`newLen = 0`, peak 0) are priced exactly as before.
 Releasing is free in *time* as well: the free `memResizeI b 0` costs only the base `C.memResize`, 0 in both tables, since a release only ever shrinks the footprint and every released word was charged by an earlier resize whose per-word charge covers creation and destruction.
-That is the only split stable across real allocators, since a buffer's teardown (freelist push, deferred coalescing, `munmap`) is bounded by size-linear work already paid when its capacity was acquired.
+That is the only split stable across real allocators, since a buffer's teardown (freelist push, deferred coalescing, `munmap`) is bounded by size-linear work already paid when its words were acquired.
 A free of a never-acquired buffer name is statically detectable and elidable by a backend.
 Profiles compose like high-water marks:
 
@@ -62,39 +63,38 @@ protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂
 ```
 
 Hence a block with net 0 contributes its peak once, not once per occurrence.
-The `ScratchLoop` example allocates a one-slot scratch buffer, runs `n` iterations that each push and pop a word inside it, and frees it: proved net 0 and peak 1 word, independent of `n`, where an allocation counter would report `n`.
+The `ScratchLoop` example allocates a one-word scratch buffer, runs `n` iterations that each write a word into it and read it back, and frees it: proved net 0 and peak 1 word, independent of `n`, where an allocation counter would report `n`.
 The register-side counterpart is static: `ScopedSumSq` (`3² + 4²`) names five registers and the analysis infers peak 2, since each stage's scratch is dead the moment its `mul` consumes it.
 
 Inference is what keeps the register summand tight.
-Explicit alloc/free brackets around register lifetimes, the obvious alternative, can only over-approximate a live range: `SumBuf` uses 6 registers and never releases one, so both accountings agree at `0 + 6 = 6` (`SumBuf.total_space`), but `ScopedSumSq`'s brackets would certify 3 (stage-1 result, stage-2 scratch and stage-2 result coexist as *names*) where inference gives `0 + 2 = 2` (`ScopedSumSq.total_space`), and the array-of-pairs demo, whose builder temporaries are never released, drops from 22 (4 buffer words + 18 register names) to `4 + 3 = 7`.
+Explicit alloc/free brackets around register lifetimes, the obvious alternative, can only over-approximate a live range: `SumBuf` uses 6 registers and never releases one, so both accountings agree at `0 + 6 = 6` (`SumBuf.total_space`), but `ScopedSumSq`'s brackets would certify 3 (stage-1 result, stage-2 scratch and stage-2 result coexist as *names*) where inference gives `0 + 2 = 2` (`ScopedSumSq.total_space`), and the array-of-pairs demo, whose builder temporaries are never released, drops from 38 (4 buffer words + 34 register names) to `4 + 3 = 7`.
 
-Invariants `0 ≤ p` and `d ≤ p` hold always; code acquiring no buffer capacity has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`, which allows the free `memResizeI b 0`, as it only shrinks the footprint); and `p ≤ t` in any model with `1 ≤ allocPerWord` (`Exec.peak_le_time`), so a time bound subsumes the buffer-peak bound.
+Invariants `0 ≤ p` and `d ≤ p` hold always; code acquiring no buffer words has `d ≤ 0 ∧ p ≤ 0` (`allocFree_space`, which allows the free `memResizeI b 0`, as it only shrinks the footprint); and `p ≤ t` in any model with `1 ≤ allocPerWord` (`Exec.peak_le_time`), so a time bound subsumes the buffer-peak bound.
 The register side has the static analogue `Stmt.Straight.regPeak₀_le`: peak register pressure ≤ live-ins + unit-model static time.
 The two bounds do not each consume a running time of their own: on straight code the instructions covering the buffer words (per-word resize charges) and those covering the register slots (register-writing leaves) are disjoint, so buffer peak + register peak ≤ live-ins + `t` for the *single* running time `t` (`Exec.straight_total_footprint_le`).
 
 ## Absolute Live Memory
 
 We relate these indices to *absolute* live memory through a state invariant.
-`State.WellFormed` (every buffer's fill within its reserved capacity, finitely many buffers reserved) holds for `State.init` and is preserved by every execution (`Exec.wellFormed_preserved`), which rules out adversarial states with phantom capacity, e.g. a fabricated `caps b` that a shrinking resize could turn into credit funding a huge allocation at certified peak 0.
-Over such states the absolute footprint `State.liveMem` changes by exactly `d` (`Exec.liveMem_eq`), a resize credits only genuinely live capacity (`Exec.memResize_credit_le`, `Exec.memResizeI_credit_le`), and every state the execution passes through stays within `p` of the start (`Exec.reaches_liveMem_le_peak`, `Exec.liveMem_le_peak`), so `p` is a true high-water mark on physical memory.
+`State.WellFormed` (finitely many non-empty buffers) holds for `State.init` and is preserved by every execution (`Exec.wellFormed_preserved`), which rules out adversarial states with no finite footprint.
+Over such states the absolute footprint `State.liveMem` changes by exactly `d` (`Exec.liveMem_eq`), a resize credits only genuinely live words (`Exec.memResize_credit_le`, `Exec.memResizeI_credit_le`), and every state the execution passes through stays within `p` of the start (`Exec.reaches_liveMem_le_peak`, `Exec.liveMem_le_peak`), so `p` is a true high-water mark on physical memory.
 
 The state invariant and absolute-memory counter come from [Core.lean](../Caliper/Core.lean):
 
 ```lean
 def State.SupportBound (s : State w) (B : ℕ) : Prop :=
-  ∀ b, B ≤ b → s.caps b = 0
+  ∀ b, B ≤ b → (s.bufs b).size = 0
 
 structure State.WellFormed (s : State w) : Prop where
-  size_le_cap : ∀ b, (s.bufs b).size ≤ s.caps b
   finite : ∃ B, s.SupportBound B
 
 def State.liveMem (s : State w) : ℕ → ℕ
   | 0 => 0
-  | B + 1 => s.liveMem B + s.caps B
+  | B + 1 => s.liveMem B + (s.bufs B).size
 ```
 
-`State.SupportBound s B` says that buffers numbered $B$ and above reserve no capacity.
-For such a bound, `s.liveMem B` counts all reserved buffer words.
+`State.SupportBound s B` says that buffers numbered $B$ and above are empty.
+For such a bound, `s.liveMem B` counts all buffer words.
 Without it, the counter only covers buffer names below $B$.
 
 Keep the two readings apart: a code fragment's quoted peak `p` is growth over its start state, which is what makes Triple-level profiles compose as relative high-water marks, whereas the `State.WellFormed`/`liveMem` statements anchor the same indices to physical live memory over reachable states.
@@ -176,4 +176,4 @@ def SpaceBound (C : CostModel) (tape : RandomTape w) (P : State w → Prop) (c :
 ```
 
 `Mbuf` still bounds *growth* over the initial buffer footprint.
-An absolute total-memory claim must also account for the initial buffers; starting with no reserved buffers makes that baseline zero.
+An absolute total-memory claim must also account for the initial buffers; starting with empty buffers makes that baseline zero.

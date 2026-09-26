@@ -11,13 +11,13 @@ derivation existing, the result satisfies `Q`, and
 * net live-memory change `d ≤ D` (signed: freeing gives memory back),
 * peak live-memory growth `p ≤ M`.
 
-Live memory is the sum of reserved capacities: only the resize instructions
+Live memory is the sum of buffer lengths: only the resize instructions
 (`memResize`/`memResizeI`) change it, charging growth and crediting shrinkage, with
-the whole new capacity as the resize's peak (old and new coexist during a copy);
-push/pop move the fill level inside capacity already paid for. Resize time is
-charged per word of the new capacity (`C.memResize + cap * C.allocPerWord`), so the
-resize time rules carry a capacity bound; for the dynamic `memResize` the caller
-must bound the requested capacity. Bounding the *pair* (net, peak) is what makes
+the whole new length as the resize's peak (old and new coexist during a copy);
+stores overwrite words already paid for. Resize time is charged per word of the new
+length (`C.memResize + len * C.allocPerWord`), so the resize time rules carry a
+length bound; for the dynamic `memResize` the caller must bound the requested
+length. Bounding the *pair* (net, peak) is what makes
 reuse compose: sequencing peaks as `max M₁ (D₁ + M₂)` means an acquire…free block
 (net 0, via `Triple.free'`) contributes its
 peak once, not once per occurrence, and `whileNZ_measure` gives loops whose iteration
@@ -25,8 +25,7 @@ net is `≤ 0` a peak bound independent of the trip count.
 
 Bounds are `≤` throughout, so specs stay simple and weakening is free. The rules are
 the complete proof system used by the examples: one rule per instruction, with the
-memory-safety obligations sitting in `memLoad`/`memStore` (index in range) and
-`memPush` (free capacity), plus `seq`/`conseq`/`ifNZ`, the measure-indexed loop
+memory-safety obligations sitting in `memLoad`/`memStore` (index in range), plus `seq`/`conseq`/`ifNZ`, the measure-indexed loop
 rule, and decidable-side-condition frame rules replacing separation logic.
 
 Time and memory are also *independently* provable: `TimeTriple` bounds only the
@@ -114,15 +113,15 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
     Triple C tape P (.bin op d a b) Q (C.bin op) 0 0 :=
   fun s hs => ⟨_, _, _, _, .bin, h s hs, le_refl _, le_refl _, le_refl _⟩
 
-/-- Resize (dynamic), with a known lower bound `K` on the old capacity. The caller
-supplies an upper bound `N` on the *requested capacity*, the register value, which
-bounds the data-dependent time charge `C.memResize + newCap * C.allocPerWord ≤
-C.memResize + N * C.allocPerWord`; the net memory charge is `newCap - oldCap ≤ N - K`
-and the peak is at most `N`, the whole new capacity, which coexists with the old one
-during a copying realloc. This is the rule for growing a buffer that already holds
-capacity (`GrowVec`). -/
+/-- Resize (dynamic), with a known lower bound `K` on the old length. The caller
+supplies an upper bound `N` on the *requested length*, the register value, which
+bounds the data-dependent time charge `C.memResize + newLen * C.allocPerWord ≤
+C.memResize + N * C.allocPerWord`; the net memory charge is `newLen - oldLen ≤ N - K`
+and the peak is at most `N`, the whole new length, which coexists with the old one
+during a copying realloc. This is the rule for growing a non-empty buffer
+(`GrowVec`). -/
 protected theorem memResize' {P Q : State w → Prop} {b : BufId} {n : Reg} {N K : ℕ}
-    (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ K ≤ s.caps b
+    (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ K ≤ (s.bufs b).size
       ∧ Q (s.resizeBuf b (s.regs n).toNat)) :
     Triple C tape P (.memResize b n) Q (C.memResize + N * C.allocPerWord)
       ((N : ℤ) - K) N := by
@@ -132,27 +131,27 @@ protected theorem memResize' {P Q : State w → Prop} {b : BufId} {n : Reg} {N K
   have := Nat.mul_le_mul_right C.allocPerWord hN
   omega
 
-/-- Resize (dynamic), the old capacity unknown but nonnegative: `memResize'` at
-`K = 0`, charging at most the requested-capacity bound `N`. The acquisition rule. -/
+/-- Resize (dynamic), the old length unknown but nonnegative: `memResize'` at
+`K = 0`, charging at most the requested-length bound `N`. The acquisition rule. -/
 protected theorem memResize {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
     (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ Q (s.resizeBuf b (s.regs n).toNat)) :
     Triple C tape P (.memResize b n) Q (C.memResize + N * C.allocPerWord) N N :=
   (Triple.memResize' (K := 0) fun s hs => ⟨(h s hs).1, Nat.zero_le _, (h s hs).2⟩).weaken
     (le_refl _) (by omega) (by omega)
 
-/-- Resize (immediate), with a known lower bound `K` on the old capacity: time
+/-- Resize (immediate), with a known lower bound `K` on the old length: time
 exactly the syntactic `C.memResize + n * C.allocPerWord`, net memory charge at most
 `n - K`, peak `n`. -/
 protected theorem memResizeI' {P Q : State w → Prop} {b : BufId} {n K : ℕ}
-    (h : ∀ s, P s → K ≤ s.caps b ∧ Q (s.resizeBuf b n)) :
+    (h : ∀ s, P s → K ≤ (s.bufs b).size ∧ Q (s.resizeBuf b n)) :
     Triple C tape P (.memResizeI b n) Q (C.memResize + n * C.allocPerWord)
       ((n : ℤ) - K) n := by
   intro s hs
   obtain ⟨hK, hq⟩ := h s hs
   exact ⟨_, _, _, _, .memResizeI, hq, le_refl _, by omega, by omega⟩
 
-/-- Resize (immediate): the syntactic capacity `n` prices both time (exactly) and
-memory (as a bound, the old capacity being unknown but nonnegative). The
+/-- Resize (immediate): the syntactic length `n` prices both time (exactly) and
+memory (as a bound, the old length being unknown but nonnegative). The
 acquisition rule. -/
 protected theorem memResizeI {P Q : State w → Prop} {b : BufId} {n : ℕ}
     (h : ∀ s, P s → Q (s.resizeBuf b n)) :
@@ -166,10 +165,10 @@ protected theorem free {P Q : State w → Prop} {b : BufId}
     Triple C tape P (.memResizeI b 0) Q C.memResize 0 0 :=
   fun s hs => ⟨_, _, _, _, .memResizeI, h s hs, by simp, by omega, by omega⟩
 
-/-- Free with a known lower bound `K` on the capacity being released: credits `-K`.
+/-- Free with a known lower bound `K` on the length being released: credits `-K`.
 This is the rule that makes an acquire…free block's net vanish. -/
 protected theorem free' {P Q : State w → Prop} {b : BufId} {K : ℕ}
-    (h : ∀ s, P s → K ≤ s.caps b ∧ Q (s.resizeBuf b 0)) :
+    (h : ∀ s, P s → K ≤ (s.bufs b).size ∧ Q (s.resizeBuf b 0)) :
     Triple C tape P (.memResizeI b 0) Q C.memResize (-(K : ℤ)) 0 := by
   intro s hs
   obtain ⟨hK, hq⟩ := h s hs
@@ -197,23 +196,6 @@ protected theorem memStore {P Q : State w → Prop} {b : BufId} {i src : Reg}
   intro s hs
   obtain ⟨hlt, hq⟩ := h s hs
   exact ⟨_, _, _, _, .memStore hlt, hq, le_refl _, le_refl _, le_refl _⟩
-
-/-- Push demands free capacity (`size < cap`), the second memory-safety obligation
-and what makes push worst-case unit time. Memory-neutral: the word was charged at
-the resize that reserved it. -/
-protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
-    (h : ∀ s, P s → (s.bufs b).size < s.caps b
-      ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
-    Triple C tape P (.memPush b src) Q C.memPush 0 0 := by
-  intro s hs
-  obtain ⟨hcap, hq⟩ := h s hs
-  exact ⟨_, _, _, _, .memPush hcap, hq, le_refl _, le_refl _, le_refl _⟩
-
-/-- Pop keeps the capacity: memory-neutral. -/
-protected theorem memPop {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → Q (s.setBuf b (s.bufs b).pop)) :
-    Triple C tape P (.memPop b) Q C.memPop 0 0 :=
-  fun s hs => ⟨_, _, _, _, .memPop, h s hs, le_refl _, le_refl _, le_refl _⟩
 
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T : ℕ}
     {D M : ℤ}
@@ -387,7 +369,7 @@ theorem and_space' {P Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
   (h₁.and_space h₂).conseq (fun _ => id) (fun _ h => h.1) (le_refl _) (le_refl _)
     (le_refl _)
 
-/-- Code acquiring no capacity (`Stmt.AllocFree`) gets a space triple for free from a time triple:
+/-- Code acquiring no memory (`Stmt.AllocFree`) gets a space triple for free from a time triple:
 the execution the time triple already exhibits satisfies `d ≤ 0 ∧ p ≤ 0` outright
 (`Exec.allocFree_space`). -/
 theorem space_of_allocFree {P Q : State w → Prop} {c : Stmt w} {T : ℕ}
@@ -426,7 +408,7 @@ protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂
 /-! ### Instruction rules
 
 Projections of the corresponding `Triple` rules. The dynamic `memResize` keeps its
-capacity bound `N`, which prices the time charge. -/
+length bound `N`, which prices the time charge. -/
 
 protected theorem imm {P Q : State w → Prop} {d : Reg} {v : Word w}
     (h : ∀ s, P s → Q (s.setReg d v)) : TimeTriple C tape P (.imm d v) Q C.imm :=
@@ -451,9 +433,9 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
     TimeTriple C tape P (.bin op d a b) Q (C.bin op) :=
   (Triple.bin h).time
 
-/-- Resize (dynamic). Unlike the other time rules the capacity bound `N` does not
-disappear: the charge `C.memResize + newCap * C.allocPerWord` is data-dependent, so
-bounding the requested capacity is what a time bound needs. -/
+/-- Resize (dynamic). Unlike the other time rules the length bound `N` does not
+disappear: the charge `C.memResize + newLen * C.allocPerWord` is data-dependent, so
+bounding the requested length is what a time bound needs. -/
 protected theorem memResize {P Q : State w → Prop} {b : BufId} {n : Reg} {N : ℕ}
     (h : ∀ s, P s → (s.regs n).toNat ≤ N ∧ Q (s.resizeBuf b (s.regs n).toNat)) :
     TimeTriple C tape P (.memResize b n) Q (C.memResize + N * C.allocPerWord) :=
@@ -487,17 +469,6 @@ protected theorem memStore {P Q : State w → Prop} {b : BufId} {i src : Reg}
       Q (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) hlt))) :
     TimeTriple C tape P (.memStore b i src) Q C.memStore :=
   (Triple.memStore h).time
-
-protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
-    (h : ∀ s, P s → (s.bufs b).size < s.caps b
-      ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
-    TimeTriple C tape P (.memPush b src) Q C.memPush :=
-  (Triple.memPush h).time
-
-protected theorem memPop {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → Q (s.setBuf b (s.bufs b).pop)) :
-    TimeTriple C tape P (.memPop b) Q C.memPop :=
-  (Triple.memPop h).time
 
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {T : ℕ}
     (ht : TimeTriple C tape (fun s => P s ∧ s.regs r ≠ 0) thn Q T)
@@ -628,25 +599,25 @@ protected theorem bin {P Q : State w → Prop} {op : BinOp} {d a b : Reg}
 
 /-- Resize (dynamic), net charge at most `N`, peak at most `M`. With no time bound
 to draw, this rule is proved directly rather than projected, keeping the finer net
-*charge* bound `newCap - oldCap ≤ N`, which may use knowledge of the old capacity
-and may even be negative; the peak must bound the whole requested capacity. -/
+*charge* bound `newLen - oldLen ≤ N`, which may use knowledge of the old length
+and may even be negative; the peak must bound the whole requested length. -/
 protected theorem memResize {P Q : State w → Prop} {b : BufId} {n : Reg} {N M : ℤ}
-    (h : ∀ s, P s → (((s.regs n).toNat : ℤ) - (s.caps b : ℤ) ≤ N)
+    (h : ∀ s, P s → (((s.regs n).toNat : ℤ) - ((s.bufs b).size : ℤ) ≤ N)
       ∧ ((s.regs n).toNat : ℤ) ≤ M ∧ Q (s.resizeBuf b (s.regs n).toNat)) :
     SpaceTriple C tape P (.memResize b n) Q N M := by
   intro s hs
   obtain ⟨hN, hM, hq⟩ := h s hs
   exact ⟨_, _, _, _, .memResize, hq, hN, hM⟩
 
-/-- Resize (immediate), charging at most the syntactic capacity `n`. -/
+/-- Resize (immediate), charging at most the syntactic length `n`. -/
 protected theorem memResizeI {P Q : State w → Prop} {b : BufId} {n : ℕ}
     (h : ∀ s, P s → Q (s.resizeBuf b n)) :
     SpaceTriple C tape P (.memResizeI b n) Q n n :=
   (Triple.memResizeI h).space
 
-/-- Resize (immediate) with a known lower bound `K` on the old capacity. -/
+/-- Resize (immediate) with a known lower bound `K` on the old length. -/
 protected theorem memResizeI' {P Q : State w → Prop} {b : BufId} {n K : ℕ}
-    (h : ∀ s, P s → K ≤ s.caps b ∧ Q (s.resizeBuf b n)) :
+    (h : ∀ s, P s → K ≤ (s.bufs b).size ∧ Q (s.resizeBuf b n)) :
     SpaceTriple C tape P (.memResizeI b n) Q ((n : ℤ) - K) n :=
   (Triple.memResizeI' h).space
 
@@ -655,9 +626,9 @@ protected theorem free {P Q : State w → Prop} {b : BufId}
     (h : ∀ s, P s → Q (s.resizeBuf b 0)) : SpaceTriple C tape P (.memResizeI b 0) Q 0 0 :=
   (Triple.free h).space
 
-/-- Free with a known lower bound `K` on the released capacity: credits `-K`. -/
+/-- Free with a known lower bound `K` on the released length: credits `-K`. -/
 protected theorem free' {P Q : State w → Prop} {b : BufId} {K : ℕ}
-    (h : ∀ s, P s → K ≤ s.caps b ∧ Q (s.resizeBuf b 0)) :
+    (h : ∀ s, P s → K ≤ (s.bufs b).size ∧ Q (s.resizeBuf b 0)) :
     SpaceTriple C tape P (.memResizeI b 0) Q (-(K : ℤ)) 0 :=
   (Triple.free' h).space
 
@@ -677,17 +648,6 @@ protected theorem memStore {P Q : State w → Prop} {b : BufId} {i src : Reg}
       Q (s.setBuf b ((s.bufs b).set (s.regs i).toNat (s.regs src) hlt))) :
     SpaceTriple C tape P (.memStore b i src) Q 0 0 :=
   (Triple.memStore h).space
-
-protected theorem memPush {P Q : State w → Prop} {b : BufId} {src : Reg}
-    (h : ∀ s, P s → (s.bufs b).size < s.caps b
-      ∧ Q (s.setBuf b ((s.bufs b).push (s.regs src)))) :
-    SpaceTriple C tape P (.memPush b src) Q 0 0 :=
-  (Triple.memPush h).space
-
-protected theorem memPop {P Q : State w → Prop} {b : BufId}
-    (h : ∀ s, P s → Q (s.setBuf b (s.bufs b).pop)) :
-    SpaceTriple C tape P (.memPop b) Q 0 0 :=
-  (Triple.memPop h).space
 
 protected theorem ifNZ {P Q : State w → Prop} {r : Reg} {thn els : Stmt w} {D M : ℤ}
     (ht : SpaceTriple C tape (fun s => P s ∧ s.regs r ≠ 0) thn Q D M)

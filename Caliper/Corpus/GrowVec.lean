@@ -5,24 +5,25 @@ import Caliper.Liveness
 # Corpus: a growable vector
 
 `GrowVec` is the library-level growable vector the machine deliberately leaves
-out: `memPush` demands free capacity, so a push that may overflow first doubles the
-capacity with a realloc-style `memResize`, which keeps the contents and is charged
-its full new capacity. The capacity is not observable by the program, so the vector
-tracks it in a register (`r0`), the invariant `regs 0 = caps b` being part of the
-specification.
+out. A buffer's length is its only size, so the vector keeps its *fill* (the number
+of pushed elements) in a register (`r0`) and uses the buffer's length as its
+capacity. A push that finds the vector full (`fill = length`) first doubles the
+length with a realloc-style `memResize`, which keeps the contents, zeroes the new
+words, and is charged its full new length; then it stores at index `fill`.
 
-* `pushCode b`: one push of `r1`, doubling when `size = cap`, with a proved
-  `Triple`: contents become `xs.push x`, the capacity `newCap`, time `pushTime`
-  (worst case linear in the capacity, on a doubling push), net memory the growth,
-  peak the whole new capacity on a doubling push.
+* `pushCode b`: one push of `r1`, doubling when `fill = length`, with a proved
+  `Triple`: the first `fill` words become `xs.push x`, the length `newCap`, time
+  `pushTime` (worst case linear in the length, on a doubling push), net memory the
+  growth, peak the whole new length on a doubling push.
 * `pushAll b ys`: `ys.length` pushes in sequence, with a proved `Triple` whose time
   is the exact per-push sum `pushesTime`.
-* The amortized bound: the potential `Φ = (4 · size - 2 · cap) · allocPerWord` pays
-  for the doublings (`pushTime_amortized`), so `n` pushes into an empty vector of
-  capacity 1 take at most `n * amortCost C` time (`pushesTime_le`), linear with an
+* The amortized bound: the potential `Φ = (4 · fill - 2 · length) · allocPerWord`
+  pays for the doublings (`pushTime_amortized`), so `n` pushes into an empty vector
+  of length 1 take at most `n * amortCost C` time (`pushesTime_le`), linear with an
   explicit constant, and `GrowVec.fromOne_spec` states it as a `Triple`.
 
-Registers: `r0` capacity, `r1` the element, `r2` size, `r3` the grow flag.
+Registers: `r0` fill, `r1` the element, `r2` length (doubled in place), `r3` the grow
+flag, `r4` the constant 1.
 -/
 
 namespace Caliper.Corpus
@@ -36,28 +37,30 @@ namespace GrowVec
 /--
 ```c
 n = b.len;
-if (n == cap) { cap = cap + cap; b = realloc(b, cap); }
-b.push(x);
+if (fill == n) { n = n + n; b = realloc(b, n); }
+b[fill] = x; fill += 1;
 ```
-`cap` lives in `r0`, `x` in `r1`.
+`fill` lives in `r0`, `x` in `r1`.
 -/
 def pushCode (b : BufId) : Stmt w :=
   .memLen 2 b ;;
-  .bin .eq 3 2 0 ;;
-  .ifNZ 3 (.bin .add 0 0 0 ;; .memResize b 0) .skip ;;
-  .memPush b 1
+  .bin .eq 3 0 2 ;;
+  .ifNZ 3 (.bin .add 2 2 2 ;; .memResize b 2) .skip ;;
+  .memStore b 0 1 ;;
+  .imm 4 1 ;;
+  .bin .add 0 0 4
 
-/-- The capacity after a push at size `s` and capacity `c`. -/
+/-- The length after a push at fill `s` and length `c`. -/
 def newCap (s c : ℕ) : ℕ := if s = c then 2 * c else c
 
 /-- Time of the grow step: the doubling `add` and the resize, charged the full new
-capacity; nothing when there is room. -/
+length; nothing when there is room. -/
 def growTime (C : CostModel) (s c : ℕ) : ℕ :=
   if s = c then C.bin .add + (C.memResize + 2 * c * C.allocPerWord) else 0
 
 /-- Peak memory growth of the grow step: a doubling realloc holds the old `c` and
 the new `2c` words at once, so its peak above the starting level is the whole new
-capacity `2c`; nothing when there is room. -/
+length `2c`; nothing when there is room. -/
 def growPeak (s c : ℕ) : ℕ := if s = c then 2 * c else 0
 
 theorem growPeak_le (s c : ℕ) : growPeak s c + 2 * c ≤ 2 * newCap s c := by
@@ -66,13 +69,23 @@ theorem growPeak_le (s c : ℕ) : growPeak s c + 2 * c ≤ 2 * newCap s c := by
 theorem newCap_le_growPeak (s c : ℕ) : newCap s c ≤ growPeak s c + c := by
   unfold growPeak newCap; split <;> omega
 
-/-- Exact time of one push at size `s`, capacity `c`. -/
+/-- Exact time of one push at fill `s`, length `c`. -/
 def pushTime (C : CostModel) (s c : ℕ) : ℕ :=
-  C.memLen + (C.bin .eq + ((C.branch + growTime C s c) + C.memPush))
+  C.memLen + (C.bin .eq + ((C.branch + growTime C s c)
+    + (C.memStore + (C.imm + C.bin .add))))
 
-/-- The vector state: `b` holds `xs` with capacity `c`, mirrored in `r0`. -/
+/-- The vector state: `b` has length `c`, `r0` holds the fill `xs.size`, and the
+first `xs.size` words of `b` are `xs`. -/
 def Pre (b : BufId) (xs : Array (Word w)) (c : ℕ) (s : State w) : Prop :=
-  s.bufs b = xs ∧ s.caps b = c ∧ s.regs 0 = BitVec.ofNat w c
+  (s.bufs b).size = c ∧ s.regs 0 = BitVec.ofNat w xs.size ∧
+  ∀ j, j < xs.size → (s.bufs b)[j]? = xs[j]?
+
+/-- Writing a register other than the fill keeps the vector state. -/
+theorem Pre.setReg {b : BufId} {xs : Array (Word w)} {c : ℕ} {s : State w} {r : Reg}
+    (v : Word w) (hr : r ≠ 0) (h : Pre b xs c s) : Pre b xs c (s.setReg r v) := by
+  obtain ⟨h1, h2, h3⟩ := h
+  exact ⟨by simpa using h1, by rw [regs_setReg_ne _ _ (Ne.symm hr)]; exact h2,
+    by simpa using h3⟩
 
 theorem le_newCap (s c : ℕ) : c ≤ newCap s c := by
   unfold newCap; split <;> omega
@@ -89,8 +102,9 @@ theorem ofNat_eq_ofNat_iff {a b : ℕ} (ha : a < 2 ^ w) (hb : b < 2 ^ w) :
 theorem grow_spec {C : CostModel} (b : BufId) (x : Word w) (xs : Array (Word w)) (c : ℕ)
     (hc1 : 1 ≤ c) (hw : 2 * c < 2 ^ w) :
     Triple C RandomTape.zero
-      (fun s => (Pre b xs c s ∧ s.regs 1 = x) ∧ s.regs 3 = if xs.size = c then 1 else 0)
-      (.ifNZ 3 (.bin .add 0 0 0 ;; .memResize b 0) .skip)
+      (fun s => (Pre b xs c s ∧ s.regs 1 = x ∧ s.regs 2 = BitVec.ofNat w c)
+        ∧ s.regs 3 = if xs.size = c then 1 else 0)
+      (.ifNZ 3 (.bin .add 2 2 2 ;; .memResize b 2) .skip)
       (fun s => Pre b xs (newCap xs.size c) s ∧ s.regs 1 = x)
       (C.branch + growTime C xs.size c)
       ((newCap xs.size c : ℤ) - c) (growPeak xs.size c) := by
@@ -103,31 +117,30 @@ theorem grow_spec {C : CostModel} (b : BufId) (x : Word w) (xs : Array (Word w))
     rw [hnew, hT, hP]
     apply Triple.ifNZ
     · have hadd : Triple C RandomTape.zero
-          (fun s => ((Pre b xs c s ∧ s.regs 1 = x)
+          (fun s => ((Pre b xs c s ∧ s.regs 1 = x ∧ s.regs 2 = BitVec.ofNat w c)
             ∧ s.regs 3 = if xs.size = c then 1 else 0) ∧ s.regs 3 ≠ 0)
-          (.bin .add 0 0 0)
-          (fun s => s.bufs b = xs ∧ s.caps b = c ∧ s.regs 0 = BitVec.ofNat w (2 * c)
-            ∧ s.regs 1 = x)
+          (.bin .add 2 2 2)
+          (fun s => Pre b xs c s ∧ s.regs 1 = x ∧ s.regs 2 = BitVec.ofNat w (2 * c))
           (C.bin .add) 0 0 := by
         apply Triple.bin
-        rintro s ⟨⟨⟨⟨hb, hcap, h0⟩, h1⟩, _⟩, _⟩
-        refine ⟨by simpa using hb, by simpa using hcap, ?_, by simp [h1]⟩
-        simp [h0, BitVec.ofNat_add_ofNat, two_mul]
+        rintro s ⟨⟨⟨hpre, h1, h2'⟩, _⟩, _⟩
+        refine ⟨hpre.setReg _ (by decide), by simp [h1], ?_⟩
+        simp [h2', BitVec.ofNat_add_ofNat, two_mul]
       have hres : Triple C RandomTape.zero
-          (fun s => s.bufs b = xs ∧ s.caps b = c ∧ s.regs 0 = BitVec.ofNat w (2 * c)
-            ∧ s.regs 1 = x)
-          (.memResize b 0)
+          (fun s => Pre b xs c s ∧ s.regs 1 = x ∧ s.regs 2 = BitVec.ofNat w (2 * c))
+          (.memResize b 2)
           (fun s => Pre b xs (2 * c) s ∧ s.regs 1 = x)
           (C.memResize + 2 * c * C.allocPerWord)
           (((2 * c : ℕ) : ℤ) - (c : ℕ)) ((2 * c : ℕ) : ℤ) := by
         apply Triple.memResize'
-        rintro s ⟨hb, hcap, h0, h1⟩
-        have hv : (s.regs 0).toNat = 2 * c := by
-          rw [h0, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hw]
-        refine ⟨by omega, by omega, ⟨?_, ?_, ?_⟩, by simp [h1]⟩
-        · rw [hv, bufs_resizeBuf_self_of_le _ (by rw [hb]; omega), hb]
+        rintro s ⟨⟨hsz, h0, hpre⟩, h1, h2'⟩
+        have hv : (s.regs 2).toNat = 2 * c := by
+          rw [h2', BitVec.toNat_ofNat, Nat.mod_eq_of_lt hw]
+        refine ⟨by omega, by omega, ⟨?_, by simpa using h0, ?_⟩, by simpa using h1⟩
         · simp [hv]
-        · simp [h0]
+        · intro j hj
+          rw [hv, bufs_resizeBuf_self, getElem?_zeroResize_of_lt _ (by omega) (by omega)]
+          exact hpre j hj
       exact (hadd.seq hres).weaken (le_refl _) (by push_cast; omega) (by push_cast; omega)
     · rintro s ⟨⟨_, h3⟩, hz⟩
       rw [h3] at hz
@@ -139,12 +152,13 @@ theorem grow_spec {C : CostModel} (b : BufId) (x : Word w) (xs : Array (Word w))
     apply Triple.ifNZ
     · rintro s ⟨⟨_, h3⟩, hnz⟩
       exact absurd (cond_of_flag_ne h3 hnz) hs
-    · exact (Triple.skip fun s hs => hs.1.1).weaken (le_refl _) (by simp) (by simp)
+    · exact (Triple.skip fun s hs => ⟨hs.1.1.1, hs.1.1.2.1⟩).weaken
+        (le_refl _) (by simp) (by simp)
 
-/-- One push: contents `xs.push x`, capacity `newCap`, exact time `pushTime`, memory
-net the capacity growth (0, or `c` on a doubling push) and peak `growPeak` (0, or the
-whole new capacity `2c` on a doubling push, old and new coexisting during the
-copy). -/
+/-- One push: the first `xs.size + 1` words become `xs.push x`, length `newCap`,
+exact time `pushTime`, memory net the length growth (0, or `c` on a doubling push)
+and peak `growPeak` (0, or the whole new length `2c` on a doubling push, old and new
+coexisting during the copy). -/
 theorem push_spec {C : CostModel} (b : BufId) (x : Word w) (xs : Array (Word w)) (c : ℕ)
     (hc1 : 1 ≤ c) (hsz : xs.size ≤ c) (hw : 2 * c < 2 ^ w) :
     Triple C RandomTape.zero (fun s => Pre b xs c s ∧ s.regs 1 = x) (pushCode b)
@@ -152,30 +166,44 @@ theorem push_spec {C : CostModel} (b : BufId) (x : Word w) (xs : Array (Word w))
       (pushTime C xs.size c)
       ((newCap xs.size c : ℤ) - c) (growPeak xs.size c) := by
   have h1 : Triple C RandomTape.zero (fun s => Pre b xs c s ∧ s.regs 1 = x) (.memLen 2 b)
-      (fun s => (Pre b xs c s ∧ s.regs 1 = x) ∧ s.regs 2 = BitVec.ofNat w xs.size)
+      (fun s => Pre b xs c s ∧ s.regs 1 = x ∧ s.regs 2 = BitVec.ofNat w c)
       C.memLen 0 0 := by
     apply Triple.memLen
-    rintro s ⟨⟨hb, hcap, h0⟩, hx⟩
-    exact ⟨⟨⟨by simpa using hb, by simpa using hcap, by simp [h0]⟩, by simp [hx]⟩,
-      by simp [hb]⟩
+    rintro s ⟨hpre, hx⟩
+    exact ⟨hpre.setReg _ (by decide), by simp [hx], by simp [hpre.1]⟩
   have h2 : Triple C RandomTape.zero
-      (fun s => (Pre b xs c s ∧ s.regs 1 = x) ∧ s.regs 2 = BitVec.ofNat w xs.size)
-      (.bin .eq 3 2 0)
-      (fun s => (Pre b xs c s ∧ s.regs 1 = x) ∧ s.regs 3 = if xs.size = c then 1 else 0)
+      (fun s => Pre b xs c s ∧ s.regs 1 = x ∧ s.regs 2 = BitVec.ofNat w c)
+      (.bin .eq 3 0 2)
+      (fun s => (Pre b xs c s ∧ s.regs 1 = x ∧ s.regs 2 = BitVec.ofNat w c)
+        ∧ s.regs 3 = if xs.size = c then 1 else 0)
       (C.bin .eq) 0 0 := by
     apply Triple.bin
-    rintro s ⟨⟨⟨hb, hcap, h0⟩, hx⟩, hl⟩
-    refine ⟨⟨⟨by simpa using hb, by simpa using hcap, by simp [h0]⟩, by simp [hx]⟩, ?_⟩
-    simp [hl, h0, ofNat_eq_ofNat_iff (w := w) (a := xs.size) (b := c) (by omega) (by omega)]
+    rintro s ⟨hpre, hx, hl⟩
+    refine ⟨⟨hpre.setReg _ (by decide), by simp [hx], by simp [hl]⟩, ?_⟩
+    simp [hl, hpre.2.1, ofNat_eq_ofNat_iff (w := w) (a := xs.size) (b := c) (by omega) (by omega)]
   have h3 := grow_spec (C := C) b x xs c hc1 hw
+  have hlt : xs.size < newCap xs.size c := by unfold newCap; split <;> omega
+  have hsw : xs.size < 2 ^ w := by omega
   have h4 : Triple C RandomTape.zero
       (fun s => Pre b xs (newCap xs.size c) s ∧ s.regs 1 = x)
-      (.memPush b 1) (Pre b (xs.push x) (newCap xs.size c)) C.memPush 0 0 := by
-    apply Triple.memPush
-    rintro s ⟨⟨hb, hcap, h0⟩, hx⟩
-    refine ⟨?_, by simp [hb, hx], by simpa using hcap, by simpa using h0⟩
-    rw [hb, hcap]
-    unfold newCap; split <;> omega
+      (.memStore b 0 1 ;; .imm 4 1 ;; .bin .add 0 0 4)
+      (Pre b (xs.push x) (newCap xs.size c))
+      (C.memStore + (C.imm + C.bin .add)) 0 0 := by
+    rintro s ⟨⟨hsize, h0, hpre⟩, hx⟩
+    have hv : (s.regs 0).toNat = xs.size := by
+      rw [h0, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hsw]
+    have hst : (s.regs 0).toNat < (s.bufs b).size := by rw [hv, hsize]; exact hlt
+    refine ⟨_, _, _, _, .seq (.memStore hst) (.seq .imm .bin), ⟨?_, ?_, ?_⟩,
+      le_refl _, le_refl _, le_refl _⟩
+    · simp [hsize]
+    · simp [h0, Array.size_push, BitVec.ofNat_add]
+    · intro j hj
+      simp only [Array.size_push] at hj
+      simp only [regs_setReg_ne _ _ (show (0 : ℕ) ≠ 4 by decide), bufs_setReg,
+        bufs_setBuf_self, Array.getElem?_set, hv, Array.getElem?_push]
+      by_cases hjs : j = xs.size
+      · subst hjs; simp [hx]
+      · rw [if_neg (Ne.symm hjs), if_neg hjs]; exact hpre j (by omega)
   have hle := le_newCap xs.size c
   have hgp := newCap_le_growPeak xs.size c
   exact (h1.seq (h2.seq (h3.seq h4))).weaken (le_refl _) (by omega) (by omega)
@@ -221,8 +249,8 @@ theorem pushAll_spec {C : CostModel} (b : BufId) :
     have hld : Triple C RandomTape.zero (Pre b xs c) (.imm 1 x)
         (fun s => Pre b xs c s ∧ s.regs 1 = x) C.imm 0 0 := by
       apply Triple.imm
-      rintro s ⟨hb, hcap, h0⟩
-      exact ⟨⟨by simpa using hb, by simpa using hcap, by simp [h0]⟩, by simp⟩
+      intro s hpre
+      exact ⟨hpre.setReg _ (by decide), by simp⟩
     have hp := push_spec (C := C) b x xs c hc1 hsz hw
     have hnc := le_newCap xs.size c
     have hc1' : 1 ≤ newCap xs.size c := by omega
@@ -250,7 +278,8 @@ theorem pushAll_spec {C : CostModel} (b : BufId) :
 
 /-- Base cost of one push, the doubling's constant parts included. -/
 def amortBase (C : CostModel) : ℕ :=
-  C.memLen + C.bin .eq + C.branch + C.bin .add + C.memResize + C.memPush
+  C.memLen + C.bin .eq + C.branch + C.bin .add + C.memResize + C.memStore + C.imm
+    + C.bin .add
 
 /-- The amortized cost of one push (with its element load): the base, plus four
 words' worth of resize charge deposited into the potential. -/
@@ -312,44 +341,44 @@ old-plus-new overlap included). -/
 theorem fromOne_spec {C : CostModel} (b : BufId) (ys : List (Word w))
     (hW : 4 * (ys.length + 1) ≤ 2 ^ w) :
     Triple C RandomTape.zero (Pre b #[] 1) (pushAll b ys)
-      (fun s => s.bufs b = ys.toArray)
+      (fun s => ∀ j, j < ys.length → (s.bufs b)[j]? = ys[j]?)
       (ys.length * amortCost C) (2 * ys.length) (4 * ys.length) := by
   have h := pushAll_spec (C := C) b ys #[] 1 (le_refl _) (by simp) (by omega)
     (by simp; omega)
   have hcap := capAfter_le ys.length 0 1 (le_refl _) (Nat.zero_le _) (by simp)
   simp only [List.size_toArray, List.length_nil] at h hcap
-  refine h.conseq (fun _ h => h) (fun s hs => by simpa using hs.1)
+  refine h.conseq (fun _ h => h) (fun s hs => by simpa using hs.2.2)
     (pushesTime_le C ys.length) ?_ ?_ <;> omega
 
 /-! ### Pins -/
 
-/-- Reserve capacity 1 for the empty vector, record it in `r0`, push `ys`. -/
+/-- Resize the empty vector to length 1, zero the fill in `r0`, push `ys`. -/
 def demoProg (ys : List (Word w)) : Stmt w :=
-  .memResizeI 0 1 ;; .imm 0 1 ;; pushAll 0 ys
+  .memResizeI 0 1 ;; .imm 0 0 ;; pushAll 0 ys
 
-/-- Five pushes from capacity 1: doublings at sizes 1, 2 and 4, final capacity 8.
-`(contents, capacity, time, net, peak)`: time `44 = 2 + pushesTime .unit 0 1 5`,
-net memory 8 and peak 12: the last doubling, from 4 to 8 words, holds both
-regions at once on top of the 4 already live. -/
+/-- Five pushes from length 1: doublings at fills 1, 2 and 4, final length 8, the
+last three words still zero. `(buffer, fill, time, net, peak)`: time
+`54 = 2 + pushesTime .unit 0 1 5`, net memory 8 and peak 12: the last doubling,
+from 4 to 8 words, holds both regions at once on top of the 4 already live. -/
 def demo : Option (Array (Word 64) × ℕ × ℕ × ℤ × ℤ) :=
   (run .unit Caliper.RandomTape.zero 1000 (demoProg [10, 20, 30, 40, 50])
       (State.init 64)).map
-    fun (s, t, d, p) => (s.bufs 0, s.caps 0, t, d, p)
+    fun (s, t, d, p) => (s.bufs 0, (s.regs 0).toNat, t, d, p)
 
-/-- info: some (#[10#64, 20#64, 30#64, 40#64, 50#64], 8, 44, 8, 12) -/
+/-- info: some (#[10#64, 20#64, 30#64, 40#64, 50#64, 0#64, 0#64, 0#64], 5, 54, 8, 12) -/
 #guard_msgs in
 #eval demo
 
-/-- info: 42 -/
+/-- info: 52 -/
 #guard_msgs in
 #eval pushesTime .unit 0 1 5
 
-/-- The amortized constant in the unit model: 10 per push. -/
-example : amortCost .unit = 10 := rfl
+/-- The amortized constant in the unit model: 12 per push. -/
+example : amortCost .unit = 12 := rfl
 
 #guard pushesTime .unit 0 1 1000 ≤ 1000 * amortCost .unit
 
-/-- info: 3 -/
+/-- info: 4 -/
 #guard_msgs in
 #eval (pushCode (w := 64) 0).regPeak₀
 

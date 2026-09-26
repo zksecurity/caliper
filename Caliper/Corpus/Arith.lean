@@ -160,8 +160,7 @@ theorem spec {C : CostModel} (xs ys : BufId) (aX aY : Array (Word w))
 def demo : Option (Word 64 × ℕ × ℤ × ℤ) :=
   (run .unit Caliper.RandomTape.zero 1000 (code 0 1)
       { State.init 64 with
-        bufs := fun b => if b = 0 then #[1, 2, 3] else if b = 1 then #[4, 5, 6] else #[]
-        caps := fun b => if b = 0 ∨ b = 1 then 3 else 0 }).map
+        bufs := fun b => if b = 0 then #[1, 2, 3] else if b = 1 then #[4, 5, 6] else #[] }).map
     fun (s, t, d, p) => (s.regs 0, t, d, p)
 
 /-- info: some (32#64, 29, 0, 0) -/

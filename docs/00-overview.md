@@ -3,7 +3,7 @@
 Caliper is a Lean DSL for proving concrete running-time and memory bounds.
 Programs use fixed-width words, statically named registers, and independent buffers.
 The instruction set is designed around unit-cost operations;
-acquiring buffer capacity is charged per word.
+acquiring buffer words is charged per word, and buffers are zero-initialised arrays whose length is their only size.
 It can serve as a compilation target for languages that need certified resource bounds, e.g. witness-generation IRs.
 
 ## Documentation
@@ -11,7 +11,7 @@ It can serve as a compilation target for languages that need certified resource 
 We start with the machine and its resource bounds, then write programs and state what those bounds mean for a real CPU.
 
 1. [Machine Model](01-machine-model.md): words, instructions, states, and execution costs.
-2. [Memory](02-memory.md): time and space specifications, buffer capacity, and register liveness.
+2. [Memory](02-memory.md): time and space specifications, buffer memory, and register liveness.
 3. [Programming](03-programming.md): builders, proofs, and the reference interpreter.
 4. [Compilation](04-compilation.md): the contract between abstract costs and a 64-bit CPU.
 5. [Limitations](05-limitations.md): what is proved, what is assumed, and what remains to be done.
