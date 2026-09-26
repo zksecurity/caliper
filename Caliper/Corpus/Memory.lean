@@ -144,7 +144,7 @@ theorem spec {C : CostModel} (src dst : BufId) (hne : dst ≠ src)
     have hval : (s.regs 1).toNat = arr.size := by
       rw [hlen, BitVec.toNat_ofNat]
       exact Nat.mod_eq_of_lt hsz
-    refine ⟨by omega, ?_, ?_, ?_⟩
+    refine ⟨by omega, by omega, ?_, ?_, ?_⟩
     · simp [bufs_resizeBuf_ne _ _ hne', hsrc]
     · simp [hlen]
     · simp [hval]

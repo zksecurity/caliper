@@ -359,7 +359,7 @@ theorem spec {C : CostModel} (b : BufId) (n : ℕ) (hn : n < 2 ^ w) :
     have hval : (s.regs 2).toNat = n := by
       rw [hs, BitVec.toNat_ofNat]
       exact Nat.mod_eq_of_lt hn
-    exact ⟨by omega, by simp [hs], by simp [hval]⟩
+    exact ⟨by omega, by rw [hval]; omega, by simp [hs], by simp [hval]⟩
   have h2 : Triple C Caliper.RandomTape.zero
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ (s.bufs b).size = n)
       (.imm 0 0) (Inv b n n) C.imm 0 0 := by
@@ -393,8 +393,8 @@ end Iota
 A one-word scratch buffer is allocated once, each of the `n` iterations writes a
 word into it and reads it back, so every access is memory-free, and the buffer is
 freed at the end. Net memory 0, peak 1, for any `n`, where a total-allocation
-counter would report `n`. `Triple.free'`, free with known length, credits the word
-back so the whole program nets to zero.
+counter would report `n`. The free `memResizeI sb 0`, with the known length 1,
+credits the word back so the whole program nets to zero.
 
 Registers: `r0` index, `r1` flag, `r2` the limit `n`, `r3` the constant 1, `r4` the
 scratch index 0, `r5` the word read back. -/
@@ -476,7 +476,7 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
       (C.memResize + 1 * C.allocPerWord) 1 1 := by
     apply Triple.memResizeI
     intro s hlim
-    exact ⟨by simp [hlim], by simp⟩
+    exact ⟨by omega, by simp [hlim], by simp⟩
   have h2 : Triple C Caliper.RandomTape.zero
       (fun s => s.regs 2 = BitVec.ofNat w n ∧ (s.bufs sb).size = 1)
       (.imm 0 0) (Inv sb n n) C.imm 0 0 := by
@@ -487,10 +487,10 @@ theorem spec {C : CostModel} (sb : BufId) (n : ℕ) (hn : n < 2 ^ w) :
   have hF : Triple C Caliper.RandomTape.zero
       (fun s => ∃ k', InvG (w := w) sb n k' s ∧ s.regs 1 = 0)
       (.memResizeI sb 0) (fun s => s.bufs sb = #[])
-      C.memResize (-(1 : ℤ)) 0 := by
-    apply Triple.free' (K := 1)
+      (C.memResize + 0 * C.allocPerWord) (-(1 : ℤ)) ((0 : ℕ) : ℤ) := by
+    apply Triple.memResizeI
     rintro s ⟨k', ⟨⟨hlim, hik, hsz⟩, hflag⟩, hzero⟩
-    exact ⟨by omega, by simp⟩
+    exact ⟨by rw [hsz]; omega, by simp⟩
   refine ((h1.seq (h2.seq (hW.seq hF))).conseq (fun _ h => h)
     (fun _ h => h) (le_of_eq (by unfold timeBound; ring)) (by simp) (by simp))
 
@@ -590,9 +590,7 @@ theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
   have hguard : ∀ k, TimeTriple C Caliper.RandomTape.zero (Inv (w := w) n k) (.bin .ult 1 0 2)
       (InvG (w := w) n k) (C.bin .ult) := by
     intro k
-    apply TimeTriple.bin
-    rintro s ⟨hlim, hik⟩
-    refine ⟨⟨?_, ?_⟩, ?_⟩
+    refine (Triple.bin fun s ⟨hlim, hik⟩ => ⟨⟨?_, ?_⟩, ?_⟩).time
     · simp [hlim]
     · simp [hik]
     · simp [hlim, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hn]
@@ -611,7 +609,7 @@ theorem time_spec {C : CostModel} (n : ℕ) (hn : n < 2 ^ w) :
       omega
   have h1 : TimeTriple C Caliper.RandomTape.zero (fun s => s.regs 2 = BitVec.ofNat w n) (.imm 0 0)
       (Inv n n) C.imm :=
-    TimeTriple.imm fun s hs => ⟨by simp [hs], by simp⟩
+    (Triple.imm fun s hs => ⟨by simp [hs], by simp⟩).time
   have hW := TimeTriple.whileNZ_measure hguard hpos hbody n
   refine (h1.seq hW).conseq (fun _ h => h) ?_ (le_of_eq (by unfold timeBound; ring))
   rintro s ⟨k', ⟨⟨hlim, hik⟩, hflag⟩, hzero⟩
@@ -666,9 +664,7 @@ theorem space_spec {C : CostModel} (b : BufId) :
   have hguard : ∀ k, SpaceTriple C Caliper.RandomTape.zero (Inv (w := w) k) (.mov 1 0)
       (InvG (w := w) k) 0 0 := by
     intro k
-    apply SpaceTriple.mov
-    intro s hs
-    exact ⟨by simpa [Inv] using hs, by simp⟩
+    exact (Triple.mov fun s hs => ⟨by simpa [Inv] using hs, by simp⟩).space
   have hpos : ∀ k (s : State w), InvG k s → s.regs 1 ≠ 0 → ∃ k', k = k' + 1 := by
     rintro (_ | k) s ⟨hk, h1⟩ hnz
     · exact absurd (h1.trans (BitVec.eq_of_toNat_eq (by simpa [Inv] using hk))) hnz

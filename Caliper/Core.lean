@@ -187,23 +187,17 @@ structure CostModel where
   mov : ℕ := 1
   un : UnOp → ℕ := fun _ => 1
   bin : BinOp → ℕ := fun _ => 1
-  /-- Base cost of a resize, on top of the per-word charge: a resize to length
-  `n` costs `memResize + n * allocPerWord`. 0 in both shipped tables, since static
-  buffer names and explicit lengths admit an arena/bump allocator, so creation is
-  a pointer bump amortized into the per-word charge. (A non-reclaiming bump arena
-  does not reuse the regions a copying realloc leaves behind, so its physical
-  footprint can reach about twice the certified peak; the peak counts live buffer
-  words, not allocator fragmentation.) The free, `memResizeI b 0`,
-  costs only this base: every release pairs with earlier acquisitions of the same
-  buffer, whose per-word charges price creation and destruction (a freelist push,
-  deferred coalescing or an `munmap` teardown are each bounded by the size-linear
-  work already paid there). `CostModel.Admissible` exempts this base;
-  `allocPerWord` keeps the per-word charge ≥ 1. -/
+  /-- Base cost of a resize: a resize to length `n` costs
+  `memResize + n * allocPerWord`. 0 in both shipped tables, since static buffer
+  names admit an arena/bump allocator. The free, `memResizeI b 0`, costs only this
+  base: the released words' teardown was priced by the per-word charges that
+  acquired them. `CostModel.Admissible` exempts this base. (The certified peak
+  counts live buffer words, not allocator fragmentation: a non-reclaiming arena
+  under copying reallocs can use up to about twice the peak.) -/
   memResize : ℕ := 0
-  /-- Per-word cost of a resize, charged on the full *new* length, since a realloc
-  may copy every surviving word and zero every new one. Any model with `1 ≤ allocPerWord` makes
-  peak memory bounded by running time (`Exec.peak_le_time`): no program can hold
-  more live words than it has spent time steps. -/
+  /-- Per-word cost of a resize, charged on the full *new* length (a realloc may
+  copy every surviving word and zero every new one). `1 ≤ allocPerWord` makes peak
+  memory bounded by running time (`Exec.peak_le_time`). -/
   allocPerWord : ℕ := 1
   memLen : ℕ := 1
   memLoad : ℕ := 1
@@ -340,10 +334,6 @@ theorem getElem?_zeroResize_of_lt {α : Type} [Zero α] (a : Array α) {n j : �
     zeroResize a 0 = #[] := by
   simp [zeroResize]
 
-@[simp] theorem zeroResize_empty {α : Type} [Zero α] (n : ℕ) :
-    zeroResize (#[] : Array α) n = Array.replicate n 0 := by
-  simp [zeroResize]
-
 /-- Resize `b` to length `n`, realloc-style: the first `n` words survive, new words
 are zero, every other buffer and register is untouched. `resizeBuf b 0` frees `b`. -/
 def State.resizeBuf (s : State w) (b : BufId) (n : ℕ) : State w :=
@@ -381,15 +371,6 @@ a side condition decidable over two `ℕ`s. -/
 /-- The resized buffer has exactly the requested length. -/
 theorem size_bufs_resizeBuf_self (s : State w) (b : BufId) (n : ℕ) :
     ((s.resizeBuf b n).bufs b).size = n := by simp
-
-/-- Resizing to 0 empties the buffer: the free. -/
-theorem bufs_resizeBuf_self_zero (s : State w) (b : BufId) :
-    (s.resizeBuf b 0).bufs b = #[] := by simp
-
-/-- Resizing an empty buffer yields zeros: a fresh acquisition. -/
-theorem bufs_resizeBuf_self_of_empty (s : State w) {b : BufId} (n : ℕ)
-    (h : s.bufs b = #[]) : (s.resizeBuf b n).bufs b = Array.replicate n 0 := by
-  simp [h]
 
 @[simp] theorem bufs_resizeBuf_ne (s : State w) {b b' : BufId} (n : ℕ)
     (h : b' ≠ b) : (s.resizeBuf b n).bufs b' = s.bufs b' := by simp [State.resizeBuf, h]
@@ -878,119 +859,23 @@ theorem Exec.staticTime?_time_eq {C : CostModel} {c : Stmt w} {s s' : State w}
   obtain ⟨hs, rfl⟩ := Stmt.staticTime?_eq_some.mp hn
   exact h.straight_time_eq hs
 
-/-! ### Absolute live memory: well-formed states and `liveMem`
+/-! ### Absolute live memory
 
-`Exec` defines the indices `d` and `p` for *arbitrary* start states, including
-adversarial ones where they have no physical reading: a state with infinitely many
-non-empty buffers has no finite footprint at all. No such state is reachable from
-an honest start: `State.WellFormed` (finitely many non-empty buffers) holds for
-`State.init` and is preserved by every execution (`Exec.wellFormed_preserved`).
-Over such states the *absolute* footprint `State.liveMem`, the sum of buffer
-lengths, is well defined (`liveMem_eq_of_supportBound`) and the profile is pinned
-to it exactly:
+`Exec` defines the indices `d` and `p` for arbitrary start states. They are pinned
+to the *absolute* footprint `State.liveMem B`, the words held by buffers below any
+bound `B` covering the buffers `c` names:
 
 * the net change is exact: `liveMem s' = liveMem s + d` (`Exec.liveMem_eq`);
 * the final state is within the peak (`Exec.liveMem_le_peak`), and so is every
   intermediate state (`Exec.reaches_liveMem_le_peak`, with `Reaches` enumerating
-  the states an execution passes through);
-* a resize credits only words genuinely present in the footprint
-  (`Exec.memResize_credit_le`, `Exec.memResizeI_credit_le`).
+  the states an execution passes through).
 
-Since a buffer's length is its only size, every stored word is a live word: there
-is no reserved-but-unfilled capacity and no data outside the metric.
-
-So from a well-formed state, `p` is an absolute high-water mark on physical memory
-above the start level, not growth relative to an arbitrary baseline. -/
-
-/-- `B` is a *support bound* for `s`: every buffer at or above `B` is empty. The
-absolute footprint of such a state is `s.liveMem B`, and the choice of bound does
-not matter (`liveMem_eq_of_supportBound`). -/
-def State.SupportBound (s : State w) (B : ℕ) : Prop :=
-  ∀ b, B ≤ b → (s.bufs b).size = 0
-
-/-- A support bound stays one at any larger bound. -/
-theorem State.SupportBound.mono {s : State w} {B B' : ℕ} (hs : s.SupportBound B)
-    (hB : B ≤ B') : s.SupportBound B' :=
-  fun b hb => hs b (hB.trans hb)
-
-/-- The states the memory accounting is *about*: only finitely many buffers are
-non-empty, so total live memory is well defined. Holds for `State.init` and is
-preserved by execution (`Exec.wellFormed_preserved`). -/
-structure State.WellFormed (s : State w) : Prop where
-  /-- Finite support: beyond some bound, every buffer is empty. -/
-  finite : ∃ B, s.SupportBound B
-
-/-- The initial state is well-formed: nothing stored. -/
-theorem State.init_wellFormed : (State.init w).WellFormed where
-  finite := ⟨0, fun _ _ => rfl⟩
-
-/-- A strict upper bound on every buffer name occurring in `c`. Buffer names are
-syntax, so this is a static quantity; in particular `c` cannot touch a buffer at or
-above `c.memBound` (`Stmt.touches_lt_memBound`). -/
-def Stmt.memBound : Stmt w → ℕ
-  | .skip | .rand .. | .imm .. | .mov .. | .un .. | .bin .. => 0
-  | .seq c₁ c₂ => max c₁.memBound c₂.memBound
-  | .memResize b _ => b + 1
-  | .memResizeI b _ => b + 1
-  | .memLen _ b => b + 1
-  | .memLoad _ b _ => b + 1
-  | .memStore b _ _ => b + 1
-  | .ifNZ _ thn els => max thn.memBound els.memBound
-  | .whileNZ g _ body => max g.memBound body.memBound
-
-theorem Stmt.touches_lt_memBound {c : Stmt w} {b : BufId} (h : c.Touches b) :
-    b < c.memBound := by
-  induction c with
-  | seq _ _ ih₁ ih₂ =>
-    rcases h with h | h
-    · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
-    · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
-  | ifNZ _ _ _ ih₁ ih₂ =>
-    rcases h with h | h
-    · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
-    · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
-  | whileNZ _ _ _ ih₁ ih₂ =>
-    rcases h with h | h
-    · exact lt_of_lt_of_le (ih₁ h) (le_max_left _ _)
-    · exact lt_of_lt_of_le (ih₂ h) (le_max_right _ _)
-  | memResize _ _ | memResizeI _ _ | memStore _ _ _ =>
-    subst h; exact Nat.lt_succ_self _
-  | _ => exact h.elim
-
-/-- Convert the syntactic bound into the touch-bound hypothesis the `liveMem`
-theorems take. -/
-theorem Stmt.touches_lt_of_memBound_le {c : Stmt w} {B : ℕ} (hB : c.memBound ≤ B) :
-    ∀ b, c.Touches b → b < B :=
-  fun _ ht => lt_of_lt_of_le (touches_lt_memBound ht) hB
-
-/-- A support bound survives execution: buffers only change at names in `c`, all
-of which lie below the bound. -/
-theorem Exec.supportBound_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
-    {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C tape c s s' t d p)
-    (hc : ∀ b, c.Touches b → b < B)
-    (hs : s.SupportBound B) : s'.SupportBound B := by
-  intro b hb
-  rw [h.frame_buf fun ht => Nat.lt_irrefl b (Nat.lt_of_lt_of_le (hc b ht) hb)]
-  exact hs b hb
-
-/-- Preservation of well-formedness. With `State.init_wellFormed`, every state
-reachable from the initial state is well-formed, so the memory profile of an
-execution from an honest start reads as physical memory (`Exec.liveMem_eq`,
-`Exec.reaches_liveMem_le_peak`). -/
-theorem Exec.wellFormed_preserved {C : CostModel} {c : Stmt w} {s s' : State w}
-    {t : ℕ} {d p : ℤ} (h : Exec C tape c s s' t d p) (hwf : s.WellFormed) :
-    s'.WellFormed where
-  finite := by
-    obtain ⟨B, hB⟩ := hwf.finite
-    exact ⟨max B c.memBound,
-      h.supportBound_preserved
-        (Stmt.touches_lt_of_memBound_le (Nat.le_max_right _ _))
-        (hB.mono (Nat.le_max_left _ _))⟩
+Since a buffer's length is its only size, every stored word is a live word, so `p`
+is a high-water mark on physical buffer memory above the start level. -/
 
 /-- Absolute live memory below `B`: the words held by buffers `0, …, B - 1`.
-For `B` a support bound this is the state's entire footprint, independent of the
-choice of `B` (`liveMem_eq_of_supportBound`). Defined by recursion on `B` (rather
-than a `Finset` sum) so that the update lemmas prove by `induction`/`omega`. -/
+Defined by recursion on `B` (rather than a `Finset` sum) so that the update lemmas
+prove by `induction`/`omega`. -/
 def State.liveMem (s : State w) : ℕ → ℕ
   | 0 => 0
   | B + 1 => s.liveMem B + (s.bufs B).size
@@ -1044,28 +929,6 @@ theorem liveMem_resizeBuf (s : State w) {b : BufId} (n : ℕ) {B : ℕ} (hb : b 
         liveMem_resizeBuf_of_le _ _ (Nat.le_refl b)]
       push_cast
       omega
-
-/-- Any single buffer's length is part of the footprint; the arithmetic behind
-`Exec.memResize_credit_le`. -/
-theorem size_le_liveMem (s : State w) {b B : ℕ} (hb : b < B) :
-    (s.bufs b).size ≤ s.liveMem B := by
-  induction B with
-  | zero => exact absurd hb (Nat.not_lt_zero b)
-  | succ B ih =>
-    rcases Nat.lt_or_ge b B with hbB | hbB
-    · exact Nat.le_trans (ih hbB) (by simp only [State.liveMem]; omega)
-    · have heq : b = B := Nat.le_antisymm (Nat.lt_succ_iff.mp hb) hbB
-      subst heq
-      simp only [State.liveMem]
-      omega
-
-/-- Total live memory does not depend on the choice of support bound. -/
-theorem liveMem_eq_of_supportBound {s : State w} {B B' : ℕ} (hs : s.SupportBound B)
-    (hB : B ≤ B') : s.liveMem B' = s.liveMem B := by
-  induction B', hB using Nat.le_induction with
-  | base => rfl
-  | succ B' hB ih =>
-    simp only [State.liveMem, ih, hs B' hB, Nat.add_zero]
 
 /-- The net index is exact: over any bound `B` covering the buffers `c` names, the
 absolute footprint moves by exactly `d`, not merely by at most `d`. A `Triple` still
@@ -1181,27 +1044,6 @@ theorem Exec.reaches_liveMem_le_peak {C : CostModel} {c : Stmt w} {s s' m : Stat
       have h2 := Exec.liveMem_eq hg fun b hb' => hc b (Or.inl hb')
       have h3 := Exec.liveMem_eq hb fun b hb' => hc b (Or.inr hb')
       omega
-
-/-- No phantom credit: from any state, a resize of `b` credits at most `|b|`
-(exactly that for the free `memResizeI b 0`), and those words are part of the
-current absolute footprint, so the credit `-d` never exceeds `liveMem`. A shrink
-can neither drive the footprint negative nor fund an allocation the profile did
-not pay for; by `Exec.liveMem_eq` the footprint after
-`memResizeI b 0 ;; memResize b' n` is `liveMem s - |b| + n`, all charged. -/
-theorem Exec.memResizeI_credit_le {C : CostModel} {b : BufId} {n : ℕ} {s s' : State w}
-    {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C tape (.memResizeI b n) s s' t d p)
-    (hb : b < B) : -d ≤ (s.liveMem B : ℤ) := by
-  cases h
-  have := size_le_liveMem s hb
-  omega
-
-/-- `Exec.memResizeI_credit_le` for the register form. -/
-theorem Exec.memResize_credit_le {C : CostModel} {b : BufId} {n : Reg} {s s' : State w}
-    {t : ℕ} {d p : ℤ} {B : ℕ} (h : Exec C tape (.memResize b n) s s' t d p)
-    (hb : b < B) : -d ≤ (s.liveMem B : ℤ) := by
-  cases h
-  have := size_le_liveMem s hb
-  omega
 
 /-! ## Reference interpreter
 

@@ -28,7 +28,7 @@ We inspect each instruction separately, including the per-word charge for resizi
 The peak-memory bound transfers one summand at a time.
 Buffers: physical footprint = sum of buffer lengths = exactly what the dynamic profile charges, up to allocator metadata and fragmentation (a small constant for the few, long-lived, word-aligned buffers this machine uses); this identification counts live buffer words, so under a non-reclaiming bump arena a copying realloc leaves its old region unused and the physical footprint can reach about twice the certified peak (a reclaiming allocator, or in-place growth, avoids this); no shrinking policy or amortization argument is needed inside the backend, since lengths change only at explicit `memResize`/`memResizeI` instructions (amortized growth, as in the corpus `GrowVec`, is a library-level argument over those explicit resizes).
 Registers: the file's physical demand is a frame of `regPeak₀` word slots, by interval-coloring the statically inferred live ranges.
-On the model side the buffer identification is backed by the `State.WellFormed`/`State.liveMem` theorems: over every state reachable from an honest start, `d` is the exact change and `p` a true high-water mark of the absolute footprint, so "sum of buffer lengths" is a well-defined quantity the profile really tracks.
+On the model side the buffer identification is backed by the `State.liveMem` theorems: `d` is the exact change and `p` a true high-water mark of the absolute footprint.
 
 Supporting facts, all discharged by the machine's design rather than by proof:
 

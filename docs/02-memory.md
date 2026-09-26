@@ -75,29 +75,17 @@ The two bounds do not each consume a running time of their own: on straight code
 
 ## Absolute Live Memory
 
-We relate these indices to *absolute* live memory through a state invariant.
-`State.WellFormed` (finitely many non-empty buffers) holds for `State.init` and is preserved by every execution (`Exec.wellFormed_preserved`), which rules out adversarial states with no finite footprint.
-Over such states the absolute footprint `State.liveMem` changes by exactly `d` (`Exec.liveMem_eq`), a resize credits only genuinely live words (`Exec.memResize_credit_le`, `Exec.memResizeI_credit_le`), and every state the execution passes through stays within `p` of the start (`Exec.reaches_liveMem_le_peak`, `Exec.liveMem_le_peak`), so `p` is a true high-water mark on physical memory.
-
-The state invariant and absolute-memory counter come from [Core.lean](../Caliper/Core.lean):
+The absolute footprint of buffers `0, …, B - 1` is the sum of their lengths ([Core.lean](../Caliper/Core.lean)):
 
 ```lean
-def State.SupportBound (s : State w) (B : ℕ) : Prop :=
-  ∀ b, B ≤ b → (s.bufs b).size = 0
-
-structure State.WellFormed (s : State w) : Prop where
-  finite : ∃ B, s.SupportBound B
-
 def State.liveMem (s : State w) : ℕ → ℕ
   | 0 => 0
   | B + 1 => s.liveMem B + (s.bufs B).size
 ```
 
-`State.SupportBound s B` says that buffers numbered $B$ and above are empty.
-For such a bound, `s.liveMem B` counts all buffer words.
-Without it, the counter only covers buffer names below $B$.
+For any bound `B` covering the buffers a program names, `liveMem` changes by exactly `d` (`Exec.liveMem_eq`), and every state the execution passes through stays within `p` of the start (`Exec.reaches_liveMem_le_peak`, `Exec.liveMem_le_peak`), so `p` is a true high-water mark on physical buffer memory.
 
-Keep the two readings apart: a code fragment's quoted peak `p` is growth over its start state, which is what makes Triple-level profiles compose as relative high-water marks, whereas the `State.WellFormed`/`liveMem` statements anchor the same indices to physical live memory over reachable states.
+Keep the two readings apart: a code fragment's quoted peak `p` is growth over its start state, which is what makes Triple-level profiles compose as relative high-water marks, whereas the `liveMem` statements anchor the same indices to absolute live memory.
 Quote the absolute form for "this program never holds more than X words" and the relative form for "this fragment adds at most X words".
 Either way the user-facing total goes through `SpaceBound`: a buffer-side `SpaceTriple` plus the static `regPeak₀`, summed, so a buffers-only figure can never masquerade as "the memory".
 Register *values* are framed by `Stmt.Writes`, as always.
@@ -112,7 +100,7 @@ What inference costs is precision on loops, since the `whileNZ` case widens by t
 The loop rule `Triple.whileNZ_measure` takes an invariant indexed by a remaining-iterations budget `k`; time is linear in `k`, and both memory bounds have the form `base + k · max (Dg + Db) 0`, with `max` against 0 because the loop may exit early and fewer iterations free less.
 When the per-iteration net `Dg + Db ≤ 0`, the peak is independent of the trip count.
 
-Time and memory bounds are also independently provable: `TimeTriple` bounds only the running time and `SpaceTriple` only the (net, peak) pair, each with the full rule set, so a time proof carries no memory algebra and vice versa.
+Time and memory bounds are also independently provable: `TimeTriple` bounds only the running time and `SpaceTriple` only the (net, peak) pair, each with its own `seq`/`conseq`/`ifNZ`/loop/frame rules (instructions are projected from `Triple` by `Triple.time`/`Triple.space`), so a time proof carries no memory algebra and vice versa.
 The `Drain` example has a trip-count-independent space bound even though no uniform time bound exists for it.
 For a fixed tape the machine is deterministic, so separately proved judgments recombine into a full `Triple` (`TimeTriple.and_space`).
 

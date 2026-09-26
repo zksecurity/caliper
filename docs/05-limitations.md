@@ -25,7 +25,7 @@ Stated plainly:
   A native backend must insert the corresponding checks or establish the corresponding preconditions, which is bounded O(1) work per site, but that obligation lives in the contract, not in the proofs.
 - Allocator realities are outside the metric.
   Allocator metadata, alignment, fragmentation, and code size are not measured.
-  The peak `p` counts buffer words, made absolute by the `WellFormed`/`liveMem` theorems, but words-to-bytes, headers and padding are the allocator's business.
+  The peak `p` counts buffer words, made absolute by the `liveMem` theorems, but words-to-bytes, headers and padding are the allocator's business.
   The certified peak counts live buffer words, not fragmentation: under a non-reclaiming bump arena, regions left behind by copying reallocs are not reused, so the physical footprint can reach about twice the certified peak.
   A resize's peak is its whole new length, which covers a copying realloc holding the old and the new region at once; an in-place backend is over-approximated by up to the old length for that instant.
 - Generation-time staging is unpriced.

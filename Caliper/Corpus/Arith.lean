@@ -235,11 +235,9 @@ theorem time_spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
   have hguard : ∀ k, TimeTriple C Caliper.RandomTape.zero (Inv a b k) (.un .isNonZero 2 1)
       (InvG a b k) (C.un .isNonZero) := by
     intro k
-    apply TimeTriple.un
-    rintro s ⟨hg, hk⟩
     -- the flag write leaves r0/r1 alone (definitionally), and the flag's
     -- value *is* the `isNonZero` verdict
-    exact ⟨⟨hg, hk⟩, rfl⟩
+    exact (Triple.un fun s ⟨hg, hk⟩ => ⟨⟨hg, hk⟩, rfl⟩).time
   have hpos : ∀ k (s : State w), InvG a b k s → s.regs 2 ≠ 0 → ∃ k', k = k' + 1 := by
     rintro k s ⟨⟨hg, hk⟩, hflag⟩ hnz
     have hb : s.regs 1 ≠ 0 := by

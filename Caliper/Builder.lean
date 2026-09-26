@@ -188,72 +188,17 @@ end Build
 
 /-! ## Buffers
 
-At the surface, buffers are handled through the newtype `Buf w`, not raw `BufId`s.
-`Reg` and `BufId` are both `ℕ` in the core, which keeps proof goals
-numeral-friendly, so without the wrapper a buffer name could be passed where a
-register or an index was expected. The newtype prevents accidental mixing of the
-three; it is not an enforced capability, the constructor staying public (tests write
-`⟨0⟩` directly), so obtaining handles from `Mem.alloc` is a convention.
+At the surface, buffers are the newtype `Buf w`, so a buffer name cannot be passed
+where a register or an index was expected (both are `ℕ` in the core). The
+constructor stays public (tests write `⟨0⟩`), so obtaining handles from `Mem.alloc`
+is a convention. A buffer is a zero-initialised array whose length is its only
+size; code that fills one incrementally keeps its own index in a register (see
+`GrowVec` in the corpus). -/
 
-Allocation lives in the `Mem` namespace (`Mem.alloc`/`Mem.allocI`); everything that
-already has a handle is a method on `Buf` (`Buf.load`, `Buf.store`, `Buf.len`,
-`Buf.resize`, `Buf.resizeI`, `Buf.free`), so buffer code reads as `b.store i e`,
-`b.load i`, `b.free`. There is no push: a buffer is a zero-initialised array whose
-length is its only size, and code that fills one incrementally keeps its own fill
-index in a register (see `GrowVec` in the corpus for a growable vector).
-
-The core has a single sizing instruction, the realloc-style resize
-(`memResize`/`memResizeI`); `Mem.alloc`, `Mem.allocI` and `Buf.free` are derived
-helpers emitting it. `Mem.alloc`/`Mem.allocI` have *reset* semantics: they emit
-the free `memResizeI b 0` before the resize, so they always return an empty buffer
-of the requested length, even when the generated code runs more than once (an
-allocation inside a loop body without a matching free) or starts from a state where
-the buffer holds data. The non-resetting primitives are `Buf.resize`/`Buf.resizeI`,
-which keep the surviving prefix, realloc-style. -/
-
-/-- Typed handle to a buffer of `w`-bit words. Obtain one from `Mem.alloc` or
-`Mem.allocI`. -/
+/-- Typed handle to a buffer of `w`-bit words. -/
 structure Buf (w : ℕ) where
   id : BufId
 deriving Repr
-
-namespace Mem
-
-/-- Allocate a fresh, *zero-filled* buffer of length `n`, an expression evaluated
-at runtime. The words are charged now, so stores into it are memory-free. Emits
-`memResizeI b 0 ;; memResize b rn`: the free resets the buffer (so the result is all
-zeros however often the code runs), then a *dynamic* resize allocates `n` zeroed
-words. Time `2 * C.memResize + n * C.allocPerWord` (the base is 0 in both shipped
-tables), net `n - oldLen`, peak `n`. The charge depends on the runtime length, so
-the emitted code is not `Stmt.Straight`. Prefer the statically priced `Mem.allocI`
-when the length is known at generation time. -/
-def alloc (n : Exp w) : Build w (Buf w) := do
-  let rn ← Build.compileExp n
-  let b ← Build.freshBuf
-  Build.emit (.memResizeI b 0)
-  Build.emit (.memResize b rn)
-  return ⟨b⟩
-
-/-- Allocate a fresh, *zero-filled* buffer of the *immediate* length `n`, emitting
-`memResizeI b 0 ;; memResizeI b n`: no length register, reset semantics as for
-`Mem.alloc`, and the time charge `2 * C.memResize + n * C.allocPerWord` is a
-syntactic constant, so the emitted code stays `Stmt.Straight` (statically priced).
-Semantics are identical to `Mem.alloc` at that length.
-
-The immediate length of `Stmt.memResizeI` is a bare `ℕ`, unlike `Mem.alloc`, whose
-length comes from a `w`-bit register and is `< 2 ^ w`. An oversized immediate
-(`n ≥ 2 ^ w`) would make the buffer longer than `2 ^ w`, at which point `memLen`
-reads back a wrapped length while every theorem still holds. The autoparam closes
-that hole: `Mem.allocI` requires `n < 2 ^ w`, discharged by `norm_num` at concrete
-lengths and suppliable explicitly otherwise. The proof is not threaded anywhere;
-it exists so that builder-produced programs keep `memLen` exact. -/
-def allocI (n : ℕ) (_h : n < 2 ^ w := by norm_num) : Build w (Buf w) := do
-  let b ← Build.freshBuf
-  Build.emit (.memResizeI b 0)
-  Build.emit (.memResizeI b n)
-  return ⟨b⟩
-
-end Mem
 
 namespace Buf
 
@@ -276,23 +221,43 @@ def len (b : Buf w) : Build w Reg := do
   Build.emit (.memLen d b.id)
   return d
 
-/-- Resize `b` to length `n` (runtime), realloc-style: the words that fit are kept,
-new words are zero. Emits a dynamic `memResize`, charged `C.memResize + n * C.allocPerWord`. -/
+/-- Resize `b` to the runtime length `n` (`memResize`): surviving words are kept,
+new words are zero. -/
 def resize (b : Buf w) (n : Exp w) : Build w Unit := do
   let rn ← Build.compileExp n
   Build.emit (.memResize b.id rn)
 
-/-- Resize `b` to the immediate length `n`, statically priced. Same `n < 2 ^ w`
-guard as `Mem.allocI`. -/
+/-- Resize `b` to the immediate length `n` (`memResizeI`, statically priced). The
+immediate is a bare `ℕ`; the autoparam `n < 2 ^ w` keeps `memLen` exact on
+builder-produced programs. -/
 def resizeI (b : Buf w) (n : ℕ) (_h : n < 2 ^ w := by norm_num) : Build w Unit :=
   Build.emit (.memResizeI b.id n)
 
-/-- Release `b`: `memResizeI b 0`, costing only the base `C.memResize` (0 in both
-shipped tables) and crediting its whole length. -/
+/-- Release `b`: `memResizeI b 0`. -/
 def free (b : Buf w) : Build w Unit :=
   Build.emit (.memResizeI b.id 0)
 
 end Buf
+
+namespace Mem
+
+/-- A fresh all-zero buffer of runtime length `n`: `free` then `resize`, so the
+result is all zeros even when the code runs repeatedly (e.g. inside a loop). -/
+def alloc (n : Exp w) : Build w (Buf w) := do
+  let rn ← Build.compileExp n
+  let b : Buf w := ⟨← Build.freshBuf⟩
+  b.free
+  Build.emit (.memResize b.id rn)
+  return b
+
+/-- A fresh all-zero buffer of immediate length `n < 2 ^ w`, statically priced. -/
+def allocI (n : ℕ) (h : n < 2 ^ w := by norm_num) : Build w (Buf w) := do
+  let b : Buf w := ⟨← Build.freshBuf⟩
+  b.free
+  b.resizeI n h
+  return b
+
+end Mem
 
 /-! ## Product types
 

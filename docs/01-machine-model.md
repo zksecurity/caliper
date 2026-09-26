@@ -132,10 +132,9 @@ Hence the default table charges one step per word of new length, with no base ch
 
 Consequences for the instruction set:
 
-- Memory is zero-initialised: `memResize`/`memResizeI` set the length to `n` words, and the words they add read 0; the zeroing is paid by the same per-word charge.
-  There is no uninitialised or reserved-but-unreadable state to reason about: a buffer's contents are exactly its array, and every stored word is a live, charged word.
-- No instruction grows a buffer implicitly, so every instruction except a resize is worst-case unit time: no doubling, no amortisation anywhere in the machine.
-  A growable vector is a *library* on top (`GrowVec` in the corpus), a fill register plus a doubling `memResize` costing what it visibly costs, with the amortized linear bound proved by a potential argument.
+- Memory is zero-initialised, and the zeroing is paid by the resize's per-word charge; a buffer's contents are exactly its array, and every stored word is a live, charged word.
+- No instruction grows a buffer implicitly, so every instruction except a resize is worst-case unit time: no doubling, no amortisation in the machine.
+  A growable vector is a library on top (`GrowVec` in the corpus): a fill register plus a doubling `memResize`, amortized by a potential argument.
 - `whileNZ` guards are *statements*, not expressions: evaluating a loop condition costs emitted instructions, never free side-computation.
 - Words are `BitVec w` (fixed at 64 by the `Caliper64` surface); all arithmetic wraps, mirroring the u64 sort of typical source IRs.
 
