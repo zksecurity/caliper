@@ -34,9 +34,22 @@ instance : Fintype (Word w) := Fintype.ofEquiv (Fin (2 ^ w)) Word.equivFin.symm
 instance : MeasurableSpace (Word w) := ⊤
 instance : DiscreteMeasurableSpace (Word w) := ⟨fun _ => trivial⟩
 
+/-- The uniform law on `w`-bit words. -/
+noncomputable def uniformWord (w : ℕ) : Measure (Word w) :=
+  Measure.uniformOfFinset (Finset.univ : Finset (Word w))
+
+@[simp] theorem uniformWord_singleton (v : Word w) :
+    uniformWord w {v} = ((2 ^ w : ℕ) : ℝ≥0∞)⁻¹ := by
+  simp [uniformWord, Measure.uniformOfFinset_apply_singleton, Finset.card_univ]
+
+instance : IsProbabilityMeasure (uniformWord w) := by
+  constructor
+  rw [uniformWord, Measure.uniformOfFinset_apply]
+  simp [Finset.card_univ, ENNReal.div_self]
+
 /-- Independent uniform words at every tape position. -/
 noncomputable def uniformTape (w : ℕ) : Measure (RandomTape w) :=
-  Measure.infinitePi fun _ : ℕ => (PMF.uniformOfFintype (Word w)).toMeasure
+  Measure.infinitePi fun _ : ℕ => uniformWord w
 
 instance : IsProbabilityMeasure (uniformTape w) := by
   unfold uniformTape
@@ -49,7 +62,7 @@ def RandomTape.cylinder {n : ℕ} (xs : Fin n → Word w) : Set (RandomTape w) :
 theorem RandomTape.measurableSet_cylinder {n : ℕ} (xs : Fin n → Word w) :
     MeasurableSet (RandomTape.cylinder xs) := by
   unfold cylinder
-  simp only [Set.setOf_forall]
+  simp only [Set.ofPred_forall]
   exact MeasurableSet.iInter fun i => (measurable_pi_apply (i : ℕ)) (measurableSet_singleton _)
 
 /-- Any event witnessed by a finite prefix is measurable. -/
@@ -70,7 +83,7 @@ theorem RandomTape.measurableSet_of_prefix (E : Set (RandomTape w))
         apply hn other
         intro i hi
         exact ho ⟨i, hi⟩
-      simp only [if_pos hc]
+      simp only [ite_eq_left hc]
       exact fun _ => rfl
     · rintro ⟨n, xs, hx⟩
       split at hx
@@ -89,10 +102,9 @@ theorem RandomTape.measurableSet_of_prefix (E : Set (RandomTape w))
 theorem uniformTape_eval (i : ℕ) (v : Word w) :
     uniformTape w {tape | tape i = v} = ((2 ^ w : ℕ) : ℝ≥0∞)⁻¹ := by
   have h := congrArg (fun μ : Measure (Word w) => μ {v})
-    (Measure.infinitePi_map_eval (fun _ : ℕ => (PMF.uniformOfFintype (Word w)).toMeasure) i)
+    (Measure.infinitePi_map_eval (fun _ : ℕ => uniformWord w) i)
   rw [Measure.map_apply (measurable_pi_apply i) (measurableSet_singleton v)] at h
-  simpa only [uniformTape, PMF.toMeasure_apply_singleton _ _ (measurableSet_singleton _), PMF.uniformOfFintype_apply,
-    Word.card, Set.preimage, Set.mem_singleton_iff] using h
+  simpa only [uniformTape, uniformWord_singleton, Set.preimage, Set.mem_singleton_iff] using h
 
 /-- Distinct tape positions are independent, including after any fixed offset. -/
 theorem uniformTape_independent :
@@ -107,18 +119,17 @@ theorem uniformTape_cylinder {n : ℕ} (xs : Fin n → Word w) :
   have hset : RandomTape.cylinder xs =
       (↑(Finset.range n) : Set ℕ).pi (fun i => {ext i}) := by
     ext tape
-    simp only [RandomTape.cylinder, Set.mem_setOf_eq, Set.mem_pi, Finset.mem_coe,
+    simp only [RandomTape.cylinder, Set.mem_ofPred_eq, Set.mem_pi, Finset.mem_coe,
       Finset.mem_range, Set.mem_singleton_iff]
     constructor
     · intro h i hi
-      simpa only [ext, dif_pos hi] using h ⟨i, hi⟩
+      simpa only [ext, dite_eq_left hi] using h ⟨i, hi⟩
     · intro h i
-      simpa only [ext, dif_pos i.isLt] using h i i.isLt
+      simpa only [ext, dite_eq_left i.isLt] using h i i.isLt
   rw [hset]
   unfold uniformTape
   rw [Measure.infinitePi_pi _ (fun _ _ => measurableSet_singleton _)]
-  simp only [PMF.toMeasure_apply_singleton _ _ (measurableSet_singleton _), PMF.uniformOfFintype_apply, Word.card,
-    Finset.prod_const, Finset.card_range]
+  simp only [uniformWord_singleton, Finset.prod_const, Finset.card_range]
 
 variable (C : CostModel) (c : Stmt w) (s : State w)
 
@@ -145,7 +156,7 @@ theorem runTime_of_exec {tape : RandomTape w} {s' : State w} {t : ℕ} {d p : �
   have ht : ∃ t, ∃ s' d p, Exec C tape c s s' t d p := ⟨t, s', d, p, h⟩
   obtain ⟨s₀, d₀, p₀, h₀⟩ := Classical.choose_spec ht
   have heq := (h₀.deterministic h).2.1
-  simp only [runTime, dif_pos ht, heq]
+  simp only [runTime, dite_eq_left ht, heq]
 
 theorem runTime_eq_coe_iff (tape : RandomTape w) (t : ℕ) :
     runTime C c s tape = (t : ℕ∞) ↔ ∃ s' d p, Exec C tape c s s' t d p := by
@@ -166,9 +177,9 @@ theorem runTime_eq_top_iff (tape : RandomTape w) :
   constructor
   · intro ht ⟨s', t, d, p, he⟩
     rw [runTime_of_exec he] at ht
-    exact ENat.coe_ne_top _ ht
+    exact ENat.natCast_ne_top _ ht
   · intro hn
-    apply dif_neg
+    apply dite_eq_right
     rintro ⟨t, s', d, p, he⟩
     exact hn ⟨s', t, d, p, he⟩
 
@@ -183,8 +194,6 @@ theorem measurable_runTime : Measurable (runTime C c s) := by
 
 /-- The unconditional PMF of safe termination costs, including an atom at `∞`. -/
 noncomputable def runTimePMF : PMF ℕ∞ :=
-  letI : IsProbabilityMeasure ((uniformTape w).map (runTime C c s)) :=
-    Measure.isProbabilityMeasure_map (measurable_runTime C c s).aemeasurable
   ((uniformTape w).map (runTime C c s)).toPMF
 
 /-- PMF atoms are exactly the corresponding tape-event probabilities. -/

@@ -13,11 +13,11 @@ theorem tsum_succ_mul_geometric (r : ℝ≥0∞) :
     (∑' n : ℕ, (n + 1 : ℝ≥0∞) * r ^ n) = (1 - r)⁻¹ * (1 - r)⁻¹ := by
   rw [← ENNReal.tsum_geometric, ← ENNReal.tsum_mul_left]
   simp_rw [← ENNReal.tsum_mul_right]
-  rw [← ENNReal.tsum_prod,
+  rw [← tsum_prod,
     ← Finset.HasAntidiagonal.sigmaAntidiagonalEquivProd.tsum_eq
       (fun p : ℕ × ℕ => r ^ p.2 * r ^ p.1)]
   change _ = ∑' c : (n : ℕ) × ↥(Finset.antidiagonal n), r ^ c.2.val.2 * r ^ c.2.val.1
-  rw [ENNReal.tsum_sigma (fun (n : ℕ) (p : ↥(Finset.antidiagonal n)) => r ^ p.val.2 * r ^ p.val.1)]
+  rw [tsum_sigma (fun (n : ℕ) (p : ↥(Finset.antidiagonal n)) => r ^ p.val.2 * r ^ p.val.1)]
   apply tsum_congr
   intro n
   simp only [tsum_fintype, ← pow_add]

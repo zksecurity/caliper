@@ -27,7 +27,7 @@ theorem cond_of_flag_ne {c : Prop} [Decidable c] {f : BitVec w}
     (hf : f = if c then 1 else 0) (hnz : f ≠ 0) : c := by
   by_cases hc : c
   · exact hc
-  · rw [if_neg hc] at hf
+  · rw [ite_eq_right hc] at hf
     exact absurd hf hnz
 
 /-- A zero comparison flag refutes `c`, provided the word size can distinguish 1
@@ -35,7 +35,7 @@ from 0 (`1 < 2 ^ w`), which each call site derives from its own bounds. -/
 theorem not_cond_of_flag_zero {c : Prop} [Decidable c]
     (h2 : 1 < 2 ^ w) (hf : (if c then (1 : BitVec w) else 0) = 0) : ¬ c := by
   intro hc
-  rw [if_pos hc] at hf
+  rw [ite_eq_left hc] at hf
   have h := congrArg BitVec.toNat hf
   simp only [BitVec.ofNat_eq_ofNat, BitVec.toNat_ofNat] at h
   rw [Nat.mod_eq_of_lt h2, Nat.zero_mod] at h

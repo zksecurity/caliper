@@ -2,6 +2,8 @@ import Lake
 open Lake DSL
 
 package caliper where
+  -- Mathlib is a module-system library; Caliper's files are not, which is deliberate.
+  allowNonModules := true
   leanOptions := #[
     ⟨`pp.unicode.fun, true⟩, -- pretty-prints `fun a ↦ b`
     ⟨`autoImplicit, false⟩,
@@ -18,4 +20,4 @@ lean_lib Examples where
 `Caliper`; users running `lake build Caliper` never build it. -/
 lean_lib CaliperTest where
 
-require mathlib from git "https://github.com/leanprover-community/mathlib4"@"905b95818eb32af7874a58b427f50c1711a5e96c"
+require mathlib from git "https://github.com/leanprover-community/mathlib4"@"fc4f59e577feb1a4956671bc04ac18aaaf8cd842"

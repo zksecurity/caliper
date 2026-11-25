@@ -51,7 +51,7 @@ theorem uniformTape_firstZero (n : ℕ) :
     · exact measurableSet_singleton _
   have he : RandomTape.firstZero n = (↑(Finset.range (n + 1)) : Set ℕ).pi S := by
     ext tape
-    simp only [RandomTape.firstZero, Set.mem_setOf_eq, Set.mem_pi, Finset.mem_coe,
+    simp only [RandomTape.firstZero, Set.mem_ofPred_eq, Set.mem_pi, Finset.mem_coe,
       Finset.mem_range]
     constructor
     · rintro ⟨hn, hz⟩ i hi
@@ -69,16 +69,14 @@ theorem uniformTape_firstZero (n : ℕ) :
   unfold uniformTape
   rw [Measure.infinitePi_pi _ (fun i _ => hS i), Finset.prod_range_succ]
   have hp : ∀ i ∈ Finset.range n,
-      (PMF.uniformOfFintype (Word w)).toMeasure (S i) =
+      uniformWord w (S i) =
         1 - ((2 ^ w : ℕ) : ℝ≥0∞)⁻¹ := by
     intro i hi
     simp only [Finset.mem_range] at hi
-    rw [show S i = {0}ᶜ from if_pos hi, measure_compl (measurableSet_singleton _) (measure_ne_top _ _)]
-    simp only [measure_univ, PMF.toMeasure_apply_singleton _ _ (measurableSet_singleton _),
-      PMF.uniformOfFintype_apply, Word.card]
+    rw [show S i = {0}ᶜ from ite_eq_left hi, measure_compl (measurableSet_singleton _) (measure_ne_top _ _)]
+    simp only [measure_univ, uniformWord_singleton]
   rw [Finset.prod_congr rfl hp]
-  simp [S, PMF.toMeasure_apply_singleton _ _ (measurableSet_singleton _),
-    PMF.uniformOfFintype_apply, Word.card]
+  simp [S, uniformWord_singleton]
 
 /-- Retry until a sampled word equals zero. No instruction reads the attempt count. -/
 def retryZero (r : Reg) : Stmt w := .whileNZ (.rand r) r .skip
@@ -162,7 +160,7 @@ theorem retryZero_timePMF (C : CostModel) (r : Reg) (s : State w)
       (((n + 1) * (C.rand + C.branch) : ℕ) : ℕ∞)} =
       RandomTape.drop s.tapePos ⁻¹' RandomTape.firstZero n := by
     ext tape
-    rw [Set.mem_setOf_eq, runTime_eq_coe_iff]
+    rw [Set.mem_ofPred_eq, runTime_eq_coe_iff]
     constructor
     · rintro ⟨s', d, p, hexec⟩
       obtain ⟨m, hm, ht⟩ := retryZero_exec_firstZero hexec
@@ -223,7 +221,7 @@ theorem retryZero_expect (C : CostModel) (r : Reg) (s : State w)
       have h' : (n + 1) * (C.rand + C.branch) = (m + 1) * (C.rand + C.branch) := by
         exact_mod_cast h
       nlinarith
-    have h := ENNReal.tsum_comp_le_tsum_of_injective hinj
+    have h := tsum_comp_le_tsum_of_injective hinj
       (fun t => runTimePMF C (retryZero r) s t * ENat.toENNReal t)
     simp only [time, retryZero_timePMF C r s hC, ENat.toENNReal_coe] at h
     rw [geometric_cost (2 ^ w) (C.rand + C.branch) (by positivity)] at h

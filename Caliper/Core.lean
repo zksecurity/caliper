@@ -1412,7 +1412,7 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
     | .ifNZ c thn els =>
       simp only [run] at h
       by_cases hc : s.regs c = 0
-      · rw [if_pos hc] at h
+      · rw [ite_eq_left hc] at h
         cases h₁ : run C tape f els s with
         | none =>
           simp only [h₁, Option.bind_eq_bind, Option.bind_none] at h
@@ -1422,7 +1422,7 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
           simp only [h₁, Option.bind_eq_bind, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
           obtain ⟨rfl, rfl, rfl, rfl⟩ := h
           exact .ifNZ_false hc (ih _ h₁)
-      · rw [if_neg hc] at h
+      · rw [ite_eq_right hc] at h
         cases h₁ : run C tape f thn s with
         | none =>
           simp only [h₁, Option.bind_eq_bind, Option.bind_none] at h
@@ -1442,11 +1442,11 @@ theorem run_sound {C : CostModel} : ∀ (f : ℕ) (c : Stmt w) {s s' : State w} 
         obtain ⟨s₁, tg, dg, pg⟩ := rg
         simp only [hg, Option.bind_eq_bind, Option.bind_some] at h
         by_cases hz : s₁.regs cc = 0
-        · rw [if_pos hz] at h
+        · rw [ite_eq_left hz] at h
           simp only [Option.some.injEq, Prod.mk.injEq] at h
           obtain ⟨rfl, rfl, rfl, rfl⟩ := h
           exact .while_done (ih _ hg) hz
-        · rw [if_neg hz] at h
+        · rw [ite_eq_right hz] at h
           cases hb : run C tape f b s₁ with
           | none =>
             simp only [hb, Option.bind_none] at h

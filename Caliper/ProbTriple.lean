@@ -95,7 +95,7 @@ protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂
   let good : Set (Outcome w) := {r | r ∈ possibleOutcomes C c₁ s ∧
     R r.1 ∧ r.2.2.1 ≤ D₁ ∧ r.2.2.2 ≤ M₁}
   have hc : good.Countable := (possibleOutcomes_countable C c₁ s).mono (fun _ h => h.1)
-  letI : Countable good := hc.to_subtype
+  let : Countable good := hc.to_subtype
   let E (a : good) : Set (RandomTape w) := {tape | HasOutcome C tape c₁ s a.val}
   let f (a : good) (tape : RandomTape w) :=
     ENat.toENNReal (runTime C c₂ a.val.1 tape)
@@ -137,7 +137,7 @@ protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂
         lintegral_tsum (fun a => ((hfm a).indicator (hm a)).aemeasurable)]
       simp_rw [lintegral_prefix_indicator_future _ (hE _) _ (hf _)]
       calc
-        _ ≤ ∑' a : good, uniformTape w (E a) * T₂ := ENNReal.tsum_le_tsum fun a => by
+        _ ≤ ∑' a : good, uniformTape w (E a) * T₂ := tsum_le_tsum fun a => by
           apply mul_le_mul_right
           rw [← runTimePMF_expect_eq]
           exact (h₂ a.val.1 a.property.2.1).2
@@ -152,7 +152,7 @@ protected theorem seq {P R Q : State w → Prop} {c₁ c₂ : Stmt w} {T₁ T₂
         refine ⟨s', a.val.2.1 + t, _, _, .seq he₁ he₂, ?_⟩
         rw [runTime_of_exec he₁, ENat.toENNReal_coe, Nat.cast_add]
         apply add_le_add_right
-        have hterm := ENNReal.le_tsum (f := fun a : good => (E a).indicator (f a) tape) a
+        have hterm := le_tsum (f := fun a : good => (E a).indicator (f a) tape) a
         simpa only [Set.indicator_of_mem (show tape ∈ E a from he₁), f,
           runTime_of_exec he₂, ENat.toENNReal_coe] using hterm)
       _ = (runTimePMF C c₁ s).expect ENat.toENNReal +
@@ -237,7 +237,8 @@ theorem of_countable_cases {α : Type*} [Countable α] {P Q : State w → Prop}
           (t : ℝ≥0∞) ≤ cost a := by exact_mod_cast hc
           _ = (E s a).indicator (fun _ => (cost a : ℝ≥0∞)) tape :=
             (Set.indicator_of_mem ha (fun _ => (cost a : ℝ≥0∞))).symm
-          _ ≤ _ := ENNReal.le_tsum a)
+          _ ≤ _ := le_tsum
+            (f := fun a => (E s a).indicator (fun _ => (cost a : ℝ≥0∞)) tape) a)
       _ = ∑' a, uniformTape w (E s a) * (cost a : ℝ≥0∞) := by
         rw [lintegral_tsum (fun a => (measurable_const.indicator (hm s a)).aemeasurable)]
         congr 1

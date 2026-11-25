@@ -245,7 +245,7 @@ theorem time_spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
     rintro k s ⟨⟨hg, hk⟩, hflag⟩ hnz
     have hb : s.regs 1 ≠ 0 := by
       intro h0
-      rw [h0, if_pos rfl] at hflag
+      rw [h0, ite_eq_left rfl] at hflag
       exact hnz hflag
     have := toNat_ne_zero hb
     exact ⟨k - 1, by omega⟩
@@ -255,7 +255,7 @@ theorem time_spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
     rintro k s ⟨⟨⟨hg, hk⟩, hflag⟩, hnz⟩
     have hb : s.regs 1 ≠ 0 := by
       intro h0
-      rw [h0, if_pos rfl] at hflag
+      rw [h0, ite_eq_left rfl] at hflag
       exact hnz hflag
     have hbpos : 0 < (s.regs 1).toNat := Nat.pos_of_ne_zero (toNat_ne_zero hb)
     have hmod : (s.regs 0 % s.regs 1).toNat < (s.regs 1).toNat := by
@@ -277,7 +277,7 @@ theorem time_spec {C : CostModel} (hw : 0 < w) (a b : Word w) :
   · rintro s ⟨k', ⟨⟨hg, hk⟩, hflag⟩, hzero⟩
     have hb0 : s.regs 1 = 0 := by
       by_contra hb
-      rw [if_neg hb] at hflag
+      rw [ite_eq_right hb] at hflag
       rw [hflag] at hzero
       have h2 : 1 < 2 ^ w := Nat.one_lt_two_pow_iff.mpr (by omega)
       have := congrArg BitVec.toNat hzero
