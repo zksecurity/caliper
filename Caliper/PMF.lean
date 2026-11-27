@@ -1,6 +1,6 @@
 import Mathlib.Probability.ProbabilityMassFunction.Constructions
 import Mathlib.MeasureTheory.Integral.Lebesgue.Countable
-import Mathlib.Data.Real.ENatENNReal
+import Mathlib.Basic.Real.ENatENNReal
 
 /-!
 # Expectations of discrete distributions
@@ -27,7 +27,7 @@ noncomputable def expect (p : PMF α) (f : α → ℝ≥0∞) : ℝ≥0∞ :=
 
 theorem expect_mono (p : PMF α) {f g : α → ℝ≥0∞} (h : ∀ x, f x ≤ g x) :
     p.expect f ≤ p.expect g :=
-  ENNReal.tsum_le_tsum fun x => mul_le_mul_right (h x) (p x)
+  tsum_le_tsum fun x => mul_le_mul_right (h x) (p x)
 
 @[simp] theorem expect_const (p : PMF α) (v : ℝ≥0∞) :
     p.expect (fun _ => v) = v := by
@@ -35,12 +35,12 @@ theorem expect_mono (p : PMF α) {f g : α → ℝ≥0∞} (h : ∀ x, f x ≤ g
 
 theorem expect_add (p : PMF α) (f g : α → ℝ≥0∞) :
     p.expect (fun x => f x + g x) = p.expect f + p.expect g := by
-  simp only [expect, mul_add, ENNReal.tsum_add]
+  simp only [expect, mul_add, tsum_add]
 
 theorem expect_bind (p : PMF α) (q : α → PMF β) (f : β → ℝ≥0∞) :
     (p.bind q).expect f = p.expect (fun x => (q x).expect f) := by
   simp only [expect, PMF.bind_apply, ← ENNReal.tsum_mul_right]
-  rw [ENNReal.tsum_comm]
+  rw [tsum_comm]
   simp only [← ENNReal.tsum_mul_left, mul_assoc]
 
 theorem expect_map (p : PMF α) (g : α → β) (f : β → ℝ≥0∞) :

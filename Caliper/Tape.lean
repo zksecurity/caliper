@@ -102,7 +102,7 @@ theorem Exec.run_eventually {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}
     intro f hf
     cases f with
     | zero => omega
-    | succ f => simp only [run, if_neg hn, ih f (by omega), Option.bind_eq_bind, Option.bind_some]
+    | succ f => simp only [run, ite_eq_right hn, ih f (by omega), Option.bind_eq_bind, Option.bind_some]
   | ifNZ_false hz _ ih =>
     obtain ⟨n, ih⟩ := ih
     refine ⟨n + 1, ?_⟩
@@ -125,7 +125,7 @@ theorem Exec.run_eventually {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}
     intro f hf
     cases f with
     | zero => omega
-    | succ f => simp only [run, ihg f (by omega), Option.bind_eq_bind, Option.bind_some, if_neg hn,
+    | succ f => simp only [run, ihg f (by omega), Option.bind_eq_bind, Option.bind_some, ite_eq_right hn,
         ihb f (by omega), ihl f (by omega)]
   | _ =>
     refine ⟨1, ?_⟩
@@ -171,6 +171,9 @@ theorem run_mono {f g : ℕ} (hfg : f ≤ g) (c : Stmt w) (s : State w)
           exact ⟨rb, ih hfg' _ _ hb, rl, ih hfg' _ _ hl, heq⟩
       | _ => exact h
 
+-- The wildcard arm covers constructors with and without fields, so `<;>` is needed for some
+-- cases and flagged as unused on the others.
+set_option linter.unusedTactic false in
 /-- Only tape words consumed by the derivation can affect its outcome. -/
 theorem Exec.withTape {c : Stmt w} {s s' : State w} {t : ℕ} {d p : ℤ}
     (h : Exec C tape c s s' t d p) (other : RandomTape w)

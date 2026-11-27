@@ -63,7 +63,7 @@ example : runTimePMF .unit maybeFault (State.init 1) ⊤ = (2 : ℝ≥0∞)⁻¹
   have he : {tape | runTime .unit maybeFault (State.init 1) tape = ⊤} =
       {tape : RandomTape 1 | tape 0 = 0}ᶜ := by
     ext tape
-    rw [Set.mem_setOf_eq, runTime_eq_top_iff]
+    rw [Set.mem_ofPred_eq, runTime_eq_top_iff]
     change (¬ ∃ s' t d p, Exec .unit tape maybeFault (State.init 1) s' t d p) ↔ tape 0 ≠ 0
     constructor
     · intro hn hz

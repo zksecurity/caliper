@@ -32,7 +32,7 @@ theorem outcome_of_exec {C : CostModel} {tape : RandomTape w} {c : Stmt w} {s : 
   have hr : Classical.choose h = r := by
     apply Prod.ext hs
     exact Prod.ext ht (Prod.ext hd hp)
-  simp only [outcome, dif_pos h, hr]
+  simp only [outcome, dite_eq_left h, hr]
 
 /-- Possible terminating outcomes over arbitrary tapes. -/
 def possibleOutcomes (C : CostModel) (c : Stmt w) (s : State w) : Set (Outcome w) :=
@@ -51,7 +51,7 @@ theorem possibleOutcomes_countable (C : CostModel) (c : Stmt w) (s : State w) :
     apply outcome_of_exec
     apply he.withTape
     intro i _ hi
-    simp only [extend, tr, dif_pos hi]
+    simp only [extend, tr, dite_eq_left hi]
   exact ((Set.countable_range f).preimage (by intro x y h; exact Option.some.inj h)).mono hsub
 
 /-- A particular outcome is a prefix event ending at its final cursor. -/
@@ -86,11 +86,11 @@ theorem uniformTape_after_exec (C : CostModel) (c : Stmt w) (s : State w)
     uniformTape w {tape | ∃ r, HasOutcome C tape c s r ∧ Q r} * uniformTape w F := by
   classical
   let A : Set (Outcome w) := {r | r ∈ possibleOutcomes C c s ∧ Q r}
-  letI : Countable A := ((possibleOutcomes_countable C c s).mono (fun _ h => h.1)).to_subtype
+  let : Countable A := ((possibleOutcomes_countable C c s).mono (fun _ h => And.left h)).to_subtype
   let E (a : A) : Set (RandomTape w) := {tape | HasOutcome C tape c s a.val}
   have he : {tape | ∃ r, HasOutcome C tape c s r ∧ Q r} = ⋃ a : A, E a := by
     ext tape
-    simp only [Set.mem_setOf_eq, Set.mem_iUnion]
+    simp only [Set.mem_ofPred_eq, Set.mem_iUnion]
     constructor
     · rintro ⟨r, hr, hq⟩
       exact ⟨⟨r, ⟨⟨tape, hr⟩, hq⟩⟩, hr⟩
@@ -100,7 +100,7 @@ theorem uniformTape_after_exec (C : CostModel) (c : Stmt w) (s : State w)
       RandomTape.drop r.1.tapePos tape ∈ F} =
       ⋃ a : A, E a ∩ RandomTape.drop a.val.1.tapePos ⁻¹' F := by
     ext tape
-    simp only [Set.mem_setOf_eq, Set.mem_iUnion, Set.mem_inter_iff, Set.mem_preimage]
+    simp only [Set.mem_ofPred_eq, Set.mem_iUnion, Set.mem_inter_iff, Set.mem_preimage]
     constructor
     · rintro ⟨r, hr, hq, hf⟩
       exact ⟨⟨r, ⟨⟨tape, hr⟩, hq⟩⟩, hr, hf⟩
